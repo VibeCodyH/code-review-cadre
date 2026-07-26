@@ -28,7 +28,20 @@ run_opencode() {
   # fragments: both `\x1b` and `{cmd;}` on one line are GNU sed extensions, so
   # on BSD sed (macOS) the strip silently matched nothing and the banner delete
   # errored. lib/common.sh carries the same fix and the same reason.
+  # ★ Prompt on STDIN, not argv. `opencode run` takes the message as a
+  # positional and Linux caps ONE argv entry near 128KB (MAX_ARG_STRLEN), well
+  # under the 2MB total ARG_MAX -- so this adapter died on a big prompt with
+  # `Argument list too long` from timeout, an error naming neither opencode nor
+  # the cause. Measured on the sibling case: a 184KB synthesis over a 3-reviewer
+  # panel. Reviews are small and never hit it; SYNTHESIS is the whole panel
+  # concatenated, so the failure lands exactly when merging matters most, and
+  # opencode is the free route the README sends people down first.
   local esc; esc=$(printf '\033')
-  _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto "$prompt" 2>&1 \
+  if [ -n "$DRY" ]; then
+    _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto
+    return 0
+  fi
+  printf '%s' "$prompt" \
+    | timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto 2>&1 \
     | sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e '1,5{' -e '/^> build · /d' -e '}'
 }

@@ -13,6 +13,7 @@ run_copilot() {
     _run timeout -k 30 "$TIMEOUT" copilot -p "$prompt"
     return 0
   fi
+  argv_prompt_ok || return 0
   ( cd "$dir" && timeout -k 30 "$TIMEOUT" copilot -p "$prompt" 2>&1 )
 }
 

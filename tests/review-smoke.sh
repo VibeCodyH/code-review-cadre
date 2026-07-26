@@ -665,6 +665,31 @@ check "missing ledger explains itself" "grep -q 'nothing settled yet' <<<\"\$OUT
 OUT=$(run_cadre "$D" ledger show 2>&1)
 check "ledger show without a file"    "grep -q 'no ledger at' <<<\"\$OUT\""
 
+echo "== ★ a prompt too big for argv must say so, not die in the shell =="
+# Measured live: a 184KB synthesis over a 3-reviewer panel killed an argv-only
+# adapter with `timeout: Argument list too long` -- an error naming neither the
+# agent nor the cause, landing in the artifact as non-empty text, which is a
+# review that found nothing. Linux caps ONE argv entry near 128KB whatever
+# ARG_MAX says. Adapters whose CLI has stdin or a prompt file use it instead;
+# this guard is for the ones with neither.
+D=$(case_dir argvbig)
+cat > "$D/agents.d/argvonly.sh" <<'A'
+run_argvonly() {
+  argv_prompt_ok || return 0
+  echo "REVIEW by argvonly"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/argvonly"; chmod +x "$D/bin/argvonly"
+BIG=$(python3 -c "print('x'*120000)" 2>/dev/null || printf 'x%.0s' $(seq 1 120000))
+OUT=$(printf '%s' "$BIG" | CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" \
+        "$ROOT/bin/agentcall" argvonly -d /tmp -m ro 2>&1)
+check "oversize prompt says DID NOT RUN" "grep -q '^DID NOT RUN, prompt is 120000 bytes' <<<\"\$OUT\""
+check "it names a way out"               "grep -q 'CADRE_SYNTH_MAX' <<<\"\$OUT\""
+check "and it never ran the CLI"         "! grep -q 'REVIEW by argvonly' <<<\"\$OUT\""
+OUT=$(printf 'small' | CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" \
+        "$ROOT/bin/agentcall" argvonly -d /tmp -m ro 2>&1)
+check "a normal prompt is untouched"     "grep -q 'REVIEW by argvonly' <<<\"\$OUT\""
+
 echo "== ★ unset HOME must name the variable, not die in bash =="
 # cron, containers and scrubbed CI runners have no HOME. set -u turned that into
 # "HOME: unbound variable" pointing into common.sh.

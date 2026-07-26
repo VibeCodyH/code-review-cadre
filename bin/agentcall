@@ -65,6 +65,27 @@ _run() {
   "$@"
 }
 
+# ★ For adapters whose CLI can ONLY take the prompt as a command-line argument.
+# Linux caps a SINGLE argv entry at MAX_ARG_STRLEN, 128KB, regardless of the 2MB
+# total ARG_MAX -- so past that the exec fails and the shell reports "Argument
+# list too long", naming neither the agent nor the reason. Measured live: a
+# 184KB synthesis prompt over a 3-reviewer panel. Reviews are small and never
+# reach it; a SYNTHESIS is every review concatenated, so this fires exactly when
+# merging matters most.
+#
+# Call it before you exec, and return if it says no. Saying "DID NOT RUN" is the
+# whole point: without it the run is a non-empty file full of shell error text,
+# which scores as a review that found nothing. Prefer stdin or a prompt file if
+# your CLI has either -- this is the fallback for CLIs that have neither.
+argv_prompt_ok() {
+  [ "${#prompt}" -le 100000 ] && return 0
+  echo "DID NOT RUN, prompt is ${#prompt} bytes and $agent can only take it as a"
+  echo "command-line argument, which Linux caps near 128KB. This is usually a"
+  echo "synthesis over a large panel: pick a synthesizer whose adapter uses stdin"
+  echo "or a prompt file (codex, claude, opencode, grok), or lower CADRE_SYNTH_MAX."
+  return 1
+}
+
 die() { echo "agentcall: $*" >&2; exit 2; }
 
 usage() {

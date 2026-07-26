@@ -15,6 +15,7 @@ run_vibe() {
     return 0
   fi
   [ -n "${MISTRAL_API_KEY:-}" ] || { echo "DID NOT RUN. MISTRAL_API_KEY is not set"; return 0; }
+  argv_prompt_ok || return 0
   ( cd "$dir" && timeout -k 30 "$TIMEOUT" vibe --trust --prompt "$prompt" 2>&1 )
 }
 

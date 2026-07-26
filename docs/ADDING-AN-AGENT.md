@@ -42,6 +42,18 @@ an empty failure.
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
 
+**Take the prompt on stdin or from a file if your CLI offers either.** Linux
+caps a single argv entry near 128KB no matter what `ARG_MAX` says, and the exec
+fails with `Argument list too long` — an error naming neither your agent nor the
+reason, which lands in the artifact as non-empty text and scores as a review
+that found nothing. Reviews are small and never reach it. A **synthesis** is
+every review concatenated, so this fires precisely when merging matters most: a
+3-reviewer panel produced a 184KB prompt here and killed an argv-only adapter.
+`codex` and `claude` pipe it, `grok` writes a temp file, `opencode` takes stdin
+even though its help only documents a positional. If your CLI truly has neither,
+call `argv_prompt_ok || return 0` before you exec; it prints a `DID NOT RUN`
+naming the size and the way out.
+
 **To be usable as a synthesizer, an adapter must ALSO exit nonzero when it
 truncates.** The text marker is enough for a reviewer slot and not enough for a
 synth slot, because the synthesis prompt asks the model to report which
