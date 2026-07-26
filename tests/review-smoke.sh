@@ -22,7 +22,7 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc; do
+           synthquote synthtrunc synthrate; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -89,6 +89,16 @@ A
 run_synthquote() {
   printf 'Merged. One reviewer was cut off; it ended with:\n'
   printf '_TRUNCATED, stopped early._\n'
+}
+A
+  # ★ A healthy, SHORT synthesis that discusses rate limiting -- which is what
+  # merging reviews of this repo produces. Exits 0. Must survive: the keyword
+  # scan is not evidence the provider refused anything.
+  cat > "$1/agents.d/synthrate.sh" <<'A'
+run_synthrate() {
+  echo "Panel: 2 reviewers, 2 complete, 0 stopped early."
+  echo "Agreed: the retry path for 429 too many requests never gives up. [2/2]"
+  printf 'padding %s\n' $(seq 1 60)
 }
 A
   # The same text from a synthesizer that really DID stop early. Identical bytes,
@@ -608,6 +618,15 @@ OUT=$(run_cadre "$D" review --roster good,good2 --synth synthquote \
         --base main --label sq "$S")
 check "quoted marker survives"        "[ -s '$D/state/reviews/sq/synthesis.md' ]"
 check "and is not filed as failed"    "[ ! -e '$D/state/reviews/sq/synthesis.md.failed' ]"
+# ★ A healthy SHORT merge that discusses rate limiting. Two of the three retry
+# loops were taught to stop trusting the keyword scan; this one was left, so a
+# merge like this burned three retries of the synthesizer's quota and was then
+# filed failed with a healthy panel underneath it. Merging reviews of THIS repo
+# is what produces the text.
+OUT=$(run_cadre "$D" review --roster good,good2 --synth synthrate \
+        --base main --label sr "$S")
+check "rate-limit TALK in a merge is ok" "[ -s '$D/state/reviews/sr/synthesis.md' ]"
+check "and burns no retries"             "! grep -q 'synthesis rate limited' <<<\"\$OUT\""
 OUT=$(run_cadre "$D" review --roster good,good2 --synth synthtrunc \
         --base main --label st "$S")
 check "same text, nonzero -> failed"  "[ -s '$D/state/reviews/st/synthesis.md.failed' ]"

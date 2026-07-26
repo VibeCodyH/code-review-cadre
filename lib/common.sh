@@ -226,6 +226,24 @@ rate_limited() {
   grep -qiE '(\b(429|529)\b|too many requests|rate[ _-]?limit[a-z]*([ _-](exceeded|reached|hit|error))?|quota (exceeded|exhausted)|exceeded your [a-z ]{0,20}quota|resource[ _-]exhausted|retry[- ]after|slow down|overloaded|capacity constraints|AI_RetryError)' "$f"
 }
 
+# ★ The same question for a SYNTHESIS, which needs a different answer. A
+# reviewer that trips the keyword scan can be rescued by its adapter's marker; a
+# synthesis carries no marker, so the scan is the last word and it is wrong more
+# often here. Merging reviews OF THIS REPO produces text about rate limiting as a
+# matter of course, and a small panel with few findings merges to under 2KB --
+# so a healthy merge matched, burned three retries of the synthesizer's quota,
+# and was filed failed with the panel intact underneath it.
+#
+# The distinction that actually holds: a provider refusal is not something the
+# model WRITES, it is something the CLI RETURNS. So believe the keywords only
+# when the CLI also failed, or when the body is far too small to be a merge.
+provider_refused() {
+  local f="$1" rc="$2"
+  rate_limited "$f" || return 1
+  [ "$rc" -ne 0 ] && return 0
+  [ "$(wc -c < "$f")" -lt 500 ]
+}
+
 # Classify one agent run: ok | degraded | failed. THE one copy of this rule.
 #
 # ★ Three states, not two. A reviewer that ran but stopped early holds real
@@ -305,7 +323,11 @@ classify_run() {
   # which the model cannot forge. docs/ADDING-AN-AGENT.md makes that the price
   # of a synth slot.
   if [ "$ctx" = run ] && tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
-  if rate_limited "$f"; then echo failed; return 0; fi
+  if [ "$ctx" = run ]; then
+    if rate_limited "$f"; then echo failed; return 0; fi
+  elif provider_refused "$f" "$rc"; then
+    echo failed; return 0
+  fi
   if [ "$rc" -ne 0 ]; then echo failed; return 0; fi
   echo ok
   return 0

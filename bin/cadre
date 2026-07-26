@@ -681,7 +681,12 @@ and declined to flag it, which is exactly backwards.
   while :; do
     raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
     printf '%s' "$raw" > "$out/.synth-tmp"
-    rate_limited "$out/.synth-tmp" || { rm -f "$out/.synth-tmp"; break; }
+    # ★ The THIRD retry loop. The commit that taught the two reviewer loops to
+    # stop trusting a keyword scan over the adapter left this one asking the old
+    # question, so a healthy short merge that discussed rate limiting burned
+    # three retries and then got filed failed. Same principle, different test,
+    # because a synthesis has no marker to be rescued by. See provider_refused.
+    provider_refused "$out/.synth-tmp" "$rc" || { rm -f "$out/.synth-tmp"; break; }
     rm -f "$out/.synth-tmp"
     [ "$attempt" -ge "${CADRE_RETRIES:-3}" ] && break
     w=$(retry_wait "$attempt")
