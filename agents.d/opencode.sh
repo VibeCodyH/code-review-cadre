@@ -24,6 +24,11 @@ run_opencode() {
   # with opencode's " · " separator. `/^> build /d` alone ate a reviewer's own
   # markdown blockquote -- "> build the release pipeline silently fails" -- which
   # is silent loss of review content, worse than the chrome it was removing.
+  # ★ A literal escape byte, not `\x1b`, and the brace block split across -e
+  # fragments: both `\x1b` and `{cmd;}` on one line are GNU sed extensions, so
+  # on BSD sed (macOS) the strip silently matched nothing and the banner delete
+  # errored. lib/common.sh carries the same fix and the same reason.
+  local esc; esc=$(printf '\033')
   _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto "$prompt" 2>&1 \
-    | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '1,5{/^> build · /d;}'
+    | sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e '1,5{' -e '/^> build · /d' -e '}'
 }

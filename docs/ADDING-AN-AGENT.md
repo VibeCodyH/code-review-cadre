@@ -38,7 +38,7 @@ an empty failure.
 
 | you have | print | cadre records it as |
 |---|---|---|
-| a complete review | the review, nothing else | `contributed` |
+| a complete review | the review, nothing else | `ok` |
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
 

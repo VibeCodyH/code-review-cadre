@@ -2,7 +2,12 @@
 
 notes_grok() {
   cat <<'NOTES'
-★ -p is --single and CONSUMES the next argument, so it must come last.
+★ The prompt goes in a file via --prompt-file, NOT on argv. -p/--single takes
+it as an ARGUMENT, and Linux caps a single argv entry at ~128KB
+(MAX_ARG_STRLEN), well under the 2MB total ARG_MAX. Measured: grok as the
+SYNTHESIZER over a 179KB panel died with "Argument list too long" before the
+model ran -- exactly when merging matters most, since that is a panel that
+produced a lot of text.
 ★ Without --always-approve every tool call is SILENTLY cancelled headless:
 you get progress narration, stopReason "Cancelled", and output that is
 indistinguishable from a lazy short review. That cost two graded rounds.
@@ -12,18 +17,20 @@ NOTES
 }
 
 run_grok() {
-  local out stop text m=()
+  local out pf stop text m=()
   [ -n "$model" ] && m=(--model "$model")
   if [ -n "$DRY" ]; then
     _run timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
-      --output-format json -p "$prompt"
+      --output-format json --prompt-file PROMPTFILE
     return 0
   fi
+  pf=$(mktemp); printf '%s' "$prompt" > "$pf"
   out=$(mktemp)
   ( cd "$dir" && timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
-      --output-format json -p "$prompt" ) > "$out" 2>&1
+      --output-format json --prompt-file "$pf" ) > "$out" 2>&1
+  rm -f "$pf"
   stop=$(jq -r '.stopReason // "unknown"' "$out" 2>/dev/null)
   text=$(jq -r '.text // ""' "$out" 2>/dev/null)
   if [ -z "$text" ]; then

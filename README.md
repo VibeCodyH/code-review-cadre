@@ -350,13 +350,28 @@ report, and handed to the synthesizer under its own delimiter. What changes is
 that **its silence stops counting.** A file it never reached is not cleared, and
 it is not tallied as a dissenter on a finding it never saw — otherwise a
 `[1/4]` tag reads as three reviewers disagreeing when it is one reviewer and two
-absences. The same relabelling applies when `CADRE_SYNTH_MAX` truncates an
-oversized review: cutting a review at 40KB makes it silent past 40KB for exactly
-the same reason.
+absences. The silence rule also applies when `CADRE_SYNTH_MAX` truncates an
+oversized review, because cutting a review at 40KB makes it silent past 40KB for
+the same reason — but that reviewer gets its **own** delimiter, not the partial
+one. It is healthy; cadre cut it. Telling the synthesizer a working reviewer
+stopped early is a false statement about a model that can end up quoted in a
+report, so the two causes stay separate even though the counting rule is shared.
 
 Only the adapter can tell these apart — nothing downstream can distinguish an
 empty answer from an empty failure — so the contract lives there, in
 [docs/ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md).
+
+**How much of this you actually get depends on your adapters.** `degraded` is
+reachable only when an adapter emits the `_TRUNCATED` marker, and today that is
+`grok` — it reads a `stopReason` from structured output, so it knows it stopped.
+`codex` has the branch but cannot currently reach it: its `-o` file is
+`--output-last-message`, written only at completion, so a killed run leaves it
+empty and lands in `failed`. Every other shipped adapter reads plain stdout,
+where a CLI killed mid-review is indistinguishable from one that crashed at the
+start, and its partial text is discarded as `failed`. That is the safe
+direction, not the useful one. If you want partial findings kept for a CLI you
+care about, that is an adapter change, and it is the single highest-value
+contribution to make here.
 
 Two deliberate exceptions. A degraded run is **not scored** in a benchmark: a
 number is a per-model claim and a run cut short is not a fair sample of the
@@ -545,15 +560,23 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
 - No resume past skipping outputs that already exist.
 - No secret scanning. The credential check reads filenames, not contents.
 - No sandbox. See above, and mean it.
-- **It cannot tell a bad review from a non-review.** `contributed / degraded /
-  failed` is decided mechanically — exit status, emptiness, the markers an
-  adapter emits. A reviewer that returns fluent prose which never reviews
-  anything, asks a clarifying question, or narrates a tool transcript, counts as
-  `contributed` and lands in the agreement denominators. Caught in the wild:
-  a panel where one reviewer's 39KB of output was mostly transcript, the
-  synthesizer correctly noted it "did not perform a substantive review", and the
-  tags still counted it. Judging *substance* needs a model, and a model deciding
-  which reviewers to discount is a different tool with a different failure mode.
+- **It cannot tell a bad review from a non-review.** `ok / degraded / failed` is
+  decided mechanically — exit status, emptiness, the markers an adapter emits. A
+  reviewer that returns fluent prose which never reviews anything, asks a
+  clarifying question, or narrates a tool transcript, counts as `ok` and lands in
+  the agreement denominators. Caught in the wild: a panel where one reviewer's
+  39KB of output was mostly transcript, the synthesizer correctly noted it "did
+  not perform a substantive review", and the tags still counted it.
+
+  This one stays open on purpose. The obvious fix — score each review and discount
+  the ones that don't look like reviews — has to decide who deserves to be heard
+  *before* it knows what they said. Measured here: a later panel produced a 92KB
+  review that was mostly narrated tool transcript, the exact shape such a filter
+  drops. It ended in the only finding that run produced, and a real one — that the
+  ANSI strip two paragraphs up is GNU-only, so on macOS the bug it exists to catch
+  comes back silently. The noisy reviewer was the productive one. Judging
+  *substance* needs a model, and a model deciding which reviewers to discount is a
+  different tool with a different failure mode.
   Read the reviews, not just the synthesis.
 
 ## Adding a reviewer

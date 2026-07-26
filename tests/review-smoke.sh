@@ -439,13 +439,38 @@ echo "== ★ chrome-stripping must not eat the review itself =="
 # drop opencode's banner and also deleted a reviewer's markdown blockquote that
 # happened to start with the word build. Silent loss of review content is worse
 # than the chrome it was removing.
-STRIP="sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '1,5{/^> build · /d;}'"
+ESC=$(printf '\033')
+STRIP="sed -e 's/${ESC}\[[0-9;]*[a-zA-Z]//g' -e '1,5{' -e '/^> build · /d' -e '}'"
 BQ='> build the release pipeline silently fails'
 check "a '> build ...' quote survives" "[ \"\$(printf '%s\n' '$BQ' | $STRIP)\" = '$BQ' ]"
 check "the real banner still goes"     "[ -z \"\$(printf '> build · m\n' | $STRIP | tr -d '[:space:]')\" ]"
 # ★ Anchored to the first lines too: the banner cannot appear deep in a review,
 # but a quoted example of one can.
 check "a late banner-lookalike stays"  "[ -n \"\$(printf 'a\nb\nc\nd\ne\nf\n> build · m\n' | $STRIP | grep '^> build')\" ]"
+
+echo "== ★ no GNU-only sed escapes =="
+# Found by a panel reviewer: `\x1b` is a GNU sed extension. BSD sed (macOS)
+# reads it as a literal `x1b`, matches nothing, and every strip built on it
+# silently no-ops -- so the chrome-only run above is filed as a clean review
+# again, on a whole platform, with no error raised. A silent no-op is the worst
+# available failure, so this bans the construct rather than trusting a comment.
+# Comment lines are exempt: the comments explaining this ban say `\x1b`, and the
+# first version of this check failed on them.
+check "no \\x1b in shipped code" \
+  "! grep -rn 'x1b' $ROOT/bin $ROOT/lib $ROOT/agents.d | grep -qvE ':[[:space:]]*#'"
+
+echo "== ★ the prompt must name the delimiters the harness actually emits =="
+# A remediation commit renamed the partial delimiter in bin/cadre and left
+# lib/prompts/synthesize.md teaching the old string, so the static rule no
+# longer bound to anything in the body. The suite asserted the emitted string
+# and the prompt's text separately, and neither noticed they had stopped
+# matching. Assert the SAME literal against both, so a rename must touch both.
+P_PARTIAL='===== REVIEWER (PARTIAL, THIS REVIEWER STOPPED EARLY):'
+P_CAPPED='===== REVIEWER (COMPLETE, BUT CADRE SENT ONLY ITS FIRST'
+check "harness emits the partial delimiter" "grep -qF '$P_PARTIAL' $ROOT/bin/cadre"
+check "prompt teaches the partial delimiter" "grep -qF '$P_PARTIAL' $ROOT/lib/prompts/synthesize.md"
+check "harness emits the capped delimiter"  "grep -qF '$P_CAPPED' $ROOT/bin/cadre"
+check "prompt teaches the capped delimiter" "grep -qF '$P_CAPPED' $ROOT/lib/prompts/synthesize.md"
 
 echo "== ★ a retry must not destroy the partial it is retrying =="
 # Also from the codex panel, and a regression introduced the same day: the

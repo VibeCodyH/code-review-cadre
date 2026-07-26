@@ -260,7 +260,14 @@ classify_run() {
   # review that found no defects. Measured with opencode, which is the free
   # route the README sends people down first. NOT a minimum-length rule:
   # "findings=0" is a valid review and a length floor threw those away.
-  if [ -z "$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/[[:space:]]//g' "$f")" ]; then
+  # ★ A LITERAL escape byte, not `\x1b`. `\x1b` is a GNU sed extension; BSD sed
+  # (macOS, and macOS keeps BSD sed even with GNU coreutils installed, because
+  # sed is not part of coreutils) reads it as a literal `x1b`, matches nothing,
+  # and this whole check silently no-ops -- filing a chrome-only run as a clean
+  # review again, on an entire platform, with no error. Found by a panel
+  # reviewer on cadre's own diff.
+  local esc; esc=$(printf '\033')
+  if [ -z "$(sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]; then
     echo failed; return 0
   fi
   if rate_limited "$f"; then echo failed; return 0; fi
