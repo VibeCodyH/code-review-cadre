@@ -28,6 +28,32 @@ Edit the stub. It has two functions:
 - `run_mycli()`. `$dir`, `$mode` (`ro`/`rw`), `$model`, `$prompt` and `$TIMEOUT`
   are in scope. Print the agent's **final text** on stdout and nothing else.
 
+### Say which kind of nothing you have
+
+An adapter that returns "" when its CLI dies reads downstream as *a reviewer that
+looked and found no defects*. That is the worst thing an adapter can do, so the
+output contract has three cases and **only the adapter can tell them apart** —
+nothing further down the pipe can see the difference between an empty answer and
+an empty failure.
+
+| you have | print | cadre records it as |
+|---|---|---|
+| a complete review | the review, nothing else | `contributed` |
+| review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
+| no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
+
+`degraded` is a real state, not a polite failure. A partial review's findings go
+to the synthesizer and into the report; what changes is that its **silence stops
+counting** — the files it never reached are not cleared, and it is not tallied as
+a dissenter on a finding it never saw. Getting this wrong has gone both ways
+here: a truncated grok review once scored as complete, and the fix for that then
+threw partial reviews away entirely.
+
+So if your CLI can stop early with text already in hand, emit both. `agents.d/grok.sh`
+checks `stopReason` and appends the marker after the text; `agents.d/codex.sh`
+prints whatever reached its `-o` file before the timeout killed it, then the
+marker. Reserve `DID NOT COMPLETE` for the case where you genuinely have nothing.
+
 Then, before you trust it:
 
 ```

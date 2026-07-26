@@ -33,7 +33,17 @@ run_codex() {
   # adapter returned "". Downstream that reads as "found nothing", the worst
   # thing an adapter can do. Say what happened instead.
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-    echo "DID NOT COMPLETE, codex was killed at the ${TIMEOUT}s timeout. Raise CADRE_TIMEOUT."
+    # ★ Killed, but -o may already hold review text. Printing only the timeout
+    # line threw those findings away. Emit them, then _TRUNCATED: the review is
+    # real but its silence about a file means "never got there", not "clean".
+    # docs/ADDING-AN-AGENT.md, "Say which kind of nothing you have".
+    if [ -s "$last" ]; then
+      cat "$last"
+      echo
+      echo "_TRUNCATED, codex was killed at the ${TIMEOUT}s timeout; this review is INCOMPLETE, not a clean pass. Raise CADRE_TIMEOUT._"
+    else
+      echo "DID NOT COMPLETE, codex was killed at the ${TIMEOUT}s timeout with no output. Raise CADRE_TIMEOUT."
+    fi
   elif [ ! -s "$last" ]; then
     echo "DID NOT COMPLETE, codex exited $rc and wrote no output."
   else

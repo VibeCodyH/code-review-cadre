@@ -144,7 +144,11 @@ run_gauntlet() {
       # every run" and earn a primary slot.
       if [ ! -s "$rf" ]; then
         unusable=$((unusable + 1))
-        local why="no output"; [ -s "$rf.failed" ] && why="the adapter failed, see $sl-run$n.md.failed"
+        # Which kind of nothing. "no output" for a run that stopped partway is
+        # a false statement about the model, and the fix is one file test.
+        local why="no output"
+        [ -s "$rf.failed" ] && why="the adapter failed, see $sl-run$n.md.failed"
+        [ -s "$rf.partial" ] && why="stopped early, partial review in $sl-run$n.md.partial, not scored"
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
         continue
       fi

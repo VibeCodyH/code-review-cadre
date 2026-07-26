@@ -226,6 +226,41 @@ rate_limited() {
   grep -qiE '(\b(429|529)\b|too many requests|rate[ _-]?limit[a-z]*([ _-](exceeded|reached|hit|error))?|quota (exceeded|exhausted)|exceeded your [a-z ]{0,20}quota|resource[ _-]exhausted|retry[- ]after|slow down|overloaded|capacity constraints|AI_RetryError)' "$f"
 }
 
+# Classify one agent run: ok | degraded | failed. THE one copy of this rule.
+#
+# ★ Three states, not two. A reviewer that ran but stopped early holds real
+# findings AND coverage it never reached, and both halves matter: the findings
+# are worth reading, and its SILENCE about a file is not clearance. Collapsing
+# it into "ok" is the bug that already shipped (a partial grok review scored as
+# complete). Collapsing it into "failed" is the overcorrection: it throws away
+# findings a reviewer actually produced.
+#
+# ★ Marker names only, no content heuristic. Deciding "did I have partial text?"
+# belongs in the ADAPTER, which is the only layer that knows -- grok prints its
+# raw JSON dump after DID NOT COMPLETE, so any "is there text before the marker"
+# test in here reads that dump as a review. The contract is in
+# docs/ADDING-AN-AGENT.md: partial text ends with _TRUNCATED, nothing at all
+# says DID NOT RUN or DID NOT COMPLETE.
+#
+# Returns 0 always. A nonzero return from $(classify_run ...) would abort a
+# caller running under set -e.
+# ★ Markers count only at the EDGES. An adapter says DID NOT RUN instead of
+# output, so it lands at the top; it appends _TRUNCATED after the text it did
+# get, so it lands at the bottom. Anywhere else it is the reviewed code or a
+# reviewer quoting one. Found by a test: a synthesis that quoted a partial
+# reviewer's marker line while explaining WHY it was partial was itself thrown
+# away as truncated -- and the synthesizer is now explicitly asked to discuss
+# exactly that. Line-anchoring alone was not enough.
+classify_run() {
+  local f="$1" rc="$2"
+  if [ "$rc" -ne 0 ] || [ ! -s "$f" ]; then echo failed; return 0; fi
+  if rate_limited "$f"; then echo failed; return 0; fi
+  if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE)'; then echo failed; return 0; fi
+  if tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
+  echo ok
+  return 0
+}
+
 # Seconds to wait before retry $1 (1-based). Exponential, capped at 10 min.
 retry_wait() {
   local base="${CADRE_RETRY_WAIT:-60}" n="$1" w

@@ -328,6 +328,41 @@ The rest of the handling follows from that:
 `--jobs N` runs reviewers concurrently. It defaults to 1 because roster members
 on the same provider share a rate limit; cadre warns when it spots two.
 
+### A reviewer can half-finish, so there are three states
+
+```
+4 reviewers: 2 ok, 1 degraded, 1 failed
+```
+
+A model that runs out of tokens partway through hands you real findings about
+the part it read, and no information at all about the rest. Cadre calls that
+**degraded** and keeps it separate from both neighbours, because collapsing it
+either way loses something:
+
+- Counting it as **ok** is a bug that shipped here. Grok appends a `_TRUNCATED`
+  marker *after* its partial text, the reject pattern did not match it, and half
+  a review scored as a whole one.
+- Counting it as **failed** is the overcorrection: it stops the overstatement by
+  binning findings a reviewer actually produced.
+
+So the partial review is kept (`<reviewer>.md.partial`), printed in full in the
+report, and handed to the synthesizer under its own delimiter. What changes is
+that **its silence stops counting.** A file it never reached is not cleared, and
+it is not tallied as a dissenter on a finding it never saw — otherwise a
+`[1/4]` tag reads as three reviewers disagreeing when it is one reviewer and two
+absences. The same relabelling applies when `CADRE_SYNTH_MAX` truncates an
+oversized review: cutting a review at 40KB makes it silent past 40KB for exactly
+the same reason.
+
+Only the adapter can tell these apart — nothing downstream can distinguish an
+empty answer from an empty failure — so the contract lives there, in
+[docs/ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md).
+
+Two deliberate exceptions. A degraded run is **not scored** in a benchmark: a
+number is a per-model claim and a run cut short is not a fair sample of the
+model. And a degraded *synthesis* is treated as a failure, because the reviews
+it was merging are already complete on disk and worth more than a partial merge.
+
 ### Re-running without re-reading: `cadre settle`
 
 Cadre reviews once and stops, so on its own it cannot put you on a treadmill.

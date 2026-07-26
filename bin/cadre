@@ -551,47 +551,82 @@ cmd_review() {
 # failure here must not cost the individual reviews: they are already on disk.
 cmd_synthesize() {
   local out="$1" synth="$2"; shift 2
-  local specs=("$@") sl body="" n=0 cap="${CADRE_SYNTH_MAX:-200000}" dead=()
+  local specs=("$@") sl body="" cap="${CADRE_SYNTH_MAX:-200000}"
+  local dead=() srcspec=() srcfile=() srcstate=() total=0
   for sp in "${specs[@]}"; do
     sl=$(slug "$sp")
-    if [ -s "$out/$sl.md" ]; then
-      body="$body===== REVIEWER: $sp ====="$'\n'"$(cat "$out/$sl.md")"$'\n\n'
-      n=$((n + 1))
+    if [ -s "$out/$sl.md" ];           then srcspec+=("$sp"); srcfile+=("$out/$sl.md");         srcstate+=(ok)
+    elif [ -s "$out/$sl.md.partial" ]; then srcspec+=("$sp"); srcfile+=("$out/$sl.md.partial"); srcstate+=(degraded)
+    else dead+=("$sp"); fi
+  done
+  local usable=${#srcspec[@]} i
+  # Partials count toward having something to merge. One full review plus one
+  # partial is still two independent looks at the diff.
+  [ "$usable" -ge 2 ] || { echo "only $usable usable review(s); nothing to synthesize."; return 0; }
+  for i in "${!srcfile[@]}"; do total=$((total + $(wc -c < "${srcfile[$i]}"))); done
+
+  # Over budget, every review gets the same byte share. ★ head -c MAKES a review
+  # partial: a full review cut at 40KB is silent about everything after 40KB for
+  # exactly the reason a truncated one is. Re-label it degraded here or the
+  # silence rule below skips the reviews this function itself just truncated.
+  local per=0
+  if [ "$total" -gt "$cap" ]; then
+    per=$(( cap / usable ))
+    echo "⚠ reviews total $total bytes, over CADRE_SYNTH_MAX ($cap). Truncating each to $per."
+  fi
+
+  local partial=() n=0 text
+  for i in "${!srcspec[@]}"; do
+    if [ "$per" -gt 0 ] && [ "$(wc -c < "${srcfile[$i]}")" -gt "$per" ]; then
+      text=$(head -c "$per" "${srcfile[$i]}"); srcstate[$i]=degraded
     else
-      dead+=("$sp")
+      text=$(cat "${srcfile[$i]}")
+    fi
+    if [ "${srcstate[$i]}" = degraded ]; then
+      # ★ A DIFFERENT delimiter, not just different prose. Under the same
+      # delimiter as a full review the synthesizer has no handle to apply a
+      # different rule to, however carefully the instructions are worded.
+      body="$body===== REVIEWER (PARTIAL, STOPPED EARLY): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
+      partial+=("${srcspec[$i]}")
+    else
+      body="$body===== REVIEWER: ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
+      n=$((n + 1))
     fi
   done
+
   # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
   # "2/2 agree", and the reader concludes the panel was unanimous when a third
   # of it never returned. The count in an attribution tag has to be out of the
   # roster, not out of the survivors.
-  local deadblock=""
   if [ ${#dead[@]} -gt 0 ]; then
-    deadblock="===== FAILED, NO REVIEW: ${dead[*]} =====
+    body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
 These roster members produced no usable review. Say so in the verdict spread.
 Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
 
 "
-    body="$body$deadblock"
   fi
-  [ "$n" -ge 2 ] || { echo "only $n usable review(s); nothing to synthesize."; return 0; }
-  if [ "${#body}" -gt "$cap" ]; then
-    echo "⚠ reviews total ${#body} bytes, over CADRE_SYNTH_MAX ($cap). Truncating each."
-    body=""
-    local per=$(( cap / n ))
-    for sp in "${specs[@]}"; do
-      sl=$(slug "$sp"); [ -s "$out/$sl.md" ] || continue
-      body="$body===== REVIEWER: $sp ====="$'\n'"$(head -c "$per" "$out/$sl.md")"$'\n\n'
-    done
-    # ★ Re-append. Rebuilding body from the reviews alone dropped the
-    # failed-reviewer block, so a truncated synthesis silently went back to
-    # reporting agreement among the survivors as if they were the whole panel.
-    body="$body$deadblock"
+  # ★ A partial reviewer breaks the agreement MATH, not just the prose, and in
+  # the direction nobody checks. Tagging a finding [1/4] when two of the four
+  # stopped before reaching that file reads as three dissents; it is one
+  # reviewer and two absences. The rule travels with the body, beside the
+  # delimiter it governs, because the list of who is partial is per-run.
+  if [ ${#partial[@]} -gt 0 ]; then
+    body="$body===== PARTIAL REVIEWS: ${partial[*]} =====
+These stopped partway through, out of tokens or time. Their text is a real
+review of the part they reached. Rules for them, unlike a complete review:
+  - Count a partial reviewer in a finding's denominator ONLY where it raised
+    that finding. Its silence is neither agreement, disagreement, nor clearance.
+  - Never list one under Disagreements for something it simply did not mention.
+  - Say in the verdict spread that it stopped early, and give no overall verdict
+    on its behalf.
+
+"
   fi
 
   local pf="$out/.synth-prompt" raw attempt=1 w
   { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
-  echo "synthesizing $n review(s) with $synth ..."
+  local pcount=""; [ ${#partial[@]} -gt 0 ] && pcount=" + ${#partial[@]} partial"
+  echo "synthesizing $n review(s)$pcount with $synth ..."
   local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
   [ -n "$m" ] && mm=(-M "$m")
   local rc=0
@@ -606,14 +641,15 @@ Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
     sleep "$w"; attempt=$((attempt + 1))
   done
   rm -f "$pf"
-  # ★ Same classification the reviewers get. An auth error or an exhausted
-  # retry is NON-EMPTY text, so testing only for emptiness filed the error
-  # itself as synthesis.md and the reader saw a merged review that was really
-  # a 429. The synthesizer is a model; it fails like one.
+  # ★ Same classifier the reviewers get. An auth error or an exhausted retry is
+  # NON-EMPTY text, so testing only for emptiness filed the error itself as
+  # synthesis.md and the reader saw a merged review that was really a 429. The
+  # synthesizer is a model; it fails like one.
+  # ★ Deliberately NOT three-state: only `ok` survives here. A partial merge is
+  # worthless in a way a partial review is not, because the reviews it was
+  # merging are already on disk and complete. Fail closed and keep them.
   printf '%s' "$raw" > "$out/.synth-tmp"
-  if [ "$rc" -ne 0 ] || [ -z "$raw" ] \
-     || grep -qE '^(DID NOT RUN|DID NOT COMPLETE|_TRUNCATED)' "$out/.synth-tmp" \
-     || rate_limited "$out/.synth-tmp"; then
+  if [ "$(classify_run "$out/.synth-tmp" "$rc")" != ok ]; then
     mv "$out/.synth-tmp" "$out/synthesis.md.failed"
     echo "synthesis FAILED (rc=$rc), kept as synthesis.md.failed." >&2
     echo "The individual reviews are intact in $out." >&2

@@ -329,19 +329,25 @@ run_one() {
   done
   took=$(( $(date +%s) - start ))
 
-  # Same classification as the benchmark path, including _TRUNCATED: a partial
-  # review must never be reported as a clean one.
-  if [ "$rc" -ne 0 ] || [ ! -s "$f.part" ] \
-     || grep -qE '^(DID NOT RUN|DID NOT COMPLETE|_TRUNCATED)' "$f.part" \
-     || rate_limited "$f.part"; then
-    mv "$f.part" "$f.failed"
-    echo "failed" > "$st"
-    echo "  $spec: FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed")" >> "$log"
-  else
-    mv "$f.part" "$f"
-    echo "ok" > "$st"
-    echo "  $spec: $(wc -c < "$f") bytes in ${took}s" >> "$log"
-  fi
+  # Same classification as the benchmark path, in the same function. A partial
+  # review lands at $f.partial, NOT at $f: every "is there a clean review here"
+  # test downstream is `[ -s "$sl.md" ]`, so naming it anything else is what
+  # keeps a truncated review out of the agreement math by construction.
+  local state; state=$(classify_run "$f.part" "$rc")
+  case "$state" in
+    ok)
+      mv "$f.part" "$f"
+      echo ok > "$st"
+      echo "  $spec: $(wc -c < "$f") bytes in ${took}s" >> "$log" ;;
+    degraded)
+      mv "$f.part" "$f.partial"
+      echo degraded > "$st"
+      echo "  $spec: DEGRADED after ${took}s, stopped early, partial review kept as $(basename "$f.partial")" >> "$log" ;;
+    *)
+      mv "$f.part" "$f.failed"
+      echo failed > "$st"
+      echo "  $spec: FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed")" >> "$log" ;;
+  esac
   rm -rf "$dir"
 }
 
@@ -370,16 +376,30 @@ REPORT="$OUT/report.md"
   echo
 } > "$REPORT"
 
-ok_count=0 fail_count=0
+ok_count=0 degraded_count=0 fail_count=0
 for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
-  if [ "$(cat "$OUT/.status-$sl" 2>/dev/null)" = ok ]; then
-    ok_count=$((ok_count + 1)); echo "- \`$spec\` — ok" >> "$REPORT"
-  else
-    fail_count=$((fail_count + 1))
-    echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT"
-  fi
+  case "$(cat "$OUT/.status-$sl" 2>/dev/null)" in
+    ok)
+      ok_count=$((ok_count + 1)); echo "- \`$spec\` — ok" >> "$REPORT" ;;
+    degraded)
+      degraded_count=$((degraded_count + 1))
+      echo "- \`$spec\` — **DEGRADED**, stopped early. Its findings are real; its" >> "$REPORT"
+      echo "  silence is not. See \`$sl.md.partial\`." >> "$REPORT" ;;
+    *)
+      fail_count=$((fail_count + 1))
+      echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT" ;;
+  esac
 done
+
+# ★ Spell out what degraded costs the reader, once, where the counts are. The
+# tempting read of a short partial review is "it looked and found little".
+[ "$degraded_count" -gt 0 ] && {
+  echo >> "$REPORT"
+  echo "> A **DEGRADED** reviewer ran out of tokens or time partway through. Read" >> "$REPORT"
+  echo "> what it found, but do not count the files it never mentioned as cleared," >> "$REPORT"
+  echo "> and do not read it as disagreeing with anything it never reached." >> "$REPORT"
+}
 
 # CodeRabbit ships its own review contract and takes no prompt, so its row is
 # not answering the same question as the others. Say so where it is read.
@@ -394,6 +414,11 @@ for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
   { echo; echo "## $spec"; echo; } >> "$REPORT"
   if [ -s "$OUT/$sl.md" ]; then cat "$OUT/$sl.md" >> "$REPORT"
+  # ★ A partial review is printed IN FULL, not truncated to 20 lines like a
+  # failure. It is a review; it is just not a complete one.
+  elif [ -s "$OUT/$sl.md.partial" ]; then
+    echo "_DEGRADED. Stopped early, so this covers only part of the diff._"$'\n' >> "$REPORT"
+    cat "$OUT/$sl.md.partial" >> "$REPORT"
   else echo "_FAILED. Not a clean review._"$'\n' >> "$REPORT"
        head -20 "$OUT/$sl.md.failed" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
   fi
@@ -401,6 +426,9 @@ done
 
 rm -f "$OUT"/.log-* "$OUT"/.status-*
 echo
-echo "$ok_count ok, $fail_count failed. Report: $REPORT"
-[ "$ok_count" -gt 0 ] || { echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }
+echo "$ok_count ok, $degraded_count degraded, $fail_count failed. Report: $REPORT"
+# Degraded counts toward having something to synthesize: partial findings are
+# still findings. Only a panel with nothing at all is a dead run.
+[ $((ok_count + degraded_count)) -gt 0 ] || {
+  echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }
 exit 0

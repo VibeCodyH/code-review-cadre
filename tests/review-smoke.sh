@@ -17,11 +17,11 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 SANDBOX=$(mktemp -d) || exit 1
 trap 'rm -rf "$SANDBOX"' EXIT
 
-# One stub agent that echoes what it can see, one that truncates.
+# One stub agent that echoes what it can see, one that truncates, one that dies.
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
-  for n in good good2 trunc; do
+  for n in good good2 trunc dead echoer; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -38,6 +38,21 @@ run_trunc() {
   echo
   echo "_TRUNCATED, grok stopped early (stopReason=MaxTokens); this review is INCOMPLETE, not a clean pass._"
 }
+A
+  # ★ Nothing to salvage, but it PRINTS raw output after the marker, the way
+  # agents.d/grok.sh dumps its JSON. Any "is there text before the marker"
+  # heuristic reads that dump as a review and files this as a partial. The
+  # marker name is the discriminator precisely so this case stays failed.
+  cat > "$1/agents.d/dead.sh" <<'A'
+run_dead() {
+  echo "DID NOT COMPLETE, no text returned (stopReason=Error). Raw:"
+  echo '{"error":"upstream","detail":"a wall of raw output that is not a review"}'
+}
+A
+  # Echoes the prompt it was handed, so a test can assert on what the
+  # synthesizer was actually TOLD rather than on a stub's invented answer.
+  cat > "$1/agents.d/echoer.sh" <<'A'
+run_echoer() { printf '%s\n' "$prompt"; }
 A
 }
 
@@ -79,7 +94,7 @@ mkdir -p "$S/src"; echo new > "$S/src/newfeature.js"      # untracked
 echo 'SECRET=1' > "$S/.env.local"; echo '.env.local' >> "$S/.gitignore"
 echo noise > "$S/debug.log"                                # ignored
 BEFORE="$(git -C "$S" status --porcelain | md5sum)$(git -C "$S" rev-parse HEAD)"
-OUT=$(run_cadre "$D" review --roster good,trunc,ghost --base main "$S")
+OUT=$(run_cadre "$D" review --roster good,trunc,dead,ghost --base main "$S")
 R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
 G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
 check "source repo untouched"        "[ \"\$BEFORE\" = \"\$(git -C '$S' status --porcelain | md5sum)\$(git -C '$S' rev-parse HEAD)\" ]"
@@ -89,9 +104,24 @@ check "untracked file in the DIFF"   "grep -q 'src/newfeature.js' '$R'/report.md
 check "gitignored secret excluded"   "! grep -q 'env.local' '$G'"
 check "ignored log excluded"         "! grep -q 'debug.log' '$G'"
 check ".env.example did not refuse"  "[ -n '$G' ]"
-check "truncated review -> FAILED"   "ls '$R'/trunc-*.md.failed >/dev/null 2>&1"
 check "missing agent -> FAILED"      "grep -q 'NOT INSTALLED' '$R'/ghost-*.failed"
-check "all 3 roster rows in report"  "[ \$(grep -c '^- \`' '$R/report.md') -eq 3 ]"
+check "all 4 roster rows in report"  "[ \$(grep -c '^- \`' '$R/report.md') -eq 4 ]"
+
+# ---- three-state reviewer health ---------------------------------------------
+# ★ The truncated case used to assert .md.failed. That was the overcorrection for
+# a partial grok review scoring as COMPLETE: it stopped the overstatement by
+# throwing the findings away. Both halves are wrong, so it is its own state now.
+check "truncated -> .partial not .failed" "ls '$R'/trunc-*.md.partial >/dev/null 2>&1"
+check "truncated is NOT a clean review"   "! ls '$R'/trunc-*.md >/dev/null 2>&1"
+check "partial findings kept, not binned" "grep -q 'partial finding' '$R'/trunc-*.md.partial"
+check "DEGRADED row in the report"        "grep -q 'DEGRADED' '$R/report.md'"
+check "report says silence is not clean"  "grep -q 'silence is not' '$R/report.md'"
+check "partial review body in report"     "grep -q 'partial finding' '$R/report.md'"
+check "counts name all three states"      "grep -qE '1 ok, 1 degraded, 2 failed' <<<\"\$OUT\""
+# ★ Marker name decides, not content. This stub prints a raw dump AFTER its
+# marker; a "text before the marker" heuristic would file it as a partial.
+check "DID NOT COMPLETE + raw -> FAILED"  "ls '$R'/dead-*.md.failed >/dev/null 2>&1"
+check "dead reviewer has no .partial"     "! ls '$R'/dead-*.md.partial >/dev/null 2>&1"
 # ★ The checkout is synthetic, so its shas die with it. The manifest has to name
 # commits that still resolve in the user's repo or it is not provenance.
 MB=$(grep '^base:' "$R/manifest.txt" | awk '{print $2}')
@@ -341,7 +371,8 @@ check "empty box says so"           "grep -q 'none of cadre.s adapters' <<<\"\$O
 
 echo "== ★ one-reviewer nudge (data, not a warning) =="
 D=$(case_dir nudge)
-rm -f "$D/bin/good2" "$D/bin/trunc" "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh"
+rm -f "$D/bin/good2" "$D/bin/trunc" "$D/bin/dead" "$D/bin/echoer" \
+      "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh" "$D/agents.d/dead.sh" "$D/agents.d/echoer.sh"
 OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
 check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""
@@ -373,6 +404,36 @@ check "onboard rejects bad options"  "! CADRE_HOME='$D/state' '$ROOT/bin/cadre' 
 # It prints and exits. Writing config or touching a key is the one thing it
 # must never do, so no run of it may create anything under the user's config.
 check "onboard wrote nothing"        "[ ! -e '$D/state/reviews' ]"
+
+echo "== ★ a partial reviewer must not corrupt the agreement math =="
+# The synthesizer is told the counts. If a partial review arrives under the same
+# delimiter as a complete one, tagging a finding [1/3] reads as two dissents when
+# really it is one reviewer and two absences. `echoer` replays the prompt it was
+# handed, so these assert on what the synthesizer was TOLD, not on a stub's answer.
+D=$(case_dir synth_partial); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good,good2,trunc,dead --synth echoer --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+P="$R/synthesis.md"
+check "synthesis ran with a partial"   "[ -s '$P' ]"
+check "partial gets its OWN delimiter" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): trunc' '$P'"
+check "complete reviews stay plain"    "grep -qE '^===== REVIEWER: good =====' '$P'"
+check "partial text still delivered"   "grep -q 'partial finding' '$P'"
+check "silence is not a denominator"   "grep -q 'ONLY where it raised' '$P'"
+check "silence is not a disagreement"  "grep -q 'Never list one under Disagreements' '$P'"
+check "dead reviewer still declared"   "grep -q 'FAILED, NO REVIEW: dead' '$P'"
+check "counts are out of the roster"   "grep -q 'out of 4 reviewers' '$P'"
+check "run line counts the partial"    "grep -q '2 review(s) + 1 partial' <<<\"\$OUT\""
+
+# ★ Over the byte cap, `head -c` MAKES a review partial: it goes silent about
+# everything past the cut for the same reason a truncated one does. Re-labelled,
+# or the rule above skips the very reviews this code truncated.
+OUT=$(CADRE_SYNTH_MAX=100 run_cadre "$D" review --roster good,good2 --synth echoer \
+        --base main --label capped "$S")
+P="$D/state/reviews/capped/synthesis.md"
+check "cap truncation is announced"    "grep -q 'over CADRE_SYNTH_MAX' <<<\"\$OUT\""
+check "a cut review is marked PARTIAL" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): good' '$P'"
+check "and the silence rule travels"   "grep -q 'ONLY where it raised' '$P'"
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
