@@ -43,6 +43,30 @@ trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[
 spec_agent() { printf '%s' "${1%%:*}"; }
 spec_model() { local s="$1"; [ "${s#*:}" = "$s" ] || printf '%s' "${s#*:}"; }
 
+# Is this adapter runnable here? ASK AGENTCALL -- never test the adapter name
+# with command -v. An adapter may run a binary it is not named after: cursor's
+# runs `agent`, kiro's runs `kiro-cli`. Testing the name declares those missing
+# on a machine where they work, which is the most confusing failure available
+# because it names a tool the user can see on their own PATH. agentcall owns the
+# adapter contract, so agentcall answers. Three call sites got this wrong
+# independently; this is the one copy so there is no fourth.
+#
+# ★ Captured, NOT piped into grep -q. Under `set -o pipefail` a -q consumer
+# exits on the first match, agentcall takes SIGPIPE, and the whole pipeline
+# reports failure -- so every adapter whose name sorted early enough to match
+# was declared NOT INSTALLED. The suite caught that at 43 failures.
+# CADRE_AGENTS_D has to travel, or agentcall answers about a different set of
+# adapters than the one about to run.
+agent_installed() {
+  local inst
+  inst=$(CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
+         "$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null)
+  case $'\n'"$inst"$'\n' in
+    *$'\n'"$1"$'\n'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ★ Which MODEL FAMILY a roster slot actually is, which is not the same question
 # as which CLI it runs. A panel is worth exactly its independence, and the fastest
 # way to lose that without noticing is to add a harness that fronts models you

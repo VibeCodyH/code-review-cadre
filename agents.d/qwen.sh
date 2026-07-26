@@ -17,6 +17,15 @@ and it correctly lands in `failed`. The 53/55 branch below is kept for a future
 version that emits both, and is unreachable today -- do not read it as evidence
 qwen can produce a degraded reviewer. It cannot, same as every adapter here
 except grok.
+★ --max-session-turns -1 is passed on purpose, and it is NOT in `qwen --help`.
+The turn budget is unlimited by DEFAULT -- in 0.21.0 the resolution is
+`argv.maxSessionTurns ?? settings.model.maxSessionTurns ?? -1` -- but the middle
+term is a user-level `~/.qwen/settings.json`, so anyone who has ever capped
+turns for their own interactive use silently caps every cadre review too, and
+the failure mode is the unsalvageable one above. Pinning it on argv restores the
+default for this call without reading or writing the user's config, which cadre
+must never touch. A review makes dozens of tool calls; interactive caps are set
+much lower than that.
 NOTES
 }
 
@@ -24,7 +33,8 @@ run_qwen() {
   local out errf rc text sub err m=()
   [ -n "$model" ] && m=(--model "$model")
   if [ -n "$DRY" ]; then
-    _run timeout -k 30 "$TIMEOUT" qwen "${m[@]}" --yolo --output-format json
+    _run timeout -k 30 "$TIMEOUT" qwen "${m[@]}" --yolo \
+         --max-session-turns -1 --output-format json
     return 0
   fi
   out=$(mktemp); errf=$(mktemp)
@@ -41,7 +51,8 @@ run_qwen() {
   # copy cadre is about to delete.
   ( cd "$dir" && printf '%s' "$prompt" \
       | QWEN_CODE_SUPPRESS_YOLO_WARNING=1 timeout -k 30 "$TIMEOUT" \
-        qwen "${m[@]}" --yolo --output-format json ) > "$out" 2> "$errf"
+        qwen "${m[@]}" --yolo --max-session-turns -1 \
+             --output-format json ) > "$out" 2> "$errf"
   rc=$?
   text=$(jq -r 'if type=="array" then ([.[] | select(.type=="result")] | last | .result // "") else "" end' "$out" 2>/dev/null)
   sub=$(jq -r 'if type=="array" then ([.[] | select(.type=="result")] | last | .subtype // "") else "" end' "$out" 2>/dev/null)

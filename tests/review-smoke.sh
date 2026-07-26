@@ -412,6 +412,25 @@ check "--installed omits phantom"  "! grep -qx phantom <<<\"\$INST\""
 # folding it into the name column shifts installed rows against the rule.
 check "columns still line up"      "[ \$(grep -c '^. [a-z0-9]* *(no notes)' <<<\"\$LIST\") -ge 1 ]"
 
+echo "== ★ a judge may be an adapter that is not named after its binary =="
+# cursor's adapter runs `agent`, kiro's runs `kiro-cli`. need_judge tested the
+# ADAPTER name with command -v, so CADRE_JUDGE=cursor died as "not installed"
+# while `agent` sat on the user's PATH -- a failure that names a tool they can
+# see. Found by cursor:composer-2.5 reviewing the commit that fixed the same
+# bug at two OTHER call sites. There is one copy of the check now.
+printf 'bin_renamed() { echo good; }\nrun_renamed() { echo x; }\n' > "$D/agents.d/renamed.sh"
+INST=$(CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" "$ROOT/bin/agentcall" --installed)
+check "--installed follows bin_ override" "grep -qx renamed <<<\"\$INST\""
+jrun() {
+  CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" \
+    CADRE_JUDGE="$1" "$ROOT/bin/cadre" grade nosuchagent 2>&1
+}
+OUT=$(jrun renamed);       check "renamed judge accepted"   "! grep -q 'not installed' <<<\"\$OUT\""
+OUT=$(jrun renamed:a/b);   check "and with a model attached" "! grep -q 'not installed' <<<\"\$OUT\""
+# The check still has to REJECT, or it is not a check.
+OUT=$(jrun phantom);       check "adapter with no binary rejected" "grep -q \"'phantom' is not installed\" <<<\"\$OUT\""
+OUT=$(jrun nosuchjudge);   check "unknown judge rejected"    "grep -q 'not installed' <<<\"\$OUT\""
+
 echo "== ★ no roster names what you actually have =="
 # 'cadre panel --save' needs graded passes. Sending a first-time user there is
 # sending them down the one path that is closed to them.

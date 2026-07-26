@@ -101,7 +101,7 @@ pick_judge() {
   [ -n "$CADRE_JUDGE" ] && return 0
   local a
   for a in claude codex grok opencode; do
-    command -v "$a" >/dev/null 2>&1 && { CADRE_JUDGE="$a"; return 0; }
+    agent_installed "$a" && { CADRE_JUDGE="$a"; return 0; }
   done
   return 1
 }
@@ -110,8 +110,10 @@ need_judge() {
   # Catch a typo or a missing CLI here. Otherwise every call fails and the whole
   # pass reports UNUSABLE, which reads like a bad candidate rather than a bad
   # judge. CADRE_JUDGE may carry a model: check the agent half.
+  # ★ agent_installed, not command -v on the name: CADRE_JUDGE=cursor died as
+  # "not installed" with `agent` sitting on the user's PATH. See common.sh.
   local ja; ja=$(spec_agent "$CADRE_JUDGE")
-  command -v "$ja" >/dev/null 2>&1 || die "CADRE_JUDGE is '$CADRE_JUDGE' but '$ja' is not installed"
+  agent_installed "$ja" || die "CADRE_JUDGE is '$CADRE_JUDGE' but '$ja' is not installed"
 }
 
 cmd_passes() {
