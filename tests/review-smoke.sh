@@ -419,10 +419,13 @@ check "synthesis ran with a partial"   "[ -s '$P' ]"
 check "partial gets its OWN delimiter" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): trunc' '$P'"
 check "complete reviews stay plain"    "grep -qE '^===== REVIEWER: good =====' '$P'"
 check "partial text still delivered"   "grep -q 'partial finding' '$P'"
-check "silence is not a denominator"   "grep -q 'ONLY where it raised' '$P'"
-check "silence is not a disagreement"  "grep -q 'Never list one under Disagreements' '$P'"
+check "unraised = neither side"          "grep -q 'counts in NEITHER' '$P'"
+check "and never a Disagreement"         "grep -q 'under Disagreements' '$P'"
 check "dead reviewer still declared"   "grep -q 'FAILED, NO REVIEW: dead' '$P'"
-check "counts are out of the roster"   "grep -q 'out of 4 reviewers' '$P'"
+check "panel size stated for dead"     "grep -q 'panel was 4 reviewers' '$P'"
+check "dead kept OUT of the tags"      "grep -q 'out of every agreement tag' '$P'"
+check "raised-by-partial counts BOTH"  "grep -q 'numerator and the' '$P'"
+check "one counting rule, no conflict" "! grep -q 'not out of' '$P'"
 check "run line counts the partial"    "grep -q '2 review(s) + 1 partial' <<<\"\$OUT\""
 
 # ★ Over the byte cap, `head -c` MAKES a review partial: it goes silent about
@@ -433,7 +436,7 @@ OUT=$(CADRE_SYNTH_MAX=100 run_cadre "$D" review --roster good,good2 --synth echo
 P="$D/state/reviews/capped/synthesis.md"
 check "cap truncation is announced"    "grep -q 'over CADRE_SYNTH_MAX' <<<\"\$OUT\""
 check "a cut review is marked PARTIAL" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): good' '$P'"
-check "and the silence rule travels"   "grep -q 'ONLY where it raised' '$P'"
+check "and the silence rule travels"   "grep -q 'counts in NEITHER' '$P'"
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

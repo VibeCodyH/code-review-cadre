@@ -10,6 +10,15 @@ time partway through. What it says is a real review of the part it reached; what
 it does NOT say is missing coverage, not a clean bill of health. Rules for those
 appear with the reviews themselves.
 
+**How to count.** In every tag, the denominator is the number of reviewers whose
+silence would have meant something: every complete review, plus any partial
+reviewer that raised *this particular* finding. A reviewer that failed, and a
+partial one that never mentioned this finding, belong in neither the numerator
+nor the denominator — they did not look, and absence of a look is not a vote
+either way. Because that makes denominators vary between findings, open your
+output with one line naming the panel size and how many completed, so a small
+denominator is never read as a small panel.
+
 Produce:
 
 1. **Agreed findings.** Defects raised by more than one reviewer. Merge the

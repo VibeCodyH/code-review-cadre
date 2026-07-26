@@ -599,12 +599,15 @@ cmd_synthesize() {
 
   # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
   # "2/2 agree", and the reader concludes the panel was unanimous when a third
-  # of it never returned. The count in an attribution tag has to be out of the
-  # roster, not out of the survivors.
+  # of it never returned. The header line the prompt asks for is what carries
+  # that; these members are NOT in the tags, because a reviewer that never ran
+  # has no opinion to count either way.
   if [ ${#dead[@]} -gt 0 ]; then
     body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
-These roster members produced no usable review. Say so in the verdict spread.
-Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
+These roster members produced no usable review. Say so in the verdict spread and
+in the header line. Keep them out of every agreement tag: they neither agree nor
+disagree with anything. This panel was ${#specs[@]} reviewers, of whom $n
+returned a complete review.
 
 "
   fi
@@ -617,9 +620,11 @@ Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
     body="$body===== PARTIAL REVIEWS: ${partial[*]} =====
 These stopped partway through, out of tokens or time. Their text is a real
 review of the part they reached. Rules for them, unlike a complete review:
-  - Count a partial reviewer in a finding's denominator ONLY where it raised
-    that finding. Its silence is neither agreement, disagreement, nor clearance.
-  - Never list one under Disagreements for something it simply did not mention.
+  - On a finding one of them RAISED, it counts in both the numerator and the
+    denominator, exactly like a complete review.
+  - On a finding it never mentioned, it counts in NEITHER. It did not reach that
+    code, so its silence is not agreement, disagreement, or clearance, and the
+    denominator for that finding is smaller. Do not list it under Disagreements.
   - Say in the verdict spread that it stopped early, and give no overall verdict
     on its behalf.
 
