@@ -386,8 +386,23 @@ resolve_roster() {
   elif [ -n "${CADRE_ROSTER:-}" ]; then raw="$CADRE_ROSTER"; src="\$CADRE_ROSTER"
   elif [ -s "$CADRE_HOME/roster" ]; then raw=$(cat "$CADRE_HOME/roster"); src="$CADRE_HOME/roster"
   else
-    die "no roster. Give --roster a,b, set \$CADRE_ROSTER, or run
-     'cadre panel --save' and uncomment the lineup in $CADRE_HOME/roster."
+    # ★ 'cadre panel --save' needs registered passes, and someone hitting this
+    # on a fresh install has none. Pointing a first-time user at the one path
+    # that is closed to them reads as "this tool is not ready for you", when
+    # --roster with what they already have works immediately. Name the CLIs
+    # actually on their PATH; fall back to the old text only when there are none.
+    local inst; inst=$("$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null | paste -sd, -)
+    if [ -n "$inst" ]; then
+      die "no roster. You have these installed, so this works right now:
+
+       cadre review --roster $inst
+
+     To make it the default, put them in $CADRE_HOME/roster one per line.
+     Once you have graded passes, 'cadre panel --save' writes that file for you."
+    fi
+    die "no roster, and none of cadre's adapters are on your PATH.
+     Install a reviewer CLI first: 'agentcall --list' shows what ships.
+     With no subscription, CodeRabbit's free tier is the shortest route in."
   fi
   # ★ printf '%s\n' AND the `|| [ -n "$s" ]` guard. With neither, a value with
   # no trailing newline ("a,b,c" from --roster, or a roster file without one)
@@ -623,6 +638,26 @@ cmd_doctor() {
     echo
     echo "probing (one call per installed CLI):"
     "$CADRE_ROOT/bin/agentcall" --probe | sed 's/^/  /'
+  fi
+  # ★ Data, not a warning. One CLI is a valid setup and doctor still exits 0.
+  # But a one-model panel is the exact configuration this tool was built to
+  # measure, so state what the measurement says and let them decide.
+  local ninst
+  ninst=$("$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null | wc -l)
+  if [ "$ninst" -le 1 ]; then
+    cat <<'EOF'
+
+  one reviewer installed. That works, and cadre will run it.
+
+  Worth knowing before you decide it is enough. Tony Stone scored 294 confirmed
+  defects across 15 model versions from 8 providers: 56.8% were caught by
+  exactly ONE model, and coverage of a change's real defects ran 47% at one
+  reviewer, 72% at two, 89% at three. The second chair buys the most, and it
+  buys most when it is a different model family.
+
+  A second lineage does not need a subscription. README, "Build a whole panel
+  for free", covers CodeRabbit's free tier and six free providers.
+EOF
   fi
   echo
   echo "passes:"

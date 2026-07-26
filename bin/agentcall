@@ -17,6 +17,13 @@ set -uo pipefail
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
+# See lib/common.sh: an unset HOME under set -u is a raw bash error naming a
+# line in this file. agentcall is also called directly, so it needs its own.
+if [ -z "${CADRE_HOME:-}" ] && [ -z "${XDG_STATE_HOME:-}" ] && [ -z "${HOME:-}" ]; then
+  echo "agentcall: HOME is unset, so the default for \$CADRE_HOME cannot be
+     computed. Set CADRE_HOME explicitly, or XDG_STATE_HOME, or set HOME." >&2
+  exit 2
+fi
 CADRE_HOME="${CADRE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/cadre}"
 
 # Shipped adapters load first; a user adapter of the same name wins.
@@ -64,6 +71,7 @@ usage() {
   cat <<'EOF'
 agentcall <agent> [-d DIR] [-m ro|rw] [-M MODEL] [PROMPT]
           --list                     agents + what each is good for
+          --installed                just the names that are on your PATH
           --probe [agent ...]        auth/health check
           --print-command <agent> …  show the native invocation, run nothing
           --new <name>               scaffold an adapter
@@ -78,18 +86,36 @@ Adding an agent:
 EOF
 }
 
-list_agents() {
+# An adapter ships for every CLI cadre knows about, installed or not, so the
+# unmarked list reads as a wall of caveats about tools you do not have. The
+# adapter name IS the binary name, which is the same assumption run-review.sh
+# makes when it decides a roster member is NOT INSTALLED.
+installed_agents() {
   local a
-  printf '%-11s %s\n' AGENT 'notes (measured, not guessed)'
-  printf '%-11s %s\n' '----------' '------------------------------------------------------'
+  for a in $AGENTS; do command -v "$a" >/dev/null 2>&1 && echo "$a"; done
+}
+
+list_agents() {
+  local a n mk
+  # ★ The marker gets its own UNPADDED field. printf pads %-11s by BYTES, and
+  # ✓ is three bytes to one display column, so folding the mark into the name
+  # field shifts every installed row left by two columns against the rule and
+  # the continuation lines.
+  printf '%s %-11s %s\n' ' ' AGENT 'notes (measured, not guessed)'
+  printf '%s %-11s %s\n' ' ' '----------' '------------------------------------------------------'
   for a in $AGENTS; do
+    if command -v "$a" >/dev/null 2>&1; then mk='✓'; else mk='·'; fi
+    n="$a"
     if command -v "notes_$a" >/dev/null 2>&1; then
-      notes_"$a" | while IFS= read -r line; do printf '%-11s %s\n' "$a" "$line"; a=''; done
+      notes_"$a" | while IFS= read -r line; do
+        printf '%s %-11s %s\n' "$mk" "$n" "$line"; mk=' '; n=''
+      done
     else
-      printf '%-11s %s\n' "$a" '(no notes)'
+      printf '%s %-11s %s\n' "$mk" "$n" '(no notes)'
     fi
   done
   echo
+  echo "✓ installed and callable   · adapter ships, the CLI is not on your PATH"
   echo "shipped: $SHIPPED_D"
   echo "yours:   $USER_D  (same filename overrides a shipped adapter)"
 }
@@ -162,6 +188,8 @@ EOF
 
 case "$1" in
   --list)  list_agents; exit 0 ;;
+  # One name per line, nothing else: cadre builds roster suggestions from it.
+  --installed) installed_agents; exit 0 ;;
   --new)   shift; scaffold_agent "${1:-}"; exit 0 ;;
   --print-command) DRY=1; shift ;;
   --probe) shift; for a in ${*:-$AGENTS}; do probe_one "$a"; done; exit 0 ;;

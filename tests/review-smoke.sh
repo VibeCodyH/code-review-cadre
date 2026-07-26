@@ -307,6 +307,63 @@ check "artifact not in the checkout" "! grep -q 'build-artifact' '$G'"
 check "artifact not in source repo"  "[ ! -e '$S/build-artifact.txt' ]"
 check "work dir still cleaned"       "[ -z \"\$(ls -A '$D/work')\" ]"
 
+echo "== ★ install-aware adapter listing =="
+# An adapter ships for every CLI cadre knows about. Unmarked, the list reads as
+# a wall of caveats about tools you do not have.
+D=$(case_dir installed)
+printf 'run_phantom() { echo x; }\n' > "$D/agents.d/phantom.sh"   # adapter, no binary
+LIST=$(CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" "$ROOT/bin/agentcall" --list)
+INST=$(CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:$PATH" "$ROOT/bin/agentcall" --installed)
+check "installed adapter marked"   "grep -q '^✓ good ' <<<\"\$LIST\""
+check "absent adapter marked"      "grep -q '^· phantom' <<<\"\$LIST\""
+check "--installed lists good"     "grep -qx good <<<\"\$INST\""
+check "--installed omits phantom"  "! grep -qx phantom <<<\"\$INST\""
+# The mark is its own field: printf pads by BYTES and ✓ is three of them, so
+# folding it into the name column shifts installed rows against the rule.
+check "columns still line up"      "[ \$(grep -c '^. [a-z0-9]* *(no notes)' <<<\"\$LIST\") -ge 1 ]"
+
+echo "== ★ no roster names what you actually have =="
+# 'cadre panel --save' needs graded passes. Sending a first-time user there is
+# sending them down the one path that is closed to them.
+D=$(case_dir noroster); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --base main "$S" || true)
+check "suggests a runnable command" "grep -q 'cadre review --roster' <<<\"\$OUT\""
+check "names an installed adapter"  "grep -q 'good' <<<\"\$OUT\""
+check "still mentions panel --save" "grep -q 'panel --save' <<<\"\$OUT\""
+
+# With nothing installed there is nothing to suggest, so say that instead.
+D=$(case_dir noagents); S="$D/src"
+rm -f "$D"/bin/*
+OUT=$(CADRE_HOME="$D/state" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:/usr/bin:/bin" "$ROOT/bin/cadre" review --base main "$S" 2>&1 || true)
+check "empty box says so"           "grep -q 'none of cadre.s adapters' <<<\"\$OUT\""
+
+echo "== ★ one-reviewer nudge (data, not a warning) =="
+D=$(case_dir nudge)
+rm -f "$D/bin/good2" "$D/bin/trunc" "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh"
+OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
+        CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
+check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""
+check "nudge carries the numbers"   "grep -q '47% at one' <<<\"\$OUT\""
+check "doctor still exits 0"        "[ $RC -eq 0 ]"
+# Two installed reviewers is a panel; do not nag.
+D=$(case_dir nonudge)
+rm -f "$D/bin/trunc" "$D/agents.d/trunc.sh"
+OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
+        CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1)
+check "no nudge at two reviewers"   "! grep -q 'one reviewer installed' <<<\"\$OUT\""
+
+echo "== ★ unset HOME must name the variable, not die in bash =="
+# cron, containers and scrubbed CI runners have no HOME. set -u turned that into
+# "HOME: unbound variable" pointing into common.sh.
+OUT=$(env -i PATH=/usr/bin:/bin "$ROOT/bin/cadre" doctor 2>&1); RC=$?
+check "unset HOME names CADRE_HOME"  "grep -q 'HOME is unset' <<<\"\$OUT\""
+check "and exits 2, not a bash trap" "[ $RC -eq 2 ]"
+check "no raw unbound-variable error" "! grep -q 'unbound variable' <<<\"\$OUT\""
+OUT=$(env -i PATH=/usr/bin:/bin "$ROOT/bin/agentcall" --list 2>&1)
+check "agentcall guards HOME too"    "grep -q 'HOME is unset' <<<\"\$OUT\""
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

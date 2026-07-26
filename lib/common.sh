@@ -1,12 +1,26 @@
 # Shared helpers. Sourced by bin/cadre and the lib/ scripts.
 # shellcheck shell=bash
 
+# ★ Under set -u an unset HOME becomes "HOME: unbound variable" naming a line in
+# this file, which is a useless thing to hand someone running cadre from cron, a
+# container, or a scrubbed CI environment. Only the two defaults below need it,
+# and either can be replaced, so say which variable is actually missing. Inline
+# rather than via die(), which is not defined yet this early.
+_need_home() {
+  [ -n "${HOME:-}" ] && return 0
+  echo "cadre: HOME is unset, so the default for \$$1 cannot be computed.
+     Set $1 explicitly, or $2, or set HOME." >&2
+  exit 2
+}
+
 # Exported so lib/run-pass.sh resolves the same state dir when cadre invokes it.
+[ -n "${CADRE_HOME:-}" ] || [ -n "${XDG_STATE_HOME:-}" ] || _need_home CADRE_HOME XDG_STATE_HOME
 export CADRE_HOME="${CADRE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/cadre}"
 
 # ★ MUST be a different tree from the keys. Under $CADRE_HOME the agent's own
 # cwd spells out the layout and `cat ../../keys/$(basename $PWD).md` reaches the
 # answer. Scrubbing the environment does nothing about that. docs/METHOD.md §5.
+[ -n "${CADRE_WORK:-}" ] || [ -n "${XDG_CACHE_HOME:-}" ] || _need_home CADRE_WORK XDG_CACHE_HOME
 export CADRE_WORK="${CADRE_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/cadre/checkouts}"
 CADRE_JUDGE="${CADRE_JUDGE:-}"
 
