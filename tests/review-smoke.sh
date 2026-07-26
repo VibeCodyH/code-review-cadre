@@ -651,7 +651,7 @@ cat > "$D/agents.d/judgestub.sh" <<'A'
 run_judgestub() { echo "Sorry, I could not process that request."; }
 A
 OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1); RC=$?
-check "unparseable judge fails loudly" "grep -q 'did not return usable JSON' <<<\"\$OUT\""
+check "unparseable judge fails loudly" "grep -q 'nothing was matched' <<<\"\$OUT\""
 check "and does not exit 0"            "[ $RC -ne 0 ]"
 
 # Comment lines are notes to the human, not ledger entries.
