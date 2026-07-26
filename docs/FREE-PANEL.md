@@ -101,11 +101,14 @@ does not appear in your terminal, your shell history, or an agent's transcript.
 
 ```bash
 mkdir -p ~/.config/cadre && umask 077 && \
-  printf 'export CEREBRAS_API_KEY=%q\n' "$(wl-paste)" >> ~/.config/cadre/keys.env
+  printf 'export CEREBRAS_API_KEY=%q\n' "$(wl-paste -n)" >> ~/.config/cadre/keys.env
 ```
 
-`xclip -o -selection clipboard` on X11, `pbpaste` on macOS. Then source that
-file from your shell profile:
+`xclip -o -selection clipboard` on X11, `pbpaste` on macOS. `%q` rather than
+`%s` so a key containing a shell metacharacter still round-trips: verified
+against keys with `$`, spaces, quotes and `;&`.
+
+Then source that file from your shell profile:
 
 ```bash
 echo '[ -f ~/.config/cadre/keys.env ] && . ~/.config/cadre/keys.env' >> ~/.bashrc
