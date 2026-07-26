@@ -94,14 +94,20 @@ secrets_preflight() {
   # captured, not discarded: an unreadable subdir means the tree was not fully
   # inspected, and "clean" is then a lie.
   local errs; errs=$(mktemp)
+  # ★ The trailing ! -name tests exempt committed TEMPLATES. '.env.*' matches
+  # the '.env.example' most repos track, so without this the preflight exits 3
+  # on the first run against a real repo and the tool looks broken. A template
+  # is the one file in this list that is meant to be committed.
   hits=$(cd "$dir" && find . \
            \( -name '.git' -o -name node_modules -o -name vendor -o -name target \) -prune -o \
-           \( -name '.env' -o -name '.env.*' -o -name '.envrc' \
+           \( \( -name '.env' -o -name '.env.*' -o -name '.envrc' \
               -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \
               -o -name 'id_rsa' -o -name 'id_dsa' -o -name 'id_ecdsa' -o -name 'id_ed25519' \
               -o -name 'credentials' -o -name '*credentials*.json' -o -name 'service-account*.json' \
               -o -name '.npmrc' -o -name '.netrc' -o -name '.pypirc' -o -name '.dockercfg' \
-              -o -name 'terraform.tfstate' \) -print 2>"$errs" | head -40)
+              -o -name 'terraform.tfstate' \) \
+              ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
+              ! -name '*.dist' ! -name '*.tmpl' \) -print 2>"$errs" | head -40)
   if [ -s "$errs" ]; then
     {
       echo "cadre: refusing to run. The secrets preflight could not read all of $dir:"

@@ -115,8 +115,13 @@ for r in "${reviewers[@]}"; do
     # NO minimum length: "findings=0" and a bare "No defects found." are valid
     # reviews the brief asks for, and a length rule threw them away. Exit
     # status, an empty file, and the adapters' failure markers instead.
+    # ★ _TRUNCATED belongs here too. agents.d/grok.sh appends it AFTER partial
+    # review text when the model stopped early, so the file is non-empty, rc is
+    # 0, and the marker is not on the first line. Matching only the two DID NOT
+    # markers scored a half-finished review as a complete one, which understates
+    # the candidate. Anchored: a review that discusses truncation is not one.
     if [ "$rc" -ne 0 ] || [ ! -s "$f.part" ] \
-       || grep -qE '^(DID NOT RUN|DID NOT COMPLETE)' "$f.part" \
+       || grep -qE '^(DID NOT RUN|DID NOT COMPLETE|_TRUNCATED)' "$f.part" \
        || rate_limited "$f.part"; then
       mv "$f.part" "$f.failed"
       echo "    FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed"), not counted as a run"
