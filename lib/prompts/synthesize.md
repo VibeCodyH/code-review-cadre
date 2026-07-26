@@ -10,30 +10,34 @@ time partway through. What it says is a real review of the part it reached; what
 it does NOT say is missing coverage, not a clean bill of health. Rules for those
 appear with the reviews themselves.
 
-**How to count.** In every tag, the denominator is the number of reviewers whose
-silence would have meant something: every complete review, plus any partial
-reviewer that raised *this particular* finding. A reviewer that failed, and a
-partial one that never mentioned this finding, belong in neither the numerator
-nor the denominator — they did not look, and absence of a look is not a vote
-either way. Because that makes denominators vary between findings, open your
-output with one line naming the panel size and how many completed, so a small
-denominator is never read as a small panel.
+**How to count.** Work out the denominator SEPARATELY for each finding, before
+you write its tag. Count one reviewer for each complete review. Then add one for
+each partial reviewer that raised *this* finding, and no others. A failed
+reviewer never counts. A partial reviewer that did not name this finding never
+counts — it stopped before reaching that code, so it is not a dissenter, it is
+an absence. Denominators therefore differ between findings in the same report,
+and that is correct, not a mistake to tidy up.
 
 Produce:
 
-1. **Agreed findings.** Defects raised by more than one reviewer. Merge the
+1. **Panel line.** One line, first: how many reviewers the panel had, how many
+   returned a complete review, and how many stopped early or failed. This is
+   what tells a reader a small denominator is not a small panel.
+
+2. **Agreed findings.** Defects raised by more than one reviewer. Merge the
    wordings into one description. Tag each with the reviewers who raised it and
    the count, e.g. `[3/4: codex, claude, grok]`.
 
-2. **Single-reviewer findings.** Defects exactly one reviewer raised. Keep every
+3. **Single-reviewer findings.** Defects exactly one reviewer raised. Keep every
    one, ranked by the severity that reviewer assigned. Tag each with its source,
    e.g. `[1/4: grok]`. Do not bury these. A defect only one reviewer caught is
    the reason a panel exists, not a weaker finding.
 
-3. **Disagreements.** Anywhere one reviewer called something a defect and
-   another explicitly said the same thing was fine. Name both sides.
+4. **Disagreements.** Anywhere one reviewer called something a defect and
+   another explicitly said the same thing was fine. Name both sides. A reviewer
+   that simply never mentioned something is not disagreeing with it.
 
-4. **Verdict spread.** Each reviewer's own overall verdict, listed. Do not
+5. **Verdict spread.** Each reviewer's own overall verdict, listed. Do not
    average them into one. If they disagree, that disagreement is the result.
 
 Rules:

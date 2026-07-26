@@ -628,6 +628,15 @@ review of the part they reached. Rules for them, unlike a complete review:
   - Say in the verdict spread that it stopped early, and give no overall verdict
     on its behalf.
 
+Do the arithmetic for THIS panel. There are $n complete review(s) and ${#partial[@]} partial
+(${partial[*]}). So:
+  - a finding one of the partial reviewers raised  -> denominator $((n + 1))
+  - a finding none of them mentioned               -> denominator $n
+The second case is the one that gets written wrong. A defect only the complete
+reviewers named is tagged [x/$n], NOT [x/$((n + ${#partial[@]}))] -- writing the larger number
+there claims the partial reviewers looked at that code and declined to flag it,
+which is exactly backwards.
+
 "
   fi
 
