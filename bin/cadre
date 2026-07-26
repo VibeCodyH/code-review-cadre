@@ -797,8 +797,13 @@ cmd_settle() {
   # behind a judge that never ran.
   local js
   js=$(printf '%s' "$raw" | sed -n '/{/,$p' | jq -c . 2>/dev/null) || js=""
+  # ★ Two causes, one message, so say both. An adapter that truncates now exits
+  # nonzero even when the JSON it printed parses fine, and reporting that as
+  # "did not return usable JSON" describes the wrong problem to whoever has to
+  # fix it. A partial match is still refused either way: settle's exit code is a
+  # stopping rule, and half a match reads as "nothing new is left".
   if [ "$rc" -ne 0 ] || [ -z "$js" ]; then
-    echo "cadre: the judge did not return usable JSON, so nothing was matched." >&2
+    echo "cadre: the judge failed or stopped early, so nothing was matched." >&2
     printf '%s\n' "$raw" | head -5 | sed 's/^/     /' >&2
     return 1
   fi

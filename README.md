@@ -572,9 +572,11 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
   the ones that don't look like reviews — has to decide who deserves to be heard
   *before* it knows what they said. Measured here: a later panel produced a 92KB
   review that was mostly narrated tool transcript, the exact shape such a filter
-  drops. It ended in the only finding that run produced, and a real one — that the
-  ANSI strip two paragraphs up is GNU-only, so on macOS the bug it exists to catch
-  comes back silently. The noisy reviewer was the productive one. Judging
+  drops. It ended in the only finding that run produced, and a real one: cadre's
+  own escape-stripping was written with a GNU-only sed escape, so on macOS it had
+  been silently matching nothing and refiling the exact failure it exists to
+  catch. Fixed in the same commit. The noisy reviewer was the productive one, and
+  a filter that had dropped it would have dropped the finding with it. Judging
   *substance* needs a model, and a model deciding which reviewers to discount is a
   different tool with a different failure mode.
   Read the reviews, not just the synthesis.
