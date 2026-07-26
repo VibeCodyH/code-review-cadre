@@ -314,9 +314,19 @@ states the answer, every reviewer has git, and some have web access. So:
 to read the diff at all, so they can read your filesystem. Stripping the
 environment stops the key being advertised. It doesn't stop an agent that goes
 looking, and the verbatim check only catches copying, not paraphrase. Want a
-real boundary, run them in a container with only the checkout mounted. And no
-harness can tell you whether your target's bug is already described in a public
-issue. That one's on you when you pick the target.
+real boundary, run them in a container with only the checkout mounted.
+
+The credential check is narrower than it sounds, too: it matches file *names*,
+not contents. `.env`, `*.pem` and `id_rsa` stop the run. An API key pasted into
+`src/config.js` is a file called `config.js`, and it sails straight through. It
+catches the obvious mistake and that is all it claims. Cadre is not a secret
+scanner and doesn't ship one, because a scanner binary is a heavy dependency for
+a tool that is otherwise a shell script you can read in an afternoon. If the
+tree might be holding a hardcoded credential, run `gitleaks dir` over it
+yourself before you point a panel at it.
+
+And no harness can tell you whether your target's bug is already described in a
+public issue. That one's on you when you pick the target.
 
 ### Nothing phones home
 
@@ -393,6 +403,7 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
   evidence behind it. Who speaks on your PRs is your call.
 - No cost estimate in dollars. `cadre run` prints a call count and that's it.
 - No resume past skipping outputs that already exist.
+- No secret scanning. The credential check reads filenames, not contents.
 - No sandbox. See above, and mean it.
 
 ## Adding a reviewer
