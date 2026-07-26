@@ -89,6 +89,46 @@ Reaching any of them is an `opencode` provider entry plus one key, and then they
 are ordinary specs: `opencode:cerebras/gpt-oss-120b`. No adapter needed. See
 [opencode's provider docs](https://opencode.ai/docs/providers).
 
+**Or judge locally, and pay nobody.** Point an `opencode` provider at Ollama's
+OpenAI-compatible endpoint and the judge never leaves your network. In
+`~/.config/opencode/opencode.json`, with no API key because Ollama wants none:
+
+```json
+{ "provider": { "ollama": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "Local Ollama",
+    "options": { "baseURL": "http://localhost:11434/v1" },
+    "models": {
+      "qwen3-judge": {
+        "name": "qwen3:14b judge (local)",
+        "limit": { "context": 24576, "output": 8192 }
+      }
+    }
+} } }
+```
+
+```bash
+export CADRE_JUDGE=opencode:ollama/qwen3-judge
+```
+
+Measured on a 12GB RTX 3060 with `qwen3:14b`: two runs over the same review,
+135s and 159s, both returning the identical grade. Against a couple of seconds
+from a hosted free tier that is slow, but the judge grades a review rather than
+writing one, and it runs once per review. Slow is affordable here.
+
+★ **Raise `num_ctx` first.** Ollama defaults to roughly 4K, which silently
+truncates the rubric before the review is even read, and you get confident
+nonsense rather than an error. The OpenAI-compatible endpoint has no way to set
+it per request, so bake it into a derived model once:
+
+```bash
+printf 'FROM qwen3:14b\nPARAMETER num_ctx 24576\nPARAMETER temperature 0\n' > Modelfile
+ollama create qwen3-judge -f Modelfile
+```
+
+Temperature 0 because grading is bookkeeping and you want the same review to
+score the same way twice.
+
 **Free tiers are the cheapest route to the thing that actually matters here: a
 model lineage you do not already have.** Four free models from four families
 beat two paid ones from the same lab.
@@ -232,6 +272,43 @@ looking, and the verbatim check only catches copying, not paraphrase. Want a
 real boundary, run them in a container with only the checkout mounted. And no
 harness can tell you whether your target's bug is already described in a public
 issue. That one's on you when you pick the target.
+
+### Nothing phones home
+
+Cadre makes no network calls of its own. The only things that leave your
+machine are the agent CLIs you invoke, talking to the providers you configured,
+which they would do anyway. No telemetry, no analytics, no version check, no
+crash reporter. Don't take our word for it:
+
+```bash
+git grep -nE 'curl|wget|http' -- bin lib agents.d     # returns nothing
+```
+
+The one line that looks like an exception isn't. `make-pass` runs `git clone`,
+but against `file://` on a path already on your disk, because a shallow local
+clone is how a checkout gets pinned with no future history in it. There is no
+remote for it to reach.
+
+**One feature has been proposed that would change that, and the shape of it is
+public now** so that it can never arrive as a surprise. Panels get more useful
+as more people run them: which model families fail on different things is a
+fact about the population, and no single user can measure it from one repo. So
+the proposal is an upload of the grade matrix, and if it is ever built:
+
+- **Off by default.** An explicit flag or config setting. Never a prompt on
+  install, never a nag.
+- **`--dry-run` prints the exact bytes** that would be sent, offline, before
+  anything is switched on.
+- **No source, no diffs, no file paths, no key text, no review text, no repo
+  name, no remote URL, no commit SHAs, no hostname or username.** Grades,
+  counts, and model identifiers, and that is the whole list.
+- **Whatever gets collected gets published back free**, to contributors and
+  non-contributors alike.
+
+None of it is built and it may never be. It is tracked in
+[issue #1](https://github.com/VibeCodyH/code-review-cadre/issues/1), and it gets
+built only if people running Cadre ask for it. If you would rather it never
+existed, saying so there is the way to kill it.
 
 ## Receipts: we ran it on this repo first
 
