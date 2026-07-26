@@ -32,6 +32,22 @@ reviewer you are still missing.
 What you want from reviewer number four is not a better score. It is a DIFFERENT
 set of failures.
 
+Somebody measured that on a real corpus and published it. Tony Stone's
+[A Single LLM Is an Incomplete Code Reviewer](https://doi.org/10.5281/zenodo.21328807)
+(v2) scored 294 confirmed defects across 15 model versions from 8 providers.
+**56.8% were caught by exactly one model.** Coverage of a change's real defects
+ran 47% at one reviewer, 72% at two, 89% at three, with the steps shrinking fast
+after that, and no large sample model in it exceeded 61% recall. Plan for one
+reviewer finding about half to two thirds of what is actually there, and if you
+only ever add one chair, the second one buys the most.
+
+Read that saturation carefully though, because it counts REVIEWERS and not
+lineages, and six of its eight providers still owned defects no other one found.
+A fourth chair from a family you don't have is not the same purchase as a fourth
+chair. [Staffing the panel](#staffing-the-panel) has the one this repo caught
+that way. And it is a preprint, one team, one codebase, LLM drafted answer keys
+with the conflict disclosed, so take it as directional and not as a benchmark.
+
 ## What Cadre actually does
 
 - **Mines your history for real bugs.** Finds commits where the author broke
@@ -312,6 +328,49 @@ The rest of the handling follows from that:
 `--jobs N` runs reviewers concurrently. It defaults to 1 because roster members
 on the same provider share a rate limit; cadre warns when it spots two.
 
+### Re-running without re-reading: `cadre settle`
+
+Cadre reviews once and stops, so on its own it cannot put you on a treadmill.
+Wrap it in a loop, which is the normal way to use a review tool on a branch that
+is still moving, and every run re-raises the findings you already looked at and
+decided against. The reviewers have no memory. You are the only thing that
+remembers, and being the memory is what makes review loops unbearable.
+
+So write down what you ruled on, in `$CADRE_HOME/ledger`:
+
+```
+L1 | wontfix  | timestamps are strings from neon-http, callers wrap them
+L2 | accepted | missing test for the retry path, tracked in #412
+```
+
+Then split a review into what is genuinely new and what you have already
+answered:
+
+```bash
+cadre settle .local/state/cadre/reviews/review-abc-1
+```
+
+```
+NEW (2 of 3):
+  - Migration exit code not checked in run.sh
+  - Inconsistent import ordering in db.ts
+
+already settled (1 of 3), shown so you can check the match:
+  - [L1] Timestamps from neon-http are strings, comparing to Date fails
+```
+
+Settled findings are shown, not hidden, so you can catch a bad match. **It
+exits 0 when nothing is new**, which is the part a wrapper wants: that is your
+stopping rule, and it is a fact about what you have already decided rather than
+a model's opinion about whether the code is good enough.
+
+Two deliberate limits. **Nothing writes to the ledger but you.** A tool that
+files its own dismissals will eventually dismiss something real, and the entire
+value of the file is that a person decided. And the matcher errs toward NEW: a
+finding it cannot confidently place is new, because showing you a duplicate
+costs a second of reading while wrongly filing a live defect under a decision
+you made about something else costs you the defect.
+
 ## When you hit a rate limit
 
 Cadre expects this. A reply that looks like a rate-limit refusal is retried on
@@ -442,6 +501,9 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
 ## What it doesn't do
 
 - No leaderboard. The panel is the output.
+- It does not make the review complete. A panel is a high recall first pass, not
+  a merge gate. Defects that every model misses are invisible to it, and to any
+  count of what it caught. Keep the human, the tests, and the staged rollout.
 - It doesn't change your review lineup. It prints a recommendation and the
   evidence behind it. Who speaks on your PRs is your call.
 - No cost estimate in dollars. `cadre run` prints a call count and that's it.

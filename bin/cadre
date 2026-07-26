@@ -15,6 +15,8 @@
 #   cadre agents                          list adapters
 #   cadre doctor [--probe]                check the install and the passes
 #   cadre onboard [--brief]               add a second reviewer for free
+#   cadre ledger [show|path]              findings you have already ruled on
+#   cadre settle <review> [--judge spec]  split a review into NEW vs settled
 #
 # <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 # Recommends. Never changes your review lineup. See README.md.
@@ -59,6 +61,9 @@ then run that panel on the code you are about to ship.
   cadre onboard [--brief]               walk through adding a second reviewer
                                         for free. --brief prints a prompt to
                                         hand your own coding agent instead.
+  cadre ledger [show|path]              findings you have already ruled on
+  cadre settle <review> [--judge spec]  split a review into NEW vs already
+                                        settled. Exits 0 when nothing is new.
 
 <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 
@@ -623,6 +628,121 @@ Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
   echo "saved: $out/synthesis.md"
 }
 
+# ---- the settled-decisions ledger --------------------------------------------
+#
+# ★ Cadre reviews once and stops, so on its own it cannot treadmill. The moment
+# something WRAPS it in a loop, which is the normal way people use a review tool
+# on a branch, every re-run re-raises findings the human already dismissed. The
+# reviewers have no memory; the human is the only thing that remembers, and
+# making them remember is how a review loop becomes unbearable.
+#
+# The ledger is a human-written file. Nothing writes to it automatically: a tool
+# that files its own dismissals will eventually dismiss something real, and the
+# whole value here is that a person decided. `cadre settle` only READS it.
+LEDGER_HELP='One finding per line:
+
+    <id> | <disposition> | <description>
+
+  L1 | wontfix  | timestamps are strings from neon-http, callers wrap them
+  L2 | accepted | missing test for the retry path, tracked in #412
+
+disposition is yours; cadre does not interpret it.'
+
+ledger_path() { echo "${CADRE_LEDGER:-$CADRE_HOME/ledger}"; }
+
+cmd_ledger() {
+  local lp; lp=$(ledger_path)
+  case "${1:-show}" in
+    show)
+      if [ ! -s "$lp" ]; then
+        echo "no ledger at $lp"; echo; echo "$LEDGER_HELP"; return 0
+      fi
+      echo "$lp"; echo
+      # Comments and blanks are the user's; print the file as they wrote it.
+      cat "$lp" ;;
+    path) echo "$lp" ;;
+    *) die "ledger: expected 'show' or 'path'" ;;
+  esac
+}
+
+# Split one review into SETTLED / NEW against the ledger. Read-only, and it
+# never edits the review: the finding stays on disk exactly as written.
+cmd_settle() {
+  local review="" judge="${CADRE_JUDGE:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --judge) judge="${2:?--judge needs an agent spec}"; shift 2 ;;
+      -*) die "settle: unknown option '$1'" ;;
+      *)  review="$1"; shift ;;
+    esac
+  done
+  [ -n "$review" ] || die "usage: cadre settle <review-file-or-dir> [--judge spec]"
+
+  # A review directory is the normal thing to have: point at the report.
+  [ -d "$review" ] && review="$review/report.md"
+  [ -s "$review" ] || die "no review to read at $review"
+
+  local lp; lp=$(ledger_path)
+  [ -s "$lp" ] || die "no ledger at $lp, so there is nothing settled yet.
+
+     $LEDGER_HELP"
+
+  [ -n "$judge" ] || { pick_judge || true; judge="${CADRE_JUDGE:-}"; }
+  [ -n "$judge" ] || die "settle needs a judge. Set \$CADRE_JUDGE or pass --judge."
+
+  # ★ Strip comments and blanks before the model sees it. A '#' line is a note
+  # to the human, and feeding it as an entry invites a match against a comment.
+  local entries; entries=$(grep -vE '^[[:space:]]*(#|$)' "$lp")
+  [ -n "$entries" ] || die "$lp has no entries, only comments."
+
+  local pf; pf=$(mktemp)
+  { cat "$CADRE_ROOT/lib/prompts/settle.md"; echo
+    echo "===== LEDGER ====="; printf '%s\n' "$entries"; echo
+    echo "===== REVIEW ====="; cat "$review"
+  } > "$pf"
+
+  local a m mm=() raw rc
+  a=$(spec_agent "$judge"); m=$(spec_model "$judge")
+  [ -n "$m" ] && mm=(-M "$m")
+  echo "matching against $(printf '%s\n' "$entries" | wc -l) ledger entries with $judge …"
+  raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
+  rm -f "$pf"
+
+  # ★ Fail loudly. A settle pass that silently returns nothing looks exactly
+  # like "everything here is already settled", which would hide a live finding
+  # behind a judge that never ran.
+  local js
+  js=$(printf '%s' "$raw" | sed -n '/{/,$p' | jq -c . 2>/dev/null) || js=""
+  if [ "$rc" -ne 0 ] || [ -z "$js" ]; then
+    echo "cadre: the judge did not return usable JSON, so nothing was matched." >&2
+    printf '%s\n' "$raw" | head -5 | sed 's/^/     /' >&2
+    return 1
+  fi
+
+  local total new
+  total=$(printf '%s' "$js" | jq '.findings | length')
+  new=$(printf '%s' "$js" | jq '[.findings[] | select(.status != "SETTLED")] | length')
+  echo
+  if [ "$total" -eq 0 ]; then echo "no findings in that review."; return 0; fi
+
+  if [ "$new" -gt 0 ]; then
+    echo "NEW ($new of $total):"
+    printf '%s' "$js" | jq -r '.findings[] | select(.status != "SETTLED") | "  - \(.summary)"'
+  fi
+  if [ "$new" -lt "$total" ]; then
+    echo
+    echo "already settled ($((total - new)) of $total), shown so you can check the match:"
+    printf '%s' "$js" | jq -r '.findings[] | select(.status == "SETTLED")
+                               | "  - [\(.ledger_id // "?")] \(.summary)"'
+  fi
+  echo
+  echo "The review itself is unchanged at $review."
+  # ★ The exit status is the useful part for a wrapper: 0 means nothing new to
+  # look at, so a loop can stop. Non-zero means a human still has something to
+  # read. That is the stopping rule, and it is deliberately not automatic.
+  [ "$new" -eq 0 ]
+}
+
 # Exits non-zero when a pass is broken. README and docs both say doctor FAILS a
 # pass whose key sits inside the checkout, so it has to actually fail.
 # ★ Prints and exits. It never writes your opencode config and never touches a
@@ -800,6 +920,8 @@ case "${1:-}" in
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
   doctor)    shift; cmd_doctor "$@" ;;
   onboard)   shift; cmd_onboard "$@" ;;
+  ledger)    shift; cmd_ledger "$@" ;;
+  settle)    shift; cmd_settle "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;
 esac

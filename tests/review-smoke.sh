@@ -374,6 +374,57 @@ check "onboard rejects bad options"  "! CADRE_HOME='$D/state' '$ROOT/bin/cadre' 
 # must never do, so no run of it may create anything under the user's config.
 check "onboard wrote nothing"        "[ ! -e '$D/state/reviews' ]"
 
+echo "== ★ settled-decisions ledger =="
+# ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
+# findings the human already dismissed, because the reviewers have no memory.
+D=$(case_dir settle)
+mkdir -p "$D/state"
+printf '# notes to self, must not be matched against\nL1 | wontfix | timestamps are strings, callers wrap them\nL2 | accepted | missing retry test, tracked in #412\n' > "$D/state/ledger"
+printf 'REVIEW\n\n1. blocking - timestamps are strings\n2. should-fix - unchecked exit code in run.sh\n' > "$D/review.md"
+# A judge stub: echoes canned JSON so this tests the plumbing, not a model.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() {
+  echo '{"findings":[{"summary":"timestamps are strings","status":"SETTLED","ledger_id":"L1"},
+                     {"summary":"unchecked exit code in run.sh","status":"NEW","ledger_id":null}]}'
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/judgestub"; chmod +x "$D/bin/judgestub"
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub); RC=$?
+check "settle reports the NEW one"    "grep -q 'unchecked exit code' <<<\"\$OUT\""
+check "settle marks the settled one"  "grep -q '\[L1\]' <<<\"\$OUT\""
+check "non-zero while something new"  "[ $RC -ne 0 ]"
+check "review file left alone"        "grep -q 'timestamps are strings' '$D/review.md'"
+
+# ★ Everything settled means a wrapper can stop. That exit status IS the
+# stopping rule, so it has to be exact.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() {
+  echo '{"findings":[{"summary":"timestamps are strings","status":"SETTLED","ledger_id":"L1"}]}'
+}
+A
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub); RC=$?
+check "exits 0 when nothing is new"   "[ $RC -eq 0 ]"
+
+# ★ A judge that returns junk must FAIL, not read as "all settled". Silence and
+# "nothing new" are the same output, and one of them hides a live defect.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() { echo "Sorry, I could not process that request."; }
+A
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1); RC=$?
+check "unparseable judge fails loudly" "grep -q 'did not return usable JSON' <<<\"\$OUT\""
+check "and does not exit 0"            "[ $RC -ne 0 ]"
+
+# Comment lines are notes to the human, not ledger entries.
+printf '# only a comment\n' > "$D/state/ledger"
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1)
+check "comment-only ledger refused"   "grep -q 'no entries, only comments' <<<\"\$OUT\""
+# No ledger at all is a clear message, not a crash.
+rm -f "$D/state/ledger"
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1)
+check "missing ledger explains itself" "grep -q 'nothing settled yet' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" ledger show 2>&1)
+check "ledger show without a file"    "grep -q 'no ledger at' <<<\"\$OUT\""
+
 echo "== ★ unset HOME must name the variable, not die in bash =="
 # cron, containers and scrubbed CI runners have no HOME. set -u turned that into
 # "HOME: unbound variable" pointing into common.sh.
