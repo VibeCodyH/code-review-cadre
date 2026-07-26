@@ -14,6 +14,7 @@
 #   cadre passes                          list registered passes
 #   cadre agents                          list adapters
 #   cadre doctor [--probe]                check the install and the passes
+#   cadre onboard [--brief]               add a second reviewer for free
 #
 # <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 # Recommends. Never changes your review lineup. See README.md.
@@ -55,6 +56,9 @@ then run that panel on the code you are about to ship.
   cadre passes                          list registered passes
   cadre agents                          list adapters
   cadre doctor [--probe]                check the install and the passes
+  cadre onboard [--brief]               walk through adding a second reviewer
+                                        for free. --brief prints a prompt to
+                                        hand your own coding agent instead.
 
 <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 
@@ -621,6 +625,96 @@ Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
 
 # Exits non-zero when a pass is broken. README and docs both say doctor FAILS a
 # pass whose key sits inside the checkout, so it has to actually fail.
+# ★ Prints and exits. It never writes your opencode config and never touches a
+# key, because the moment cadre does either it becomes a credential path, and
+# "we refuse to leak your secrets" stops being something it can claim. The
+# walkthrough tells you what to run; --brief hands the config work to an agent
+# you already trust, with a PLACEHOLDER where the key goes.
+cmd_onboard() {
+  local brief=""
+  case "${1:-}" in
+    --brief) brief=1 ;;
+    "") ;;
+    *) die "onboard: unknown option '$1' (only --brief)" ;;
+  esac
+
+  local doc="$CADRE_ROOT/docs/FREE-PANEL.md"
+  local have; have=$("$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null | paste -sd, -)
+
+  if [ -n "$brief" ]; then
+    cat <<EOF
+Copy everything below into your coding agent.
+------------------------------------------------------------------------
+I use a tool called cadre that runs several AI code reviewers on the same
+diff. I have these reviewer CLIs installed: ${have:-none}. I want to add one
+more from a DIFFERENT model family, for free, so the panel stops being one
+opinion repeated.
+
+Read $doc and then do this for me:
+
+1. Run \`opencode models\`. If it lists anything ending in \`-free\`, tell me
+   the roster line to use and STOP; that route needs no key and no config.
+2. Otherwise help me pick one free provider, and edit
+   ~/.config/opencode/opencode.json to add its provider block. Merge into the
+   existing file, do not overwrite it, and show me a diff before you write.
+3. ★ For the API key, put the literal placeholder "{env:PROVIDER_API_KEY}"
+   with the right variable name. Do NOT ask me for the key, do not read it
+   from any file, and do not put a real key anywhere. Then tell me which of
+   the three commands in "Where the key goes" to run myself.
+4. Do NOT put the key in the repo's .env. Cadre's credential preflight refuses
+   to run against a tree containing one, so that would break every review.
+5. Finish by telling me the exact \`cadre review --roster a,b\` line to try.
+------------------------------------------------------------------------
+EOF
+    return 0
+  fi
+
+  # ★ Two of the three routes go through opencode. Printing `opencode models`
+  # to someone who does not have it is the same "command not found" fumble this
+  # command exists to prevent.
+  local oc_note=""
+  command -v opencode >/dev/null 2>&1 \
+    || oc_note="
+    ⚠ opencode is not installed, and the two routes below need it. It is one
+      CLI that reaches many model families, which is why it is the cheapest
+      way to add a lineage: https://opencode.ai
+"
+  cat <<EOF
+Adding a second reviewer, free.
+
+You have installed: ${have:-nothing cadre recognises}
+$oc_note
+Fastest route, no key and no config. If this lists anything ending in -free,
+it is usable as a reviewer immediately:
+
+    opencode models
+
+    cadre review --roster ${have%%,*}${have:+,}opencode:opencode/<the-free-one>
+
+Next easiest, CodeRabbit. A real reviewer on a free tier, three reviews an
+hour, nothing to configure once its CLI is installed and logged in:
+
+    cadre review --roster ${have%%,*}${have:+,}coderabbit
+
+A keyed free tier, if you want a specific model family. opencode prompts for
+the key with the input masked and stores it itself; cadre never sees it:
+
+    opencode auth login -p cerebras
+    opencode models cerebras
+    cadre review --roster ${have%%,*}${have:+,}opencode:cerebras/<model>
+
+Full walkthrough, including the provider table, the three ways to supply a key
+without it landing in an agent's transcript, and why the key must NOT go in
+the repo's .env:
+
+    $doc
+
+Or, to have your own coding agent do the config for you:
+
+    cadre onboard --brief
+EOF
+}
+
 cmd_doctor() {
   local probe="${1:-}" bad=0
   echo "CADRE_ROOT  $CADRE_ROOT"
@@ -655,8 +749,10 @@ cmd_doctor() {
   reviewer, 72% at two, 89% at three. The second chair buys the most, and it
   buys most when it is a different model family.
 
-  A second lineage does not need a subscription. README, "Build a whole panel
-  for free", covers CodeRabbit's free tier and six free providers.
+  A second lineage does not need a subscription, and there is a route that
+  needs no API key at all:
+
+      cadre onboard
 EOF
   fi
   echo
@@ -703,6 +799,7 @@ case "${1:-}" in
   passes)    shift; cmd_passes "$@" ;;
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
   doctor)    shift; cmd_doctor "$@" ;;
+  onboard)   shift; cmd_onboard "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;
 esac

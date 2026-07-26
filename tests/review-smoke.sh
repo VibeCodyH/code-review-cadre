@@ -354,6 +354,26 @@ OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/wo
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1)
 check "no nudge at two reviewers"   "! grep -q 'one reviewer installed' <<<\"\$OUT\""
 
+echo "== ★ onboard prints, and never handles a key =="
+D=$(case_dir onboard)
+ON=$(CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:/usr/bin:/bin" \
+       "$ROOT/bin/cadre" onboard 2>&1)
+BR=$(CADRE_HOME="$D/state" CADRE_AGENTS_D="$D/agents.d" PATH="$D/bin:/usr/bin:/bin" \
+       "$ROOT/bin/cadre" onboard --brief 2>&1)
+check "onboard names what you have"  "grep -q 'You have installed: .*good' <<<\"\$ON\""
+check "onboard points at the doc"    "grep -q 'FREE-PANEL.md' <<<\"\$ON\""
+# opencode is absent from this PATH, and two of the three routes need it.
+check "warns opencode is missing"    "grep -q 'opencode is not installed' <<<\"\$ON\""
+# ★ The brief must tell the agent to use a PLACEHOLDER. An onboarding flow that
+# has an agent handle the real key is a credential path wearing a helper's coat.
+check "brief demands a placeholder"  "grep -qF '{env:PROVIDER_API_KEY}' <<<\"\$BR\""
+check "brief forbids asking for it"  "grep -q 'Do NOT ask me for the key' <<<\"\$BR\""
+check "brief warns off repo .env"    "grep -q \"repo's .env\" <<<\"\$BR\""
+check "onboard rejects bad options"  "! CADRE_HOME='$D/state' '$ROOT/bin/cadre' onboard --nope >/dev/null 2>&1"
+# It prints and exits. Writing config or touching a key is the one thing it
+# must never do, so no run of it may create anything under the user's config.
+check "onboard wrote nothing"        "[ ! -e '$D/state/reviews' ]"
+
 echo "== ★ unset HOME must name the variable, not die in bash =="
 # cron, containers and scrubbed CI runners have no HOME. set -u turned that into
 # "HOME: unbound variable" pointing into common.sh.
