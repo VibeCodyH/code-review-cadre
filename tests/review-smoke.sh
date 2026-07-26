@@ -434,6 +434,35 @@ check "chrome-only is not a review"    "! ls '$R'/chrome-*.md >/dev/null 2>&1"
 check "a terse review still counts"    "ls '$R'/terse-*.md >/dev/null 2>&1"
 check "counts split them correctly"    "grep -q '1 ok, 0 degraded, 1 failed' <<<\"\$OUT\""
 
+echo "== ★ chrome-stripping must not eat the review itself =="
+# Found by a codex-led panel on cadre's own diff: `/^> build /d` was written to
+# drop opencode's banner and also deleted a reviewer's markdown blockquote that
+# happened to start with the word build. Silent loss of review content is worse
+# than the chrome it was removing.
+STRIP="sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '1,5{/^> build · /d;}'"
+BQ='> build the release pipeline silently fails'
+check "a '> build ...' quote survives" "[ \"\$(printf '%s\n' '$BQ' | $STRIP)\" = '$BQ' ]"
+check "the real banner still goes"     "[ -z \"\$(printf '> build · m\n' | $STRIP | tr -d '[:space:]')\" ]"
+# ★ Anchored to the first lines too: the banner cannot appear deep in a review,
+# but a quoted example of one can.
+check "a late banner-lookalike stays"  "[ -n \"\$(printf 'a\nb\nc\nd\ne\nf\n> build · m\n' | $STRIP | grep '^> build')\" ]"
+
+echo "== ★ a retry must not destroy the partial it is retrying =="
+# Also from the codex panel, and a regression introduced the same day: the
+# benchmark path deleted the previous .partial BEFORE the replacement attempt,
+# so a retry that produced nothing took the only copy of real findings with it.
+#
+# ⚠ STRUCTURAL, not behavioural. Reaching this at runtime needs a registered
+# pass with a corrected answer key, which is a model-built fixture and does not
+# belong in a suite that runs in seconds. So this asserts the shape of the code
+# instead, which is weaker than a real run: it would not catch a third place
+# that deletes the file. It exists to stop this exact line coming back.
+PRE=$(sed -n '/^    rm -f "\$f/p' "$ROOT/lib/run-pass.sh")
+check "pre-attempt rm spares .partial" "! grep -q 'f.partial' <<<\"\$PRE\""
+check "pre-attempt rm still clears .failed" "grep -q 'f.failed' <<<\"\$PRE\""
+check "success clears the stale .partial" \
+  "grep -A3 '^      ok)' '$ROOT/lib/run-pass.sh' | grep -q 'rm -f \"\$f.partial\"'"
+
 echo "== ★ a partial reviewer must not corrupt the agreement math =="
 # The synthesizer is told the counts. If a partial review arrives under the same
 # delimiter as a complete one, tagging a finding [1/3] reads as two dissents when
@@ -445,7 +474,7 @@ OUT=$(run_cadre "$D" review --roster good,good2,trunc,dead --synth echoer --base
 R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
 P="$R/synthesis.md"
 check "synthesis ran with a partial"   "[ -s '$P' ]"
-check "partial gets its OWN delimiter" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): trunc' '$P'"
+check "partial gets its OWN delimiter" "grep -q 'PARTIAL, THIS REVIEWER STOPPED EARLY): trunc' '$P'"
 check "complete reviews stay plain"    "grep -qE '^===== REVIEWER: good =====' '$P'"
 check "partial text still delivered"   "grep -q 'partial finding' '$P'"
 check "unraised = neither side"          "grep -q 'counts in NEITHER' '$P'"
@@ -464,7 +493,8 @@ OUT=$(CADRE_SYNTH_MAX=100 run_cadre "$D" review --roster good,good2 --synth echo
         --base main --label capped "$S")
 P="$D/state/reviews/capped/synthesis.md"
 check "cap truncation is announced"    "grep -q 'over CADRE_SYNTH_MAX' <<<\"\$OUT\""
-check "a cut review is marked PARTIAL" "grep -q 'REVIEWER (PARTIAL, STOPPED EARLY): good' '$P'"
+check "a cut review says CADRE cut it"  "grep -q 'BUT CADRE SENT ONLY ITS FIRST' '$P'"
+check "and is NOT called stopped-early" "! grep -q 'STOPPED EARLY): good' '$P'"
 check "and the silence rule travels"   "grep -q 'counts in NEITHER' '$P'"
 
 echo "== ★ settled-decisions ledger =="

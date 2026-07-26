@@ -88,9 +88,11 @@ for r in "${reviewers[@]}"; do
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; continue; }
     echo "  $r run$n ..."
     start=$(date +%s)
-    # Both, or a re-run that succeeds leaves last attempt's .partial next to it
-    # and the grade report explains a scored run with a stale "stopped early".
-    rm -f "$f.failed" "$f.partial"
+    # ★ .failed only. Deleting .partial here threw away real findings the moment
+    # a retry produced nothing -- the previous attempt's partial review was the
+    # only copy, and this feature exists because those findings are worth
+    # keeping. It is cleared on SUCCESS instead, below.
+    rm -f "$f.failed"
     # ★ Retry the SAME model on a rate limit. Never substitute a different one:
     # filing model B's review under model A is the mislabeling this whole tool
     # exists to catch. Free tiers are the reason this loop exists, see README.
@@ -127,6 +129,8 @@ for r in "${reviewers[@]}"; do
     case "$(classify_run "$f.part" "$rc")" in
       ok)
         mv "$f.part" "$f"
+        # Now, and only now, last attempt's partial is genuinely superseded.
+        rm -f "$f.partial"
         echo "    $(wc -c < "$f") bytes in ${took}s" ;;
       degraded)
         mv "$f.part" "$f.partial"

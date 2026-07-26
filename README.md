@@ -545,6 +545,16 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
 - No resume past skipping outputs that already exist.
 - No secret scanning. The credential check reads filenames, not contents.
 - No sandbox. See above, and mean it.
+- **It cannot tell a bad review from a non-review.** `contributed / degraded /
+  failed` is decided mechanically — exit status, emptiness, the markers an
+  adapter emits. A reviewer that returns fluent prose which never reviews
+  anything, asks a clarifying question, or narrates a tool transcript, counts as
+  `contributed` and lands in the agreement denominators. Caught in the wild:
+  a panel where one reviewer's 39KB of output was mostly transcript, the
+  synthesizer correctly noted it "did not perform a substantive review", and the
+  tags still counted it. Judging *substance* needs a model, and a model deciding
+  which reviewers to discount is a different tool with a different failure mode.
+  Read the reviews, not just the synthesis.
 
 ## Adding a reviewer
 

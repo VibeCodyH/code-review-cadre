@@ -253,7 +253,7 @@ rate_limited() {
 # exactly that. Line-anchoring alone was not enough.
 classify_run() {
   local f="$1" rc="$2"
-  if [ "$rc" -ne 0 ] || [ ! -s "$f" ]; then echo failed; return 0; fi
+  if [ ! -s "$f" ]; then echo failed; return 0; fi
   # ★ Empty means empty of CONTENT, not of bytes. CLIs wrap the model's text in
   # their own chrome -- colour escapes, a "> build <model>" banner -- so a run
   # that returned nothing still leaves a non-empty file and scores as a clean
@@ -265,7 +265,15 @@ classify_run() {
   fi
   if rate_limited "$f"; then echo failed; return 0; fi
   if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE)'; then echo failed; return 0; fi
+  # ★ The marker is checked BEFORE the exit status, on purpose. _TRUNCATED is an
+  # adapter explicitly saying "I stopped early and this is what I got", which is
+  # exactly the situation where a CLI plausibly also exits nonzero -- rc 124 from
+  # a timeout is the obvious one. Testing rc first threw away the partial output
+  # of any adapter that honoured the contract without also normalising its exit
+  # code. The shipped adapters all normalise, so this costs nothing today and
+  # stops a third-party adapter from being silently wrong tomorrow.
   if tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
+  if [ "$rc" -ne 0 ]; then echo failed; return 0; fi
   echo ok
   return 0
 }

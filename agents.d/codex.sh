@@ -33,10 +33,15 @@ run_codex() {
   # adapter returned "". Downstream that reads as "found nothing", the worst
   # thing an adapter can do. Say what happened instead.
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-    # ★ Killed, but -o may already hold review text. Printing only the timeout
-    # line threw those findings away. Emit them, then _TRUNCATED: the review is
-    # real but its silence about a file means "never got there", not "clean".
-    # docs/ADDING-AN-AGENT.md, "Say which kind of nothing you have".
+    # Killed. If -o holds anything, emit it and mark it _TRUNCATED rather than
+    # discarding it: the text is a real review, and its silence about a file
+    # means "never got there", not "clean". docs/ADDING-AN-AGENT.md.
+    # ⚠ Measured on codex 0.145.0, where -o is --output-last-message and is
+    # written only at final completion: a mid-turn kill leaves it EMPTY, so in
+    # practice this branch almost always falls through to the else. Keep it --
+    # it costs nothing and a future codex that flushes incrementally would be
+    # silently throwing findings away without it -- but do not read it as
+    # evidence that codex streams partial reviews to -o today. It does not.
     if [ -s "$last" ]; then
       cat "$last"
       echo

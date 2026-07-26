@@ -20,6 +20,10 @@ run_opencode() {
   # reviewer that found nothing. Only the adapter knows which lines are the
   # CLI talking rather than the model, so it belongs here. classify_run has a
   # backstop for the same shape, since every CLI does some version of this.
+  # ★ The banner delete is anchored HARD: only in the first few lines, and only
+  # with opencode's " · " separator. `/^> build /d` alone ate a reviewer's own
+  # markdown blockquote -- "> build the release pipeline silently fails" -- which
+  # is silent loss of review content, worse than the chrome it was removing.
   _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto "$prompt" 2>&1 \
-    | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '/^> build /d'
+    | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '1,5{/^> build · /d;}'
 }

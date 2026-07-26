@@ -578,24 +578,35 @@ cmd_synthesize() {
     echo "⚠ reviews total $total bytes, over CADRE_SYNTH_MAX ($cap). Truncating each to $per."
   fi
 
-  local partial=() n=0 text
+  # ★ TWO different facts, kept apart. "The reviewer stopped early" is a fact
+  # about the reviewer's health. "Cadre sent only the first N bytes" is a fact
+  # about what this function did to a reviewer that finished perfectly well.
+  # Both mean the silence that follows proves nothing, so both get the silence
+  # rule -- but telling the synthesizer a healthy reviewer "stopped early" is
+  # simply false, and it is the kind of false that ends up quoted in a report.
+  local partial=() capped=() n=0 text cut
   for i in "${!srcspec[@]}"; do
+    cut=0
     if [ "$per" -gt 0 ] && [ "$(wc -c < "${srcfile[$i]}")" -gt "$per" ]; then
-      text=$(head -c "$per" "${srcfile[$i]}"); srcstate[$i]=degraded
+      text=$(head -c "$per" "${srcfile[$i]}"); cut=1
     else
       text=$(cat "${srcfile[$i]}")
     fi
+    # A DIFFERENT delimiter, not just different prose. Under the same delimiter
+    # as a full review the synthesizer has no handle to apply a different rule
+    # to, however carefully the instructions are worded.
     if [ "${srcstate[$i]}" = degraded ]; then
-      # ★ A DIFFERENT delimiter, not just different prose. Under the same
-      # delimiter as a full review the synthesizer has no handle to apply a
-      # different rule to, however carefully the instructions are worded.
-      body="$body===== REVIEWER (PARTIAL, STOPPED EARLY): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
+      body="$body===== REVIEWER (PARTIAL, THIS REVIEWER STOPPED EARLY): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
       partial+=("${srcspec[$i]}")
+    elif [ "$cut" = 1 ]; then
+      body="$body===== REVIEWER (COMPLETE, BUT CADRE SENT ONLY ITS FIRST $per BYTES): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
+      capped+=("${srcspec[$i]}")
     else
       body="$body===== REVIEWER: ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
       n=$((n + 1))
     fi
   done
+  local short=("${partial[@]}" "${capped[@]}")
 
   # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
   # "2/2 agree", and the reader concludes the panel was unanimous when a third
@@ -611,31 +622,40 @@ returned a complete review.
 
 "
   fi
-  # ★ A partial reviewer breaks the agreement MATH, not just the prose, and in
+  # ★ Incomplete coverage breaks the agreement MATH, not just the prose, and in
   # the direction nobody checks. Tagging a finding [1/4] when two of the four
-  # stopped before reaching that file reads as three dissents; it is one
-  # reviewer and two absences. The rule travels with the body, beside the
-  # delimiter it governs, because the list of who is partial is per-run.
-  if [ ${#partial[@]} -gt 0 ]; then
-    body="$body===== PARTIAL REVIEWS: ${partial[*]} =====
-These stopped partway through, out of tokens or time. Their text is a real
-review of the part they reached. Rules for them, unlike a complete review:
+  # never reached that file reads as three dissents; it is one reviewer and two
+  # absences. One rule for both causes, since the consequence is identical, but
+  # each reviewer is listed under the cause that is actually true of it.
+  if [ ${#short[@]} -gt 0 ]; then
+    body="$body===== REVIEWERS WITH INCOMPLETE COVERAGE: ${short[*]} ====="$'\n'
+    [ ${#partial[@]} -gt 0 ] && body="$body\
+  ${partial[*]} -- stopped partway through, out of tokens or time.
+"
+    [ ${#capped[@]} -gt 0 ] && body="$body\
+  ${capped[*]} -- reviewed the whole diff, but their review was too long for
+  this synthesis and CADRE cut it. The reviewer is healthy; the copy you were
+  given is not the whole of what it wrote. Do not say it stopped early.
+"
+    body="$body
+Their text is a real review of the part you can see. Rules for them, unlike a
+review you have in full:
   - On a finding one of them RAISED, it counts in both the numerator and the
     denominator, exactly like a complete review.
-  - On a finding it never mentioned, it counts in NEITHER. It did not reach that
-    code, so its silence is not agreement, disagreement, or clearance, and the
-    denominator for that finding is smaller. Do not list it under Disagreements.
-  - Say in the verdict spread that it stopped early, and give no overall verdict
-    on its behalf.
+  - On a finding it never mentioned, it counts in NEITHER. That code is outside
+    what you were given, so its silence is not agreement, disagreement, or
+    clearance, and the denominator for that finding is smaller. Never list one
+    under Disagreements for something it simply does not mention.
+  - Give no overall verdict on behalf of a reviewer that stopped early.
 
-Do the arithmetic for THIS panel. There are $n complete review(s) and ${#partial[@]} partial
-(${partial[*]}). So:
-  - a finding one of the partial reviewers raised  -> denominator $((n + 1))
-  - a finding none of them mentioned               -> denominator $n
-The second case is the one that gets written wrong. A defect only the complete
-reviewers named is tagged [x/$n], NOT [x/$((n + ${#partial[@]}))] -- writing the larger number
-there claims the partial reviewers looked at that code and declined to flag it,
-which is exactly backwards.
+Do the arithmetic for THIS panel. You have $n review(s) in full and ${#short[@]} with
+incomplete coverage (${short[*]}). For each finding: denominator = $n, plus one
+for EACH of those ${#short[@]} that raised that finding. So it is $n when none of them
+raised it, and at most $((n + ${#short[@]})) when all of them did.
+
+The low end is the case that gets written wrong. A defect only the full reviews
+named is tagged [x/$n]. A bigger number there claims someone looked at that code
+and declined to flag it, which is exactly backwards.
 
 "
   fi
