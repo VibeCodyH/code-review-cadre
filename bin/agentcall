@@ -107,13 +107,24 @@ Adding an agent:
 EOF
 }
 
+# ★ The adapter name is USUALLY the binary name, and cadre assumed always --
+# run-review.sh makes the same assumption when it decides a roster member is NOT
+# INSTALLED. Cursor breaks it: the adapter has to be called `cursor` for the
+# roster to read sensibly, and the binary it runs is `agent`. Without an override
+# the adapter is reported missing on a machine where it works fine, which is the
+# most confusing failure available -- it names a tool you can see on your PATH.
+#
+# So an adapter may declare its binary:  bin_cursor() { echo agent; }
+agent_bin() {
+  if command -v "bin_$1" >/dev/null 2>&1; then bin_"$1"; else printf '%s' "$1"; fi
+}
+have_agent() { command -v "$(agent_bin "$1")" >/dev/null 2>&1; }
+
 # An adapter ships for every CLI cadre knows about, installed or not, so the
-# unmarked list reads as a wall of caveats about tools you do not have. The
-# adapter name IS the binary name, which is the same assumption run-review.sh
-# makes when it decides a roster member is NOT INSTALLED.
+# unmarked list reads as a wall of caveats about tools you do not have.
 installed_agents() {
   local a
-  for a in $AGENTS; do command -v "$a" >/dev/null 2>&1 && echo "$a"; done
+  for a in $AGENTS; do have_agent "$a" && echo "$a"; done
 }
 
 list_agents() {
@@ -125,7 +136,7 @@ list_agents() {
   printf '%s %-11s %s\n' ' ' AGENT 'notes (measured, not guessed)'
   printf '%s %-11s %s\n' ' ' '----------' '------------------------------------------------------'
   for a in $AGENTS; do
-    if command -v "$a" >/dev/null 2>&1; then mk='✓'; else mk='·'; fi
+    if have_agent "$a"; then mk='✓'; else mk='·'; fi
     n="$a"
     if command -v "notes_$a" >/dev/null 2>&1; then
       notes_"$a" | while IFS= read -r line; do
@@ -144,7 +155,7 @@ list_agents() {
 probe_one() {
   local a="$1" out
   printf '%-11s ' "$a"
-  command -v "$a" >/dev/null 2>&1 || { echo "not installed"; return; }
+  have_agent "$a" || { echo "not installed"; return; }
   out=$(run_agent "$a" "$PWD" ro "" "Reply with exactly: OK" 2>&1 | tr '\n' ' ')
   case "$out" in
     *OK*)                                    echo "ok" ;;

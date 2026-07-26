@@ -299,12 +299,28 @@ run_one() {
   # ★ A roster member that is not installed is a FAILURE, not a skip. run-pass
   # prints "skipping" and moves on, which in a live review is indistinguishable
   # from a reviewer that ran and found nothing.
-  if ! command -v "$agent" >/dev/null 2>&1; then
+  # ★ Ask agentcall rather than testing the name here. An adapter may run a
+  # binary that is not called after it -- cursor's adapter runs `agent` -- and
+  # this check declared such a reviewer missing on a machine where it works,
+  # which is the most confusing failure available: it names a tool the user can
+  # see on their PATH. agentcall owns the adapter contract, so it answers.
+  # CADRE_AGENTS_D has to travel, exactly as it does on the real call below, or
+  # agentcall answers about a different set of adapters than the one about to run.
+  # ★ Captured, NOT piped into grep -q. Under `set -o pipefail` a -q consumer
+  # exits on the first match, agentcall takes SIGPIPE, and the pipeline reports
+  # failure -- so every reviewer whose name sorted early enough to match was
+  # declared NOT INSTALLED. The suite caught it at 43 failures.
+  local inst
+  inst=$(CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
+         "$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null)
+  case $'\n'"$inst"$'\n' in
+    *$'\n'"$agent"$'\n'*) ;;
+    *)
     echo "NOT INSTALLED: $agent is not on PATH" > "$f.failed"
     echo "failed" > "$st"
     echo "  $spec: NOT INSTALLED" >> "$log"
-    return 0
-  fi
+    return 0 ;;
+  esac
 
   # Its own pristine checkout. Reviewers never share a tree, so nothing needs
   # resetting between them and --jobs is safe by construction.

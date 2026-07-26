@@ -21,6 +21,10 @@ Pick deliberately.
 NOTES
 }
 
+# The CLI installs as `agent` (and `cursor-agent`), not `cursor`. The adapter
+# keeps the vendor name so a roster reads sensibly; this says what to look for.
+bin_cursor() { echo agent; }
+
 run_cursor() {
   local out errf rc text sub err m=() md=()
   [ -n "$model" ] && m=(--model "$model")
