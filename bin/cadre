@@ -445,11 +445,19 @@ cmd_review() {
   # into the checkout, so a CADRE_HOME under $repo hands every auto-approving
   # reviewer the answer keys and every previous reviewer's findings. Same rule
   # the benchmark path enforces on checkouts, applied to the live one.
-  is_inside "$CADRE_HOME" "$repo" && die "CADRE_HOME ($CADRE_HOME) is inside the repo being reviewed.
-     Its keys and prior reports would be copied into the checkout as untracked
-     files. Point CADRE_HOME somewhere outside $repo."
-  is_inside "$CADRE_WORK" "$repo" && die "CADRE_WORK ($CADRE_WORK) is inside the repo being reviewed.
-     Point it somewhere outside $repo."
+  # ★ is_inside deliberately returns FALSE for identical paths, so it alone
+  # misses CADRE_HOME="$repo" exactly. Measured: that case sailed through and
+  # carried state files into the reviewer's checkout. Test equality separately.
+  local rp; rp=$(readlink -m "$repo")
+  local vn vv
+  for vn in CADRE_HOME CADRE_WORK; do
+    eval "vv=\$$vn"
+    if [ "$(readlink -m "$vv")" = "$rp" ] || is_inside "$vv" "$repo"; then
+      die "$vn ($vv) is the repo being reviewed, or sits inside it.
+     Its keys, checkouts and prior reports would be copied into the reviewers'
+     checkout as untracked files. Point $vn somewhere outside $rp."
+    fi
+  done
 
   local specs=() rl
   rl=$(resolve_roster "$roster_arg") || exit 2

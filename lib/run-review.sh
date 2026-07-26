@@ -132,7 +132,12 @@ TPL="$WORKDIR/template"
 # exactly the base and the change under review in it, `BASE...HEAD` resolves
 # normally, and there is no earlier history to mine because it was never
 # transferred. Verified: the deleted-credential case yields zero hits.
-git init -q "$TPL" || die "could not init the review checkout"
+# Match the source's object format. A sha1 client cannot fetch from a sha256
+# repo at all: "fatal: mismatched algorithms". Measured, and it aborts the run.
+fmt=$(git -C "$REPO" rev-parse --show-object-format 2>/dev/null) || fmt=sha1
+git init -q --object-format="$fmt" "$TPL" \
+  || git init -q "$TPL" \
+  || die "could not init the review checkout"
 git -C "$TPL" remote add origin "file://$(readlink -f "$REPO")" \
   || die "could not add the source remote"
 git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" \
@@ -143,16 +148,24 @@ mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
          -c commit.gpgsign=false commit-tree "$@"; }
 c1=$(mk "$btree" -m "base") || die "could not build the base commit"
 c2=$(mk "$stree" -p "$c1" -m "change under review") || die "could not build the review commit"
-git -C "$TPL" update-ref -d "$SR"; git -C "$TPL" update-ref -d "$BR"
+# Checked. These refs are the ONLY thing keeping the source commits reachable
+# in the checkout, and a commit is reachable means its message and its parents
+# are readable. A silent failure here quietly undoes the isolation above.
+git -C "$TPL" update-ref -d "$SR" || die "could not drop the snapshot ref from the checkout"
+git -C "$TPL" update-ref -d "$BR" || die "could not drop the base ref from the checkout"
 # The remote is a live file:// path into the user's repo, and every reviewer
 # runs with tool auto-approval. It goes before anything is checked out.
 git -C "$TPL" remote remove origin \
   || die "could not remove the origin remote from the checkout"
 git -C "$TPL" checkout -q --detach "$c2" || die "could not check out the change"
 # Drop the fetched objects that are no longer referenced, so the original
-# commits are not merely unreferenced but gone.
-git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1
-git -C "$TPL" gc --prune=now -q >/dev/null 2>&1
+# commits are not merely unreferenced but gone. Checked: unreferenced is not
+# unreadable, `git cat-file` and `git fsck --lost-found` both still reach an
+# unpruned object, so a failure here leaves the source commits recoverable.
+git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1 \
+  || die "could not expire the reflog in the checkout"
+git -C "$TPL" gc --prune=now -q >/dev/null 2>&1 \
+  || die "could not prune the checkout; the original commits would stay recoverable"
 # What the reviewers diff against is the synthetic base. Keep the REAL shas for
 # the manifest: a provenance record naming commits that exist only in a deleted
 # temp directory cannot be used to reproduce anything.
@@ -221,6 +234,14 @@ fi
   echo "base:      $REAL_BASE"
   echo "snapshot:  $REAL_SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
   echo "untracked: $NEW file(s) carried in"
+  # ★ The snapshot sha is a STASH commit: unreferenced in the source once the
+  # temp ref is dropped, so the next `git gc` reclaims it and the manifest
+  # stops resolving. Measured. The TREE ids are what the reviewers actually
+  # saw, and the reviewed tree includes the untracked files, which the count
+  # above does not identify. These are content addresses: identical trees
+  # produce identical ids, so they verify a re-run even after the commits die.
+  echo "base-tree: $btree"
+  echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "roster:    ${reviewers[*]}"
   echo "prompt:    $(cksum < "$PROMPT" | cut -d' ' -f1)"
   echo "cadre:     $(git -C "$CADRE_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"

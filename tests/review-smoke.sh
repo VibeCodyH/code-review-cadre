@@ -181,13 +181,46 @@ check "deleted secret NOT reachable"  "! grep -q 'history-only-secret' '$G'"
 check "history is only the two commits" "[ \$(grep -c '^commit ' '$G') -le 2 ]"
 check "the run still succeeded"       "grep -q '1 ok' <<<\"\$OUT\""
 
-echo "== ★ CADRE_HOME inside the reviewed repo is refused =="
+echo "== ★ CADRE_HOME inside or EQUAL TO the reviewed repo is refused =="
 D=$(case_dir nested_home); S="$D/src"
 git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
 mkdir -p "$S/.cadre/keys"; echo "K1 the answer" > "$S/.cadre/keys/secret.md"
 OUT=$(CADRE_HOME="$S/.cadre" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
       PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --roster good --base main "$S" 2>&1)
-check "nested CADRE_HOME refused"     "grep -q 'inside the repo being reviewed' <<<\"\$OUT\""
+check "nested CADRE_HOME refused"     "grep -q 'sits inside it' <<<\"\$OUT\""
+# ★ is_inside returns false for identical paths, so exact equality needs its own
+# test: CADRE_HOME="$repo" used to sail through and copy state into the checkout.
+OUT=$(CADRE_HOME="$S" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --roster good --base main "$S" 2>&1)
+check "CADRE_HOME == repo refused"    "grep -q 'sits inside it' <<<\"\$OUT\""
+OUT=$(CADRE_HOME="$D/state" CADRE_WORK="$S" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --roster good --base main "$S" 2>&1)
+check "CADRE_WORK == repo refused"    "grep -q 'sits inside it' <<<\"\$OUT\""
+
+echo "== ★ sha256 source repo =="
+if git init -q --object-format=sha256 "$SANDBOX/fmtprobe" 2>/dev/null; then
+  D=$(case_dir sha256); rm -rf "$D/src"
+  git init -q --object-format=sha256 "$D/src"; S="$D/src"
+  git -C "$S" config user.email t@example.com; git -C "$S" config user.name t
+  echo orig > "$S/app.js"; git -C "$S" add -A; git -C "$S" commit -qm base
+  git -C "$S" branch -M main; git -C "$S" checkout -qb feature
+  echo x >> "$S/app.js"; git -C "$S" commit -qam f; echo dirty >> "$S/app.js"
+  OUT=$(run_cadre "$D" review --roster good --base main "$S")
+  check "sha256 repo reviews cleanly" "grep -q '1 ok' <<<\"\$OUT\""
+else
+  echo "  skip sha256 (this git does not support it)"
+fi
+
+echo "== ★ manifest survives a source gc =="
+D=$(case_dir gc_manifest); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+echo dirty >> "$S/app.js"; echo new > "$S/extra.js"
+OUT=$(run_cadre "$D" review --roster good --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+BT=$(grep '^base-tree:' "$R/manifest.txt" | awk '{print $2}')
+RT=$(grep '^reviewed-tree:' "$R/manifest.txt" | awk '{print $2}')
+check "manifest records both trees"  "[ -n '$BT' ] && [ -n '$RT' ] && [ '$RT' != unknown ]"
+check "base tree survives a gc"      "git -C '$S' reflog expire --expire=now --all >/dev/null 2>&1; git -C '$S' gc --prune=now -q >/dev/null 2>&1; git -C '$S' cat-file -e '$BT^{tree}' 2>/dev/null"
 
 echo "== default base resolution =="
 # Every other case passes --base. This is the path a real user hits first.
