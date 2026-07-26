@@ -14,5 +14,12 @@ NOTES
 run_opencode() {
   local om=()
   [ -n "$model" ] && om=(-m "$model")
-  _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto "$prompt" 2>&1
+  # ★ Strip opencode's own chrome: colour escapes and a "> build <model>"
+  # banner it prints around the model's text. Left in, a run that returned NO
+  # review is still a non-empty file, so it is filed as a clean review by a
+  # reviewer that found nothing. Only the adapter knows which lines are the
+  # CLI talking rather than the model, so it belongs here. classify_run has a
+  # backstop for the same shape, since every CLI does some version of this.
+  _run timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto "$prompt" 2>&1 \
+    | sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e '/^> build /d'
 }

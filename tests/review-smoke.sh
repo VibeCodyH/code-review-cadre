@@ -21,7 +21,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
-  for n in good good2 trunc dead echoer; do
+  for n in good good2 trunc dead echoer chrome terse; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -53,6 +53,18 @@ A
   # synthesizer was actually TOLD rather than on a stub's invented answer.
   cat > "$1/agents.d/echoer.sh" <<'A'
 run_echoer() { printf '%s\n' "$prompt"; }
+A
+  # ★ Returns NO review, only the CLI's own chrome. Measured with opencode,
+  # which prints colour escapes and a banner around the model's text: the file
+  # is non-empty, rc is 0, and a reviewer that said nothing scored as a clean
+  # pass. Emptiness has to mean empty of content, not of bytes.
+  cat > "$1/agents.d/chrome.sh" <<'A'
+run_chrome() { printf '\033[0m\n\033[0m\n   \n'; }
+A
+  # Same chrome, but with a real (very short) review inside it. Must stay ok:
+  # "findings=0" is a valid review and a length floor used to throw those away.
+  cat > "$1/agents.d/terse.sh" <<'A'
+run_terse() { printf '\033[0m\nfindings=0\n\033[0m\n'; }
 A
 }
 
@@ -371,8 +383,9 @@ check "empty box says so"           "grep -q 'none of cadre.s adapters' <<<\"\$O
 
 echo "== ★ one-reviewer nudge (data, not a warning) =="
 D=$(case_dir nudge)
-rm -f "$D/bin/good2" "$D/bin/trunc" "$D/bin/dead" "$D/bin/echoer" \
-      "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh" "$D/agents.d/dead.sh" "$D/agents.d/echoer.sh"
+rm -f "$D/bin/good2" "$D/bin/trunc" "$D/bin/dead" "$D/bin/echoer" "$D/bin/chrome" "$D/bin/terse" \
+      "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh" "$D/agents.d/dead.sh" "$D/agents.d/echoer.sh" \
+      "$D/agents.d/chrome.sh" "$D/agents.d/terse.sh"
 OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
 check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""
@@ -404,6 +417,22 @@ check "onboard rejects bad options"  "! CADRE_HOME='$D/state' '$ROOT/bin/cadre' 
 # It prints and exits. Writing config or touching a key is the one thing it
 # must never do, so no run of it may create anything under the user's config.
 check "onboard wrote nothing"        "[ ! -e '$D/state/reviews' ]"
+
+echo "== ★ a CLI's own chrome is not a review =="
+# Measured with opencode, the free route the README sends people to first: it
+# wraps the model's text in colour escapes and a banner, so a run that returned
+# NOTHING still leaves a non-empty file and scored as a reviewer that looked and
+# found no defects. Emptiness has to mean empty of content, not of bytes.
+D=$(case_dir chrome_only); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster chrome,terse --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "chrome-only run -> FAILED"      "ls '$R'/chrome-*.md.failed >/dev/null 2>&1"
+check "chrome-only is not a review"    "! ls '$R'/chrome-*.md >/dev/null 2>&1"
+# ★ The other half. A length floor would catch the banner AND this, and the
+# repo already threw away valid "findings=0" reviews that way once.
+check "a terse review still counts"    "ls '$R'/terse-*.md >/dev/null 2>&1"
+check "counts split them correctly"    "grep -q '1 ok, 0 degraded, 1 failed' <<<\"\$OUT\""
 
 echo "== ★ a partial reviewer must not corrupt the agreement math =="
 # The synthesizer is told the counts. If a partial review arrives under the same

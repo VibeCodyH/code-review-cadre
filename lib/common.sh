@@ -254,6 +254,15 @@ rate_limited() {
 classify_run() {
   local f="$1" rc="$2"
   if [ "$rc" -ne 0 ] || [ ! -s "$f" ]; then echo failed; return 0; fi
+  # ★ Empty means empty of CONTENT, not of bytes. CLIs wrap the model's text in
+  # their own chrome -- colour escapes, a "> build <model>" banner -- so a run
+  # that returned nothing still leaves a non-empty file and scores as a clean
+  # review that found no defects. Measured with opencode, which is the free
+  # route the README sends people down first. NOT a minimum-length rule:
+  # "findings=0" is a valid review and a length floor threw those away.
+  if [ -z "$(sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' -e 's/[[:space:]]//g' "$f")" ]; then
+    echo failed; return 0
+  fi
   if rate_limited "$f"; then echo failed; return 0; fi
   if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE)'; then echo failed; return 0; fi
   if tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
