@@ -147,8 +147,18 @@ run_gauntlet() {
         # Which kind of nothing. "no output" for a run that stopped partway is
         # a false statement about the model, and the fix is one file test.
         local why="no output"
-        [ -s "$rf.failed" ] && why="the adapter failed, see $sl-run$n.md.failed"
         [ -s "$rf.partial" ] && why="stopped early, partial review in $sl-run$n.md.partial, not scored"
+        # ★ .failed is always from the attempt that just ran. .partial can be
+        # left over from an EARLIER attempt at the same slot, because a failed
+        # attempt no longer clears it -- so letting .partial win reported
+        # "stopped early" for a model whose last attempt died outright. That is
+        # the same false-statement-about-the-model this block exists to prevent,
+        # reintroduced by the fix that stopped deleting partials. Newest wins,
+        # and the older artifact still gets named rather than quietly dropped.
+        if [ -s "$rf.failed" ]; then
+          why="the adapter failed, see $sl-run$n.md.failed"
+          [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
+        fi
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
         continue
       fi

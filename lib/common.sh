@@ -270,16 +270,29 @@ classify_run() {
   if [ -z "$(sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]; then
     echo failed; return 0
   fi
-  if rate_limited "$f"; then echo failed; return 0; fi
+  # ★ THE ADAPTER'S OWN VERDICT COMES FIRST, both markers together, ahead of
+  # anything inferred from the text or the exit code. The adapter is the only
+  # layer that watched the run; everything below this is cadre guessing from
+  # what the run happened to print.
+  #
+  # That ordering is not cosmetic. rate_limited() is a keyword match over files
+  # under 2KB, so a SHORT partial review that merely DISCUSSES rate limiting --
+  # quoting a 429, naming retry-after -- matched it and was binned `failed`,
+  # findings and all, while the adapter was explicitly saying "I stopped early
+  # and here is what I got". Reviewing this repo is enough to trigger it: cadre
+  # has rate-limit handling, so a reviewer reading it quotes those very words.
+  # Found by a grok-led panel; the earlier fix moved this marker ahead of the
+  # exit code and stopped one line short of the check that actually shadowed it.
   if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE)'; then echo failed; return 0; fi
-  # ★ The marker is checked BEFORE the exit status, on purpose. _TRUNCATED is an
-  # adapter explicitly saying "I stopped early and this is what I got", which is
-  # exactly the situation where a CLI plausibly also exits nonzero -- rc 124 from
-  # a timeout is the obvious one. Testing rc first threw away the partial output
-  # of any adapter that honoured the contract without also normalising its exit
-  # code. The shipped adapters all normalise, so this costs nothing today and
-  # stops a third-party adapter from being silently wrong tomorrow.
+  # ★ Checked BEFORE the exit status too. _TRUNCATED is an adapter saying "I
+  # stopped early and this is what I got", exactly the situation where a CLI
+  # plausibly also exits nonzero -- rc 124 from a timeout is the obvious one.
+  # Testing rc first threw away the partial output of any adapter that honoured
+  # the contract without also normalising its exit code. The shipped adapters
+  # all normalise, so this costs nothing today and stops a third-party adapter
+  # from being silently wrong tomorrow.
   if tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
+  if rate_limited "$f"; then echo failed; return 0; fi
   if [ "$rc" -ne 0 ]; then echo failed; return 0; fi
   echo ok
   return 0

@@ -103,9 +103,15 @@ for r in "${reviewers[@]}"; do
         "$CADRE_ROOT/bin/agentcall" "$agent" -d "$CHECKOUT" -m ro "${m[@]}" \
         < "$PROMPT" > "$f.part" 2>&1
       rc=$?
+      # ★ Same order as the review path, same reason: the adapter's own verdict
+      # outranks a keyword scan. A short partial that merely DISCUSSES rate
+      # limiting used to drive real retries and then get cadre's own note
+      # appended after its _TRUNCATED marker. See lib/run-review.sh.
+      [ "$(classify_run "$f.part" "$rc")" = failed ] || break
       rate_limited "$f.part" || break
       if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
-        echo "    rate limited, gave up after $attempt attempts" >> "$f.part"
+        { echo "DID NOT COMPLETE, rate limited, gave up after $attempt attempts."
+          cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
         break
       fi
       w=$(retry_wait "$attempt")

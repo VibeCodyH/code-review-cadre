@@ -607,6 +607,15 @@ cmd_synthesize() {
     fi
   done
   local short=("${partial[@]}" "${capped[@]}")
+  # ★ Two different counts, and conflating them made cadre lie in prose while
+  # the arithmetic stayed right. $n is "full text in front of the synthesizer",
+  # which is the correct denominator floor for a finding only the full reviews
+  # could have named. It is NOT the number of reviewers who finished: a capped
+  # reviewer reviewed the whole diff and returned a complete review, cadre just
+  # sent part of it. Reporting $n as "returned a complete review" understates a
+  # healthy panel, and when every survivor was capped the console announced
+  # "synthesizing 0 review(s)" for a run that was about to synthesize several.
+  local completed=$((n + ${#capped[@]}))
 
   # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
   # "2/2 agree", and the reader concludes the panel was unanimous when a third
@@ -617,7 +626,7 @@ cmd_synthesize() {
     body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
 These roster members produced no usable review. Say so in the verdict spread and
 in the header line. Keep them out of every agreement tag: they neither agree nor
-disagree with anything. This panel was ${#specs[@]} reviewers, of whom $n
+disagree with anything. This panel was ${#specs[@]} reviewers, of whom $completed
 returned a complete review.
 
 "
@@ -662,8 +671,10 @@ and declined to flag it, which is exactly backwards.
 
   local pf="$out/.synth-prompt" raw attempt=1 w
   { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
-  local pcount=""; [ ${#partial[@]} -gt 0 ] && pcount=" + ${#partial[@]} partial"
-  echo "synthesizing $n review(s)$pcount with $synth ..."
+  local pcount=""
+  [ ${#capped[@]} -gt 0 ] && pcount="$pcount, ${#capped[@]} sent short"
+  [ ${#partial[@]} -gt 0 ] && pcount="$pcount, ${#partial[@]} partial"
+  echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
   local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
   [ -n "$m" ] && mm=(-M "$m")
   local rc=0

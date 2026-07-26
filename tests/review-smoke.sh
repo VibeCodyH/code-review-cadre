@@ -21,7 +21,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
-  for n in good good2 trunc dead echoer chrome terse; do
+  for n in good good2 trunc dead echoer chrome terse ratepart ratelim; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -65,6 +65,21 @@ A
   # "findings=0" is a valid review and a length floor used to throw those away.
   cat > "$1/agents.d/terse.sh" <<'A'
 run_terse() { printf '\033[0m\nfindings=0\n\033[0m\n'; }
+A
+  # ★ A SHORT partial review that happens to TALK about rate limiting, then the
+  # truncation marker. rate_limited() is a keyword match over files under 2KB,
+  # so this shape matched it and was binned `failed` -- findings discarded --
+  # while the adapter was explicitly reporting a partial. Reviewing cadre itself
+  # produces exactly this, since cadre handles 429s and a reviewer quotes them.
+  cat > "$1/agents.d/ratepart.sh" <<'A'
+run_ratepart() {
+  printf 'blocking: the 429 too many requests path retries forever.\n'
+  printf '_TRUNCATED, stopped early.\n'
+}
+A
+  # A GENUINE rate limit, no review at all: the case the retry loop is for.
+  cat > "$1/agents.d/ratelim.sh" <<'A'
+run_ratelim() { printf 'Error: 429 too many requests.\n'; }
 A
 }
 
@@ -383,9 +398,11 @@ check "empty box says so"           "grep -q 'none of cadre.s adapters' <<<\"\$O
 
 echo "== ★ one-reviewer nudge (data, not a warning) =="
 D=$(case_dir nudge)
-rm -f "$D/bin/good2" "$D/bin/trunc" "$D/bin/dead" "$D/bin/echoer" "$D/bin/chrome" "$D/bin/terse" \
-      "$D/agents.d/good2.sh" "$D/agents.d/trunc.sh" "$D/agents.d/dead.sh" "$D/agents.d/echoer.sh" \
-      "$D/agents.d/chrome.sh" "$D/agents.d/terse.sh"
+# Everything except `good`, by exclusion rather than by name: this listed the
+# stubs to delete, so adding a stub anywhere else in this file silently gave the
+# case two reviewers and the nudge stopped firing.
+find "$D/bin" -type f ! -name good -delete
+find "$D/agents.d" -type f ! -name good.sh -delete
 OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
 check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""
@@ -509,7 +526,7 @@ check "panel size stated for dead"     "grep -q 'panel was 4 reviewers' '$P'"
 check "dead kept OUT of the tags"      "grep -q 'out of every agreement tag' '$P'"
 check "raised-by-partial counts BOTH"  "grep -q 'numerator and the' '$P'"
 check "one counting rule, no conflict" "! grep -q 'not out of' '$P'"
-check "run line counts the partial"    "grep -q '2 review(s) + 1 partial' <<<\"\$OUT\""
+check "run line counts the partial"    "grep -q '3 review(s) (2 full, 1 partial)' <<<\"\$OUT\""
 
 # ★ Over the byte cap, `head -c` MAKES a review partial: it goes silent about
 # everything past the cut for the same reason a truncated one does. Re-labelled,
@@ -521,6 +538,44 @@ check "cap truncation is announced"    "grep -q 'over CADRE_SYNTH_MAX' <<<\"\$OU
 check "a cut review says CADRE cut it"  "grep -q 'BUT CADRE SENT ONLY ITS FIRST' '$P'"
 check "and is NOT called stopped-early" "! grep -q 'STOPPED EARLY): good' '$P'"
 check "and the silence rule travels"   "grep -q 'counts in NEITHER' '$P'"
+# ★ Every survivor capped is the case that exposed the two meanings of $n: the
+# console counted only reviews sent whole, so it announced "synthesizing 0
+# review(s)" and then synthesized two. Found by a grok-led panel.
+check "never announces 0 while merging" "! grep -q 'synthesizing 0 review' <<<\"\$OUT\""
+check "capped counted in the run line"  "grep -q '2 review(s) (0 full, 2 sent short)' <<<\"\$OUT\""
+
+# ★ The same count in prose, where it is handed to the MODEL rather than the
+# reader: a capped reviewer did return a complete review, cadre just sent part
+# of it. Needs a dead reviewer present, since that is the block carrying the
+# sentence, and a capped one, since $n and the completed count only diverge
+# when something was cut.
+OUT=$(CADRE_SYNTH_MAX=100 run_cadre "$D" review --roster good,good2,dead --synth echoer \
+        --base main --label capdead "$S")
+P="$D/state/reviews/capdead/synthesis.md"
+check "capped counted as completed"    "grep -q 'of whom 2' '$P'"
+check "and the dead one is not"        "grep -q 'panel was 3 reviewers' '$P'"
+
+# ★ The adapter's own verdict outranks anything cadre infers from the text. A
+# short partial that merely DISCUSSES rate limiting matched rate_limited() and
+# was binned `failed`, findings and all, because that keyword check ran before
+# the truncation marker. Found by a grok-led panel, on a diff where reviewing
+# cadre's own 429 handling is what produces the shape.
+OUT=$(run_cadre "$D" review --roster ratepart,good --synth none \
+        --base main --label ratepart "$S")
+R="$D/state/reviews/ratepart"
+check "rate-limit TALK is not a failure" "! ls '$R'/ratepart-*.md.failed >/dev/null 2>&1"
+check "it is degraded, findings kept"    "grep -q 'retries forever' '$R'/ratepart-*.md.partial"
+
+# ★ A REAL rate limit must still give up loudly -- and say so in the documented
+# contract shape at the TOP of the file, not appended under whatever the adapter
+# printed. The note used to go at the end, which is exactly where it displaced a
+# tail-anchored marker.
+OUT=$(CADRE_RETRIES=1 run_cadre "$D" review --roster ratelim,good --synth none \
+        --base main --label ratelim "$S")
+R="$D/state/reviews/ratelim"
+check "a real rate limit still fails"   "ls '$R'/ratelim-*.md.failed >/dev/null 2>&1"
+check "give-up note leads the file"     "head -1 '$R'/ratelim-*.md.failed | grep -q '^DID NOT COMPLETE, rate limited'"
+check "and the error text is kept"      "grep -q '429 too many requests' '$R'/ratelim-*.md.failed"
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

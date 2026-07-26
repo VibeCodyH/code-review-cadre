@@ -319,9 +319,24 @@ run_one() {
       "$CADRE_ROOT/bin/agentcall" "$agent" -d "$dir" -m ro "${m[@]}" \
       < "$PROMPT" > "$f.part" 2>&1
     rc=$?
+    # ★ The adapter's own verdict outranks the keyword match HERE too, not only
+    # inside classify_run. rate_limited() is a keyword scan over small files, so
+    # a short partial review that merely DISCUSSES rate limiting drove three
+    # real retries with exponential backoff -- burning the quota the check
+    # exists to protect -- and then had cadre's own "gave up" note appended
+    # AFTER the adapter's _TRUNCATED line, displacing the marker out of the tail
+    # window so the artifact was filed `failed` regardless. Fixing only
+    # classify_run left both halves alive; a test on the end-to-end path is what
+    # found them, after the unit-level order was already correct.
+    [ "$(classify_run "$f.part" "$rc")" = failed ] || break
     rate_limited "$f.part" || break
     if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
-      echo "    rate limited, gave up after $attempt attempts" >> "$f.part"; break
+      # ★ PREPENDED, in the documented contract shape. Appending is the one
+      # placement a tail-anchored marker cannot survive, and cadre writing into
+      # the adapter's output at all is what made its own contract unreadable.
+      { echo "DID NOT COMPLETE, rate limited, gave up after $attempt attempts."
+        cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
+      break
     fi
     w=$(retry_wait "$attempt")
     echo "  $spec: rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})" >> "$log"
