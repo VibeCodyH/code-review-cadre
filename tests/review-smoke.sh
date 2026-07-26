@@ -21,7 +21,8 @@ trap 'rm -rf "$SANDBOX"' EXIT
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
-  for n in good good2 trunc dead echoer chrome terse ratepart ratelim; do
+  for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
+           synthquote synthtrunc; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -80,6 +81,25 @@ A
   # A GENUINE rate limit, no review at all: the case the retry loop is for.
   cat > "$1/agents.d/ratelim.sh" <<'A'
 run_ratelim() { printf 'Error: 429 too many requests.\n'; }
+A
+  # ★ A COMPLETE synthesis that ends by QUOTING a reviewer's truncation marker,
+  # which the synthesis prompt explicitly asks it to report. Exits 0, because
+  # nothing went wrong. Must survive: this is a good merge.
+  cat > "$1/agents.d/synthquote.sh" <<'A'
+run_synthquote() {
+  printf 'Merged. One reviewer was cut off; it ended with:\n'
+  printf '_TRUNCATED, stopped early._\n'
+}
+A
+  # The same text from a synthesizer that really DID stop early. Identical bytes,
+  # nonzero exit. Must fail closed -- a partial merge is worthless while the
+  # reviews it was merging are complete on disk.
+  cat > "$1/agents.d/synthtrunc.sh" <<'A'
+run_synthtrunc() {
+  printf 'Merged. One reviewer was cut off; it ended with:\n'
+  printf '_TRUNCATED, stopped early._\n'
+  return 1
+}
 A
 }
 
@@ -576,6 +596,23 @@ R="$D/state/reviews/ratelim"
 check "a real rate limit still fails"   "ls '$R'/ratelim-*.md.failed >/dev/null 2>&1"
 check "give-up note leads the file"     "head -1 '$R'/ratelim-*.md.failed | grep -q '^DID NOT COMPLETE, rate limited'"
 check "and the error text is kept"      "grep -q '429 too many requests' '$R'/ratelim-*.md.failed"
+
+echo "== ★ a synthesis QUOTING a marker is not a truncated synthesis =="
+# The synthesis prompt asks the model to report which reviewers were cut off, so
+# a correct merge can legitimately END by quoting a _TRUNCATED line -- the exact
+# window a tail-anchored text check inspects. No window fixes that: the check
+# must both catch a real truncated merge and ignore a quoted one, and the bytes
+# are identical. So the marker is not read here at all; the EXIT STATUS is.
+# These two stubs print the SAME text and differ only in what they return.
+OUT=$(run_cadre "$D" review --roster good,good2 --synth synthquote \
+        --base main --label sq "$S")
+check "quoted marker survives"        "[ -s '$D/state/reviews/sq/synthesis.md' ]"
+check "and is not filed as failed"    "[ ! -e '$D/state/reviews/sq/synthesis.md.failed' ]"
+OUT=$(run_cadre "$D" review --roster good,good2 --synth synthtrunc \
+        --base main --label st "$S")
+check "same text, nonzero -> failed"  "[ -s '$D/state/reviews/st/synthesis.md.failed' ]"
+check "and no synthesis was saved"    "[ ! -e '$D/state/reviews/st/synthesis.md' ]"
+check "the reviews survive it"        "ls '$D/state/reviews/st'/good-*.md >/dev/null 2>&1"
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

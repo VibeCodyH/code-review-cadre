@@ -697,7 +697,7 @@ and declined to flag it, which is exactly backwards.
   # worthless in a way a partial review is not, because the reviews it was
   # merging are already on disk and complete. Fail closed and keep them.
   printf '%s' "$raw" > "$out/.synth-tmp"
-  if [ "$(classify_run "$out/.synth-tmp" "$rc")" != ok ]; then
+  if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" != ok ]; then
     mv "$out/.synth-tmp" "$out/synthesis.md.failed"
     echo "synthesis FAILED (rc=$rc), kept as synthesis.md.failed." >&2
     echo "The individual reviews are intact in $out." >&2

@@ -17,7 +17,7 @@ NOTES
 }
 
 run_grok() {
-  local out pf stop text m=()
+  local out pf stop text trunc=0 m=()
   [ -n "$model" ] && m=(--model "$model")
   if [ -n "$DRY" ]; then
     _run timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" \
@@ -44,8 +44,18 @@ run_grok() {
     # "incomplete" is as damaging as a missed truncation.
     case "$(printf '%s' "$stop" | tr 'A-Z' 'a-z')" in
       endturn|end_turn|completed|stop|"") ;;
-      *) echo; echo "_TRUNCATED, grok stopped early (stopReason=$stop); this review is INCOMPLETE, not a clean pass._" ;;
+      # ★ Marker AND a nonzero exit, because the marker alone cannot be read in
+      # every context. As a REVIEWER the marker decides and this rc is ignored.
+      # As a SYNTHESIZER the marker cannot decide: the synthesis is supposed to
+      # discuss truncated reviewers, so its own text may legitimately end in a
+      # quoted _TRUNCATED line, and a text check there bins a good merge. The
+      # exit status says the same thing in a channel the model cannot forge.
+      # See docs/ADDING-AN-AGENT.md: text alone qualifies an adapter for a
+      # reviewer slot, not a synth slot.
+      *) echo; echo "_TRUNCATED, grok stopped early (stopReason=$stop); this review is INCOMPLETE, not a clean pass._"
+         trunc=1 ;;
     esac
   fi
   rm -f "$out"
+  return "$trunc"
 }

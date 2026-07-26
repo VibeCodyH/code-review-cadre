@@ -42,6 +42,16 @@ an empty failure.
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
 
+**To be usable as a synthesizer, an adapter must ALSO exit nonzero when it
+truncates.** The text marker is enough for a reviewer slot and not enough for a
+synth slot, because the synthesis prompt asks the model to report which
+reviewers were truncated — so a complete, correct synthesis can legitimately end
+by quoting a `_TRUNCATED` line, and cadre cannot tell that apart from a merge
+that died mid-sentence. It stops reading the marker there and reads your exit
+status instead. An adapter that returns 0 while printing the marker will pass a
+half-finished synthesis off as a whole one, and nothing downstream can catch it.
+`grok` and `codex` do both.
+
 `degraded` is a real state, not a polite failure. A partial review's findings go
 to the synthesizer and into the report; what changes is that its **silence stops
 counting** — the files it never reached are not cleared, and it is not tallied as

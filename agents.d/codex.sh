@@ -46,6 +46,11 @@ run_codex() {
       cat "$last"
       echo
       echo "_TRUNCATED, codex was killed at the ${TIMEOUT}s timeout; this review is INCOMPLETE, not a clean pass. Raise CADRE_TIMEOUT._"
+      # ★ Nonzero as well as the marker, so this adapter stays usable as a
+      # SYNTHESIZER: there the marker cannot be trusted, because a synthesis is
+      # asked to discuss truncated reviewers and may quote one. agents.d/grok.sh
+      # carries the same pair and the full reasoning.
+      rm -f "$last"; return 1
     else
       echo "DID NOT COMPLETE, codex was killed at the ${TIMEOUT}s timeout with no output. Raise CADRE_TIMEOUT."
     fi

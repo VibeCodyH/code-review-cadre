@@ -252,7 +252,10 @@ rate_limited() {
 # away as truncated -- and the synthesizer is now explicitly asked to discuss
 # exactly that. Line-anchoring alone was not enough.
 classify_run() {
-  local f="$1" rc="$2"
+  # ctx is `run` (an adapter reviewing) or `synth` (an adapter merging reviews).
+  # Same rule, one copy; the only difference is whether the truncation MARKER is
+  # readable in that context. See the marker check below for why it is not.
+  local f="$1" rc="$2" ctx="${3:-run}"
   if [ ! -s "$f" ]; then echo failed; return 0; fi
   # ★ Empty means empty of CONTENT, not of bytes. CLIs wrap the model's text in
   # their own chrome -- colour escapes, a "> build <model>" banner -- so a run
@@ -291,7 +294,17 @@ classify_run() {
   # the contract without also normalising its exit code. The shipped adapters
   # all normalise, so this costs nothing today and stops a third-party adapter
   # from being silently wrong tomorrow.
-  if tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
+  # ★ ...but ONLY for an adapter run. A synthesis is not an adapter run, and the
+  # prompt asks it to report which reviewers were truncated -- so its own last
+  # lines are the most likely place in the whole system for a legitimate,
+  # complete answer to quote a `_TRUNCATED` marker, and a text check there binned
+  # good merges. Narrowing the window relocated that collision onto exactly the
+  # spot the prompt drives the model toward; it did not remove it, and no window
+  # can, because the two requirements are contradictory for a text test. A
+  # synthesizer that really did stop early is caught by its EXIT STATUS instead,
+  # which the model cannot forge. docs/ADDING-AN-AGENT.md makes that the price
+  # of a synth slot.
+  if [ "$ctx" = run ] && tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
   if rate_limited "$f"; then echo failed; return 0; fi
   if [ "$rc" -ne 0 ]; then echo failed; return 0; fi
   echo ok
