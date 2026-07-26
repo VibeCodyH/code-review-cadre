@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Code Review Cadre: benchmark AI code reviewers on YOUR repo and staff a panel.
+# Code Review Cadre: benchmark AI code reviewers on YOUR repo, staff a panel,
+# then run that panel on the code you are about to ship.
 #
 #   cadre setup <repo-dir> [limit]        mine (target, fix) commit pairs
 #   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
@@ -8,6 +9,8 @@
 #   cadre add-pass <label>                register a corrected draft as a pass
 #   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
 #   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
+#   cadre panel [--save]                  compare graded candidates, propose a panel
+#   cadre review [opts] [repo-dir]        run the staffed roster on a REAL change
 #   cadre passes                          list registered passes
 #   cadre agents                          list adapters
 #   cadre doctor [--probe]                check the install and the passes
@@ -27,7 +30,8 @@ PASSES="$CADRE_HOME/passes.conf"
 
 usage() {
   cat <<'EOF'
-Code Review Cadre: benchmark AI code reviewers on YOUR repo and staff a panel.
+Code Review Cadre: benchmark AI code reviewers on YOUR repo, staff a panel,
+then run that panel on the code you are about to ship.
 
   cadre setup <repo-dir> [limit]        mine (target, fix) commit pairs
   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
@@ -36,7 +40,16 @@ Code Review Cadre: benchmark AI code reviewers on YOUR repo and staff a panel.
   cadre add-pass <label>                register a corrected draft as a pass
   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
-  cadre panel                           compare all graded candidates, propose a panel
+  cadre panel [--save [--force]]        compare all graded candidates, propose a
+                                        panel; --save writes a commented roster
+  cadre review [opts] [repo-dir]        run the staffed roster against a REAL
+                                        change and collect the reviews
+      --base <rev>       diff against this (default: merge-base with the
+                         default branch)
+      --roster a,b,c     override $CADRE_HOME/roster
+      --jobs N           reviewers in parallel (default 1; they share rate limits)
+      --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
+      --label <name>     output dir name; labels are single-use
   cadre passes                          list registered passes
   cadre agents                          list adapters
   cadre doctor [--probe]                check the install and the passes
@@ -248,6 +261,15 @@ cmd_grade() {
 # reports and asks which items NOTHING in the lineup covers.
 cmd_panel() {
   init_home
+  local save=0 force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --save)  save=1 ;;
+      --force) force=1 ;;
+      *) die "panel: unknown option '$1'" ;;
+    esac
+    shift
+  done
   local reports=("$CADRE_HOME"/report-*.md)
   [ -e "${reports[0]}" ] || die "no graded candidates yet. Run: cadre run <agent>"
 
@@ -316,6 +338,241 @@ cmd_panel() {
   echo "Pick the smallest set of rows that covers every column. Prefer a"
   echo "candidate that covers a column no one else does, even at a lower total."
   echo "cadre does not choose for you."
+
+  [ "$save" = 1 ] || return 0
+
+  # ★ Every candidate is written COMMENTED OUT. Writing an uncommented roster
+  # would be cadre choosing the panel, which is the one thing the whole tool
+  # declines to do. The user uncomments; `cadre review` refuses an all-commented
+  # roster and says so.
+  local roster="$CADRE_HOME/roster"
+  if [ -s "$roster" ] && [ "$force" != 1 ]; then
+    die "a roster already exists at $roster.
+     Re-running panel would overwrite the lineup you staffed.
+     Use 'cadre panel --save --force' if that is what you want."
+  fi
+  {
+    echo "# Staffed panel for 'cadre review'. Uncomment the reviewers you want."
+    echo "# cadre does not choose for you: every line below starts commented out."
+    echo "#"
+    echo "# Coverage at the time this was written:"
+    echo "#"
+    printf '#   %-28s' 'CANDIDATE'
+    for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do printf '%-8s' "$k"; done
+    echo
+    for s in "${specs[@]}"; do
+      printf '#   %-28s' "$s"
+      for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
+        printf '%-8s' "${grade[$s,$k]:-.}"
+      done
+      echo
+    done
+    [ ${#gaps[@]} -gt 0 ] && { echo "#"; echo "# ★ NOTHING in this lineup catches: ${gaps[*]}"; }
+    echo "#"
+    for s in "${specs[@]}"; do echo "# $s"; done
+  } > "$roster" || die "could not write $roster"
+  echo
+  echo "wrote $roster (all commented). Uncomment your lineup, then: cadre review"
+}
+
+# Roster for the live path: --roster, then $CADRE_ROSTER, then the file.
+# Accepts commas or newlines, ignores '#' comments and blanks, rejects
+# duplicates (two identical specs would double-count in the synthesis tally).
+resolve_roster() {
+  local raw="" src="" seen=" " s out=()
+  if [ -n "${1:-}" ]; then raw="$1"; src="--roster"
+  elif [ -n "${CADRE_ROSTER:-}" ]; then raw="$CADRE_ROSTER"; src="\$CADRE_ROSTER"
+  elif [ -s "$CADRE_HOME/roster" ]; then raw=$(cat "$CADRE_HOME/roster"); src="$CADRE_HOME/roster"
+  else
+    die "no roster. Give --roster a,b, set \$CADRE_ROSTER, or run
+     'cadre panel --save' and uncomment the lineup in $CADRE_HOME/roster."
+  fi
+  # ★ printf '%s\n' AND the `|| [ -n "$s" ]` guard. With neither, a value with
+  # no trailing newline ("a,b,c" from --roster, or a roster file without one)
+  # loses its LAST entry: read returns non-zero on the final partial line, so
+  # the loop body never runs for it. Measured: `--roster good,trunc,ghost` ran
+  # two reviewers and the report never mentioned the third. A silently dropped
+  # reviewer is indistinguishable from one that ran and found nothing, which is
+  # the failure this whole tool exists to catch.
+  while IFS= read -r s || [ -n "$s" ]; do
+    s="${s%%#*}"; s=$(trim "$s")
+    [ -n "$s" ] || continue
+    case "$seen" in *" $s "*) die "roster: '$s' listed twice ($src)" ;; esac
+    seen="$seen$s "
+    out+=("$s")
+  done < <(printf '%s\n' "$raw" | tr ',' '\n')
+  [ ${#out[@]} -gt 0 ] || die "every line in $src is commented out. Uncomment the reviewers you want."
+  printf '%s\n' "${out[@]}"
+}
+
+# Does this adapter ignore the prompt? coderabbit does: it ships its own review
+# contract. Such an adapter cannot synthesize, because synthesis IS a prompt.
+is_promptless() {
+  local a="$1" d
+  ( for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
+      [ -f "$d/$a.sh" ] && . "$d/$a.sh"
+    done
+    declare -F "noprompt_$a" >/dev/null ) 2>/dev/null
+}
+
+cmd_review() {
+  init_home; need git; need jq
+  local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base)   base="${2:?--base needs a rev}"; shift 2 ;;
+      --roster) roster_arg="${2:?--roster needs specs}"; shift 2 ;;
+      --jobs)   jobs="${2:?--jobs needs a number}"; shift 2 ;;
+      --synth)  synth="${2:?--synth needs an agent spec}"; shift 2 ;;
+      --label)  label="${2:?--label needs a name}"; shift 2 ;;
+      -*) die "review: unknown option '$1'" ;;
+      *)  repo="$1"; shift ;;
+    esac
+  done
+  case "$jobs" in ''|*[!0-9]*|0) die "--jobs must be a positive integer" ;; esac
+
+  # Keep the argument: the assignment blanks $repo on failure, so reading it in
+  # the error names $PWD and reports the wrong directory as "not a git repo".
+  local want="${repo:-.}"
+  repo=$(git -C "$want" rev-parse --show-toplevel 2>/dev/null) \
+    || die "not inside a git repository: $(readlink -m "$want")"
+
+  # Command substitution, not process substitution: resolve_roster's die runs in
+  # a subshell, and with `< <(...)` its exit status is lost, so a duplicate or
+  # all-commented roster fell through to run-review.sh's "no reviewers given"
+  # and buried the real reason.
+  local specs=() rl
+  rl=$(resolve_roster "$roster_arg") || exit 2
+  mapfile -t specs <<< "$rl"
+
+  # Resolve the base here so the error names something the user typed.
+  if [ -z "$base" ]; then
+    local db
+    db=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
+    [ -n "$db" ] || for db in main master; do
+      git -C "$repo" rev-parse --verify -q "$db^{commit}" >/dev/null 2>&1 && break || db=""
+    done
+    [ -n "$db" ] || die "cannot find a default branch to diff against.
+     Pass --base explicitly, e.g. --base HEAD~1 or --base origin/main."
+    base=$(git -C "$repo" merge-base HEAD "$db" 2>/dev/null) \
+      || die "no merge-base between HEAD and $db. Pass --base explicitly."
+    echo "base: $db -> $(printf '%.9s' "$base")"
+  fi
+
+  if [ -n "$synth" ] && [ "$synth" != none ]; then
+    local sa; sa=$(spec_agent "$synth")
+    command -v "$sa" >/dev/null 2>&1 || die "--synth is '$synth' but '$sa' is not installed"
+    is_promptless "$sa" && die "--synth cannot be '$sa': that adapter ignores the prompt and
+     ships its own review contract, so it cannot merge reviews."
+  fi
+
+  # Single-use labels. Reusing one would hand back the previous review of
+  # DIFFERENT code, which is the benchmark path's resume behaviour and is a
+  # wrong answer here rather than a saved call.
+  local short; short=$(git -C "$repo" rev-parse --short HEAD)
+  if [ -n "$label" ]; then
+    case "$label" in *[!a-zA-Z0-9_-]*) die "--label must be [a-zA-Z0-9_-]" ;; esac
+  else
+    local n=1; label="review-$short-1"
+    while [ -e "$CADRE_HOME/reviews/$label" ]; do n=$((n + 1)); label="review-$short-$n"; done
+  fi
+  local out="$CADRE_HOME/reviews/$label"
+  mkdir -p "$CADRE_HOME/reviews" || die "cannot create $CADRE_HOME/reviews"
+  mkdir "$out" 2>/dev/null || die "$out already exists. Pick another --label."
+
+  local prov=() sp
+  for sp in "${specs[@]}"; do prov+=("$(spec_agent "$sp"):$(spec_model "$sp" | cut -d/ -f1)"); done
+  if [ "$jobs" -gt 1 ] && [ "$(printf '%s\n' "${prov[@]}" | sort | uniq -d | wc -l)" -gt 0 ]; then
+    echo "⚠ two roster entries share a provider; --jobs $jobs will make them"
+    echo "  compete for the same rate limit."
+  fi
+
+  if ! "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}"; then
+    # rmdir, not rm -rf: it succeeds only when the directory is empty, so a run
+    # that died before writing anything leaves nothing behind, and one that
+    # produced partial output keeps it. An empty review dir reads as a review
+    # that found nothing, and it burns the label for the next attempt.
+    rmdir "$out" 2>/dev/null
+    return 1
+  fi
+
+  [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
+  return 0
+}
+
+# Merge the reviews. A model too, so the same rate-limit rule applies, and a
+# failure here must not cost the individual reviews: they are already on disk.
+cmd_synthesize() {
+  local out="$1" synth="$2"; shift 2
+  local specs=("$@") sl body="" n=0 cap="${CADRE_SYNTH_MAX:-200000}" dead=()
+  for sp in "${specs[@]}"; do
+    sl=$(slug "$sp")
+    if [ -s "$out/$sl.md" ]; then
+      body="$body===== REVIEWER: $sp ====="$'\n'"$(cat "$out/$sl.md")"$'\n\n'
+      n=$((n + 1))
+    else
+      dead+=("$sp")
+    fi
+  done
+  # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
+  # "2/2 agree", and the reader concludes the panel was unanimous when a third
+  # of it never returned. The count in an attribution tag has to be out of the
+  # roster, not out of the survivors.
+  if [ ${#dead[@]} -gt 0 ]; then
+    body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
+These roster members produced no usable review. Say so in the verdict spread.
+Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
+
+"
+  fi
+  [ "$n" -ge 2 ] || { echo "only $n usable review(s); nothing to synthesize."; return 0; }
+  if [ "${#body}" -gt "$cap" ]; then
+    echo "⚠ reviews total ${#body} bytes, over CADRE_SYNTH_MAX ($cap). Truncating each."
+    body=""
+    local per=$(( cap / n ))
+    for sp in "${specs[@]}"; do
+      sl=$(slug "$sp"); [ -s "$out/$sl.md" ] || continue
+      body="$body===== REVIEWER: $sp ====="$'\n'"$(head -c "$per" "$out/$sl.md")"$'\n\n'
+    done
+  fi
+
+  local pf="$out/.synth-prompt" raw attempt=1 w
+  { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
+  echo "synthesizing $n review(s) with $synth ..."
+  local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
+  [ -n "$m" ] && mm=(-M "$m")
+  local rc=0
+  while :; do
+    raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
+    printf '%s' "$raw" > "$out/.synth-tmp"
+    rate_limited "$out/.synth-tmp" || { rm -f "$out/.synth-tmp"; break; }
+    rm -f "$out/.synth-tmp"
+    [ "$attempt" -ge "${CADRE_RETRIES:-3}" ] && break
+    w=$(retry_wait "$attempt")
+    echo "  synthesis rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})"
+    sleep "$w"; attempt=$((attempt + 1))
+  done
+  rm -f "$pf"
+  # ★ Same classification the reviewers get. An auth error or an exhausted
+  # retry is NON-EMPTY text, so testing only for emptiness filed the error
+  # itself as synthesis.md and the reader saw a merged review that was really
+  # a 429. The synthesizer is a model; it fails like one.
+  printf '%s' "$raw" > "$out/.synth-tmp"
+  if [ "$rc" -ne 0 ] || [ -z "$raw" ] \
+     || grep -qE '^(DID NOT RUN|DID NOT COMPLETE|_TRUNCATED)' "$out/.synth-tmp" \
+     || rate_limited "$out/.synth-tmp"; then
+    mv "$out/.synth-tmp" "$out/synthesis.md.failed"
+    echo "synthesis FAILED (rc=$rc), kept as synthesis.md.failed." >&2
+    echo "The individual reviews are intact in $out." >&2
+    return 0
+  fi
+  rm -f "$out/.synth-tmp"
+  { echo "# Synthesis ($synth)"; echo
+    echo "_Model-produced and unverified. It merges what the reviewers said; it has"
+    echo "not seen the code. Read the individual reviews before acting._"; echo
+    printf '%s\n' "$raw"
+  } > "$out/synthesis.md"
+  echo "saved: $out/synthesis.md"
 }
 
 # Exits non-zero when a pass is broken. README and docs both say doctor FAILS a
@@ -378,6 +635,7 @@ case "${1:-}" in
   run)       shift; cmd_run "$@" ;;
   grade)     shift; cmd_grade "$@" ;;
   panel)     shift; cmd_panel "$@" ;;
+  review)    shift; cmd_review "$@" ;;
   passes)    shift; cmd_passes "$@" ;;
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
   doctor)    shift; cmd_doctor "$@" ;;

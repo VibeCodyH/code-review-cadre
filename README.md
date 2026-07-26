@@ -227,6 +227,44 @@ candidate went in as SECONDARY. Never run alone, and a clean pass from it
 doesn't mean anything, because it produced one on a commit it had called
 blocking the run before. Same checkout, same prompt.
 
+## Then actually use it: `cadre review`
+
+Everything above is the setup. The benchmark tells you who to seat; `cadre
+review` seats them.
+
+```bash
+cadre panel --save                 # writes $CADRE_HOME/roster, all commented
+$EDITOR ~/.local/state/cadre/roster    # uncomment your lineup
+cadre review                       # run it against what you're about to ship
+```
+
+`cadre review` diffs your working tree against the merge-base with the default
+branch, hands that change to every reviewer on the roster, and writes each
+review plus a combined `report.md`. `--base <rev>` picks a different base,
+`--roster a,b,c` skips the file, `--synth <agent-spec>` merges the reviews into
+one document that tags each finding with **which** reviewers raised it.
+
+That attribution is the point. "3 of 3 flagged this" and "only the secondary
+flagged this" are different facts, and the second one is why you staffed a
+panel instead of buying the highest scorer.
+
+A few things it does deliberately:
+
+- **It never runs a reviewer in your repo.** Each one gets its own disposable
+  checkout built from `git stash create`, so your working tree is never the
+  thing an auto-approving CLI is turned loose on. Several of these CLIs have no
+  read-only mode and the brief invites them to run tests.
+- **Uncommitted and untracked work is included**, because that is what you are
+  about to ship. Gitignored files are not, so `.env.local` stays out.
+- **A reviewer that fails is named in the report as FAILED.** Not omitted, not
+  counted as clean. A panel of three where one died is a panel of two, and you
+  should know which two.
+- **Labels are single-use.** Re-running against changed code cannot hand you
+  back the previous review.
+
+`--jobs N` runs reviewers concurrently. It defaults to 1 because roster members
+on the same provider share a rate limit; cadre warns when it spots two.
+
 ## When you hit a rate limit
 
 Cadre expects this. A reply that looks like a rate-limit refusal is retried on
