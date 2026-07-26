@@ -8,6 +8,7 @@ priority order: data loss, security, correctness bugs that reach production,
 then missing test coverage for the changed paths.
 
 {{TEST_PARAGRAPH}}
+{{TEST_RESULT}}
 Rate each defect by CONSEQUENCE, not by how far it is from how you would have
 written it:
   blocking   - data loss or corruption, auth bypass, secret exposure, or

@@ -50,6 +50,8 @@ then run that panel on the code you are about to ship.
       --jobs N           reviewers in parallel (default 1; they share rate limits)
       --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
       --label <name>     output dir name; labels are single-use
+      --prerun <cmd>     run <cmd> once on a throwaway copy of the checkout and
+                         give every reviewer the transcript. Off unless you ask.
   cadre passes                          list registered passes
   cadre agents                          list adapters
   cadre doctor [--probe]                check the install and the passes
@@ -418,6 +420,7 @@ is_promptless() {
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
+  local prerun="${CADRE_PRERUN:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --base)   base="${2:?--base needs a rev}"; shift 2 ;;
@@ -425,6 +428,7 @@ cmd_review() {
       --jobs)   jobs="${2:?--jobs needs a number}"; shift 2 ;;
       --synth)  synth="${2:?--synth needs an agent spec}"; shift 2 ;;
       --label)  label="${2:?--label needs a name}"; shift 2 ;;
+      --prerun) prerun="${2:?--prerun needs a command}"; shift 2 ;;
       -*) die "review: unknown option '$1'" ;;
       *)  repo="$1"; shift ;;
     esac
@@ -505,7 +509,8 @@ cmd_review() {
     echo "  compete for the same rate limit."
   fi
 
-  if ! "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}"; then
+  if ! CADRE_PRERUN="$prerun" \
+       "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}"; then
     # rmdir, not rm -rf: it succeeds only when the directory is empty, so a run
     # that died before writing anything leaves nothing behind, and one that
     # produced partial output keeps it. An empty review dir reads as a review

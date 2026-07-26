@@ -55,9 +55,12 @@ detect_test_cmd() {
 }
 
 # Render lib/prompts/review.md for one pass.
-#   render_review_prompt <template> <base> <checkout-dir>
+#   render_review_prompt <template> <base> <checkout-dir> [prerun-result-file]
+# The 4th argument is optional and only the live path passes it. run-pass.sh
+# calls this with three, and review.md has no {{TEST_RESULT}} in it, so the
+# benchmark prompt is byte-identical either way.
 render_review_prompt() {
-  local tpl="$1" base="$2" dir="$3" stack testcmd testp=""
+  local tpl="$1" base="$2" dir="$3" resf="${4:-}" stack testcmd testp=""
   stack="${CADRE_STACK:-}"
   [ -n "$stack" ] && stack="$stack"$'\n\n'
   testcmd=$(detect_test_cmd "$dir")
@@ -73,12 +76,78 @@ something you did not.
 reasoning rather than a reproduction, say \"by inspection\".
 "
   fi
-  awk -v base="$base" -v stack="$stack" -v testp="$testp" '
+  # ★ {{TEST_RESULT}} is spliced by READING THE FILE, never by gsub. In awk an
+  # unescaped & in a gsub replacement means "the text that matched", and test
+  # output is exactly the kind of string that contains one. Substituting it
+  # would corrupt the result silently, and a corrupted transcript of a test run
+  # is worse than no transcript. Whole-line directive, no substitution.
+  # With no result file the line is dropped, leaving no placeholder behind.
+  awk -v base="$base" -v stack="$stack" -v testp="$testp" -v resf="$resf" '
+    /^\{\{TEST_RESULT\}\}$/ {
+      if (resf != "") { while ((getline l < resf) > 0) print l; close(resf) }
+      next }
     { gsub(/\{\{BASE\}\}/, base)
       gsub(/\{\{STACK_LINE\}\}/, stack)
       gsub(/\{\{TEST_PARAGRAPH\}\}/, testp)
       print }
   ' "$tpl"
+}
+
+# Run one user-supplied command against a THROWAWAY copy of the checkout and
+# write a transcript the reviewers can be handed.
+#   run_prerun <checkout> <workdir> <cmd> <out-file>
+# Never the user's repo, never $TPL itself: a suite that builds leaves artifacts,
+# and every reviewer would then diff a tree that has been built in. The copy is
+# deleted before any reviewer starts.
+run_prerun() {
+  # Separate statements. bash expands every word of a `local` line before any
+  # of its assignments take effect, so dir="$work/prerun" on the same line reads
+  # an unset $work and dies under set -u.
+  local tpl="$1" work="$2" cmd="$3" out="$4"
+  local dir="$work/prerun" rc raw
+  cp -a "$tpl" "$dir" || { echo "cadre: could not copy the checkout for --prerun" >&2; return 1; }
+  raw=$(mktemp)
+  # ★ Same environment scrub the reviewers get. This command is arbitrary code
+  # running against the checkout, and CADRE_HOME is the path to the answer keys
+  # and to every previous review. A build script that dumps its environment
+  # would otherwise write them into a transcript handed to the whole panel.
+  local sc; mapfile -t sc < <(scrubbed_env)
+  ( cd "$dir" && "${sc[@]}" timeout "${CADRE_PRERUN_TIMEOUT:-600}" bash -c "$cmd" ) \
+    > "$raw" 2>&1
+  rc=$?
+  rm -rf "$dir"
+  # 126/127 are the shell's own "cannot execute" and "not found". The user asked
+  # for a measurement and did not get one; feeding the panel "exit 127" as if it
+  # were a test result is worse than stopping.
+  if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+    echo "cadre: --prerun command could not be executed (exit $rc): $cmd" >&2
+    sed 's/^/     /' "$raw" | head -5 >&2
+    rm -f "$raw"; return 1
+  fi
+  {
+    echo "The test command below was run ONCE on this exact checkout before you"
+    echo "started. Every reviewer on this panel was given this same transcript."
+    echo
+    echo "  \$ $cmd"
+    if [ "$rc" -eq 124 ]; then
+      echo "  TIMED OUT after ${CADRE_PRERUN_TIMEOUT:-600}s"
+    else
+      echo "  exit $rc"
+    fi
+    echo
+    echo "Last lines of its output:"
+    echo '```'
+    tail -c 4000 "$raw" | tail -40
+    echo '```'
+    echo
+    echo "Treat that as measured fact. Do not re-run the whole suite to confirm"
+    echo "it; targeted tests are still worth running. If a finding of yours"
+    echo "contradicts this transcript, say so and say which one is wrong."
+    echo
+  } > "$out"
+  rm -f "$raw"
+  PRERUN_RC="$rc"
+  return 0
 }
 
 # Refuse to point auto-approving CLIs at a checkout holding credentials.
@@ -155,9 +224,17 @@ retry_wait() {
 # path to the keys and to every other reviewer's output. The DERIVED names are
 # on the list too: scrubbing one variable is useless while another spells the
 # same path out. Mitigation, not a sandbox. docs/METHOD.md §5.
+# ★ CADRE_WORK belongs here and was missing. Reviewer checkouts are $CADRE_WORK/
+# review-XXXX/rN, so an agent that can read this variable can `ls` straight into
+# the tree another reviewer on the same panel is reading. That is exactly the
+# cross-contamination the output-directory containment check exists to stop, and
+# leaving the variable in the environment routed around it. Nothing downstream
+# of the scrub needs it: the runner resolves the work dir before dispatch and
+# hands each agent its own -d.
 CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE
                  CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
-                 CADRE_PASS_DIR CADRE_AGENTS_D)
+                 CADRE_PASS_DIR CADRE_AGENTS_D CADRE_WORK
+                 CADRE_PRERUN CADRE_PRERUN_TIMEOUT)
 scrubbed_env() {
   local a=(env) v
   for v in "${CADRE_SCRUB_ENV[@]}"; do a+=(-u "$v"); done

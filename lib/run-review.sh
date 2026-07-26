@@ -214,6 +214,36 @@ secrets_preflight "$TPL"
 SUB=$(git -C "$TPL" ls-files -s | awk '$1 == "160000"' | head -3)
 [ -n "$SUB" ] && echo "  ⚠ submodules present; their contents are NOT in the checkout"
 
+# ---- deterministic pre-pass ---------------------------------------------------
+
+# ★ The one signal on this panel that is not a language model's opinion. Every
+# reviewer here is wrong in correlated ways; a suite that exits non-zero is not
+# wrong at all. Running it ONCE and handing all of them the same transcript
+# costs one execution and removes a whole class of "by inspection" guessing
+# about whether the change builds.
+# Deliberately opt-in and deliberately not auto-detected. detect_test_cmd emits
+# TEMPLATES with placeholders (`go test ./<pkg>`), which are examples for a
+# reviewer to adapt and are not runnable. Guessing a runnable command would mean
+# cadre executing whatever a repo's package.json says on a diff the user may not
+# trust. The command has to be one a human typed.
+# Ordered AFTER secrets_preflight on purpose: never execute a build in a tree
+# that just failed the credential check.
+PRERUN_FILE=""
+PRERUN_RC=""
+if [ -n "${CADRE_PRERUN:-}" ]; then
+  mkdir -p "$OUT" || die "cannot create $OUT"
+  PRERUN_FILE="$OUT/prerun.md"
+  echo "  running the pre-pass: $CADRE_PRERUN"
+  run_prerun "$TPL" "$WORKDIR" "$CADRE_PRERUN" "$PRERUN_FILE" \
+    || die "the --prerun command did not run. Fix it or drop --prerun;
+     handing reviewers a failed measurement as if it were a test result
+     is worse than handing them none."
+  if [ "$PRERUN_RC" = 0 ]; then echo "  pre-pass: exit 0"
+  elif [ "$PRERUN_RC" = 124 ]; then echo "  ⚠ pre-pass TIMED OUT; reviewers are told so"
+  else echo "  ⚠ pre-pass exit $PRERUN_RC; reviewers are told so"
+  fi
+fi
+
 # ---- prompt ------------------------------------------------------------------
 
 mkdir -p "$OUT" || die "cannot create $OUT"
@@ -221,9 +251,9 @@ PROMPT="$OUT/prompt.txt"
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   # Rendered, not copied. run-pass.sh copies it verbatim, which silently drops
   # {{BASE}} and leaves the placeholder in the brief.
-  render_review_prompt "$CADRE_PROMPT_FILE" "$BASE" "$TPL" > "$PROMPT"
+  render_review_prompt "$CADRE_PROMPT_FILE" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 else
-  render_review_prompt "$CADRE_ROOT/lib/prompts/review-live.md" "$BASE" "$TPL" > "$PROMPT"
+  render_review_prompt "$CADRE_ROOT/lib/prompts/review-live.md" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 fi
 
 {
@@ -243,6 +273,11 @@ fi
   echo "base-tree: $btree"
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "roster:    ${reviewers[*]}"
+  # Provenance for the one non-model input. A report saying the suite passed is
+  # only checkable if the manifest names the command that was run.
+  # tr, because the manifest is one field per line and a multi-line command
+  # would split into rows that parse as other fields.
+  [ -n "$PRERUN_FILE" ] && echo "prerun:    exit $PRERUN_RC | $(printf '%s' "$CADRE_PRERUN" | tr '\n' ' ')"
   echo "prompt:    $(cksum < "$PROMPT" | cut -d' ' -f1)"
   echo "cadre:     $(git -C "$CADRE_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$OUT/manifest.txt"

@@ -230,6 +230,83 @@ OUT=$(run_cadre "$D" review --roster good "$S")
 check "falls back to main with no origin" "grep -q 'base: main' <<<\"\$OUT\""
 check "and completes the run"             "grep -q '1 ok' <<<\"\$OUT\""
 
+echo "== ★ deterministic pre-pass (--prerun) =="
+# No --prerun: the placeholder must not survive into a reviewer's brief.
+D=$(case_dir prerun_off); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "no leftover placeholder"      "! grep -q 'TEST_RESULT' '$R/prompt.txt'"
+check "no prerun line in manifest"   "! grep -q '^prerun:' '$R/manifest.txt'"
+
+# Passing command: the transcript reaches the prompt and the manifest.
+D=$(case_dir prerun_pass); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'echo all green' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "prerun transcript written"    "[ -s '$R/prerun.md' ]"
+check "exit 0 in the brief"          "grep -q 'exit 0' '$R/prompt.txt'"
+check "output in the brief"          "grep -q 'all green' '$R/prompt.txt'"
+check "manifest records the command" "grep -q '^prerun: *exit 0 | echo all green' '$R/manifest.txt'"
+
+# ★ Failing command: reviewers must be told the suite is RED. The whole point
+# of the pre-pass is the case where the deterministic signal disagrees with a
+# panel that would otherwise call the change clean.
+D=$(case_dir prerun_fail); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'echo boom; exit 3' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "non-zero exit in the brief"   "grep -q 'exit 3' '$R/prompt.txt'"
+check "failure output carried"       "grep -q 'boom' '$R/prompt.txt'"
+check "run still completed"          "grep -q '1 ok' <<<\"\$OUT\""
+check "warned on the console"        "grep -q 'pre-pass exit 3' <<<\"\$OUT\""
+
+# ★ An & in test output. awk's gsub reads & in the replacement as "the matched
+# text", so splicing this with gsub would silently corrupt the transcript.
+D=$(case_dir prerun_amp); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'echo "a && b"' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "ampersand output intact"      "grep -qF 'a && b' '$R/prompt.txt'"
+
+# ★ The pre-pass is arbitrary code next to the answer keys. It gets the same
+# environment scrub the reviewers get, or a build script that dumps its env
+# writes CADRE_HOME into a transcript handed to the whole panel.
+D=$(case_dir prerun_env); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main \
+        --prerun 'echo "HOME_IS:[${CADRE_HOME:-unset}] WORK_IS:[${CADRE_WORK:-unset}]"' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "CADRE_HOME scrubbed from prerun" "grep -q 'HOME_IS:\[unset\]' '$R/prompt.txt'"
+check "CADRE_WORK scrubbed from prerun" "grep -q 'WORK_IS:\[unset\]' '$R/prompt.txt'"
+
+# A multi-line command must not split the manifest into bogus rows.
+D=$(case_dir prerun_multiline); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'echo one
+echo two' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "manifest stays one line per field" "[ \$(wc -l < '$R/manifest.txt') -eq \$(grep -c ':' '$R/manifest.txt') ]"
+
+# ★ A command that cannot run is a refusal, not a finding. Feeding the panel
+# "exit 127" as though it were a test result is worse than not measuring.
+D=$(case_dir prerun_bad); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'no-such-command-xyz' "$S")
+check "unrunnable prerun refuses"    "grep -q 'could not be executed' <<<\"\$OUT\""
+check "and produced no review"       "[ -z \"\$(ls -A '$D/state/reviews' 2>/dev/null)\" ]"
+
+# ★ The pre-pass runs in a THROWAWAY copy. Artifacts it drops must not reach a
+# reviewer, or every panel diffs a tree that has been built in.
+D=$(case_dir prerun_clean); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good --base main --prerun 'echo art > build-artifact.txt' "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
+check "artifact not in the checkout" "! grep -q 'build-artifact' '$G'"
+check "artifact not in source repo"  "[ ! -e '$S/build-artifact.txt' ]"
+check "work dir still cleaned"       "[ -z \"\$(ls -A '$D/work')\" ]"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

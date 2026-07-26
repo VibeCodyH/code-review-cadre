@@ -269,6 +269,46 @@ A few things it does deliberately:
 - **Labels are single-use.** Re-running against changed code cannot hand you
   back the previous review.
 
+### `--prerun`: the one reviewer that isn't a language model
+
+Every model on your panel is wrong in correlated ways. A test suite isn't wrong
+at all, and it has zero correlation with how the code was written, which makes
+it the highest-leverage thing on the panel.
+
+```bash
+cadre review --prerun 'npm test' --base origin/main
+```
+
+That runs once, on a throwaway copy of the checkout, before any reviewer
+starts. All of them get the same transcript: the command, the exit code, and
+the tail of its output, with instructions to treat it as measured fact and to
+speak up if a finding of theirs contradicts it. A panel that would otherwise
+have called a red branch clean now has to argue with the exit code.
+
+**It runs a command, so it is off unless you ask for it, and cadre will not
+guess one.** Auto-detection exists for the *brief* and it emits templates like
+`go test ./<pkg>` on purpose, because those are examples for a reviewer to
+adapt. Turning a guess into something cadre executes would mean running
+whatever a repo's `package.json` says on a diff you may not trust. The command
+has to be one you typed.
+
+The rest of the handling follows from that:
+
+- It runs **after** the credential preflight. Nothing gets built in a tree that
+  just failed the secrets check.
+- It runs in a **copy that is deleted before any reviewer starts**, so a suite
+  that compiles doesn't leave every reviewer diffing a tree that's been built
+  in.
+- A command that **can't be executed at all** (exit 126/127) stops the run.
+  Handing a panel `exit 127` as though it were a test result is worse than
+  measuring nothing.
+- A **failing** suite does not stop the run. Reviewing a red branch is a normal
+  thing to want, and the reviewers are told it's red.
+- Timeout is 600s, `CADRE_PRERUN_TIMEOUT` to change it. A timeout is reported to
+  the panel as a timeout, not as a pass.
+- The manifest records the command and its exit code, because a report that
+  says the suite passed is only checkable if you can see what ran.
+
 `--jobs N` runs reviewers concurrently. It defaults to 1 because roster members
 on the same provider share a rate limit; cadre warns when it spots two.
 
@@ -304,7 +344,10 @@ states the answer, every reviewer has git, and some have web access. So:
 - The runner refuses when the output directory sits inside the checkout, or
   contains it. Otherwise reviewer #1's findings are one `ls` from the tree
   reviewer #2 reads, and you get contamination that looks exactly like agreement.
-- Agents run with `CADRE_HOME` and friends stripped from their environment.
+- Agents run with `CADRE_HOME`, `CADRE_WORK` and the rest of cadre's own
+  variables stripped from their environment. `CADRE_WORK` especially: reviewer
+  checkouts are siblings underneath it, so an agent that can read it is one
+  `ls` from the tree another reviewer on the same panel is reading.
 - A review that repeats two or more key headings word for word is flagged
   SUSPECT, excluded from scoring, and the whole pass is reported INVALID.
 - Credential shaped files in the checkout stop the run before any agent starts.
