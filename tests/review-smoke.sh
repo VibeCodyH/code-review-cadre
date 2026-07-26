@@ -92,6 +92,12 @@ check ".env.example did not refuse"  "[ -n '$G' ]"
 check "truncated review -> FAILED"   "ls '$R'/trunc-*.md.failed >/dev/null 2>&1"
 check "missing agent -> FAILED"      "grep -q 'NOT INSTALLED' '$R'/ghost-*.failed"
 check "all 3 roster rows in report"  "[ \$(grep -c '^- \`' '$R/report.md') -eq 3 ]"
+# ★ The checkout is synthetic, so its shas die with it. The manifest has to name
+# commits that still resolve in the user's repo or it is not provenance.
+MB=$(grep '^base:' "$R/manifest.txt" | awk '{print $2}')
+MS=$(grep '^snapshot:' "$R/manifest.txt" | awk '{print $2}')
+check "manifest base resolves in repo"     "git -C '$S' cat-file -e '$MB^{commit}' 2>/dev/null"
+check "manifest snapshot resolves in repo" "git -C '$S' cat-file -e '$MS^{commit}' 2>/dev/null"
 
 echo "== ★ untracked-only change on the default branch =="
 # stash create does not consider a new file a change, so SNAP == BASE == HEAD.
@@ -150,6 +156,38 @@ OUT=$(run_cadre "$D" review --roster good,good2,trunc --jobs 2 --label throttle 
 R2="$D/state/reviews/throttle"
 check "throttled queue runs everyone"   "[ \$(grep -c '^- \`' '$R2/report.md') -eq 3 ]"
 check "throttled work dir cleaned"      "[ -z \"\$(ls -A '$D/work')\" ]"
+
+echo "== ★ deleted credentials must not reach reviewers =="
+# A full clone carries history the preflight cannot scan: a .env committed once
+# and deleted still answers `git log -p`. The checkout is built as a synthetic
+# two-commit repo so there is no earlier history to mine.
+D=$(case_dir history_leak); S="$D/src"
+echo 'API_TOKEN=history-only-secret' > "$S/.env"
+git -C "$S" add -A; git -C "$S" commit -qm "oops"
+git -C "$S" rm -q "$S/.env" 2>/dev/null || git -C "$S" rm -q .env
+git -C "$S" commit -qm "remove it"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+echo dirty >> "$S/app.js"
+cat > "$D/agents.d/good.sh" <<'A'
+run_good() {
+  echo "REVIEW by good"
+  ( cd "$dir" && echo "--history--" && git log -p --all 2>/dev/null | head -200 )
+}
+A
+OUT=$(run_cadre "$D" review --roster good --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
+check "deleted secret NOT reachable"  "! grep -q 'history-only-secret' '$G'"
+check "history is only the two commits" "[ \$(grep -c '^commit ' '$G') -le 2 ]"
+check "the run still succeeded"       "grep -q '1 ok' <<<\"\$OUT\""
+
+echo "== ★ CADRE_HOME inside the reviewed repo is refused =="
+D=$(case_dir nested_home); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+mkdir -p "$S/.cadre/keys"; echo "K1 the answer" > "$S/.cadre/keys/secret.md"
+OUT=$(CADRE_HOME="$S/.cadre" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --roster good --base main "$S" 2>&1)
+check "nested CADRE_HOME refused"     "grep -q 'inside the repo being reviewed' <<<\"\$OUT\""
 
 echo "== default base resolution =="
 # Every other case passes --base. This is the path a real user hits first.

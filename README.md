@@ -254,6 +254,13 @@ A few things it does deliberately:
   checkout built from `git stash create`, so your working tree is never the
   thing an auto-approving CLI is turned loose on. Several of these CLIs have no
   read-only mode and the brief invites them to run tests.
+- **Your history never goes with it.** The checkout is a synthetic two-commit
+  repository: the base tree, and the tree under review. A plain clone would
+  carry every commit you ever made, and the credential check can only scan the
+  tree that's checked out — so a `.env` committed once and deleted years ago
+  passes the check and comes straight back out of `git log -p`. That was a real
+  bug here, found by a panel run against this tool's own diff. Now there is no
+  earlier history in the checkout to mine.
 - **Uncommitted and untracked work is included**, because that is what you are
   about to ship. Gitignored files are not, so `.env.local` stays out.
 - **A reviewer that fails is named in the report as FAILED.** Not omitted, not

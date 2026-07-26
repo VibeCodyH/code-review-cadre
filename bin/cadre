@@ -441,6 +441,16 @@ cmd_review() {
   # a subshell, and with `< <(...)` its exit status is lost, so a duplicate or
   # all-commented roster fell through to run-review.sh's "no reviewers given"
   # and buried the real reason.
+  # ★ State inside the repo becomes review input. Untracked files are carried
+  # into the checkout, so a CADRE_HOME under $repo hands every auto-approving
+  # reviewer the answer keys and every previous reviewer's findings. Same rule
+  # the benchmark path enforces on checkouts, applied to the live one.
+  is_inside "$CADRE_HOME" "$repo" && die "CADRE_HOME ($CADRE_HOME) is inside the repo being reviewed.
+     Its keys and prior reports would be copied into the checkout as untracked
+     files. Point CADRE_HOME somewhere outside $repo."
+  is_inside "$CADRE_WORK" "$repo" && die "CADRE_WORK ($CADRE_WORK) is inside the repo being reviewed.
+     Point it somewhere outside $repo."
+
   local specs=() rl
   rl=$(resolve_roster "$roster_arg") || exit 2
   mapfile -t specs <<< "$rl"
@@ -518,12 +528,14 @@ cmd_synthesize() {
   # "2/2 agree", and the reader concludes the panel was unanimous when a third
   # of it never returned. The count in an attribution tag has to be out of the
   # roster, not out of the survivors.
+  local deadblock=""
   if [ ${#dead[@]} -gt 0 ]; then
-    body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
+    deadblock="===== FAILED, NO REVIEW: ${dead[*]} =====
 These roster members produced no usable review. Say so in the verdict spread.
 Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
 
 "
+    body="$body$deadblock"
   fi
   [ "$n" -ge 2 ] || { echo "only $n usable review(s); nothing to synthesize."; return 0; }
   if [ "${#body}" -gt "$cap" ]; then
@@ -534,6 +546,10 @@ Agreement counts are out of ${#specs[@]} reviewers, not out of $n.
       sl=$(slug "$sp"); [ -s "$out/$sl.md" ] || continue
       body="$body===== REVIEWER: $sp ====="$'\n'"$(head -c "$per" "$out/$sl.md")"$'\n\n'
     done
+    # ★ Re-append. Rebuilding body from the reviews alone dropped the
+    # failed-reviewer block, so a truncated synthesis silently went back to
+    # reporting agreement among the survivors as if they were the whole panel.
+    body="$body$deadblock"
   fi
 
   local pf="$out/.synth-prompt" raw attempt=1 w

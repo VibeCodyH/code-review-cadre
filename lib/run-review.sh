@@ -42,7 +42,13 @@ cleanup() {
   [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ] && rm -rf "$WORKDIR"
   return 0
 }
-trap cleanup EXIT INT TERM
+# ★ INT/TERM must EXIT, not just clean up. A handler that returns lets execution
+# resume where it was interrupted: Ctrl-C during a reviewer or a retry sleep
+# tore down the refs and the checkout, then carried on running reviewers and
+# writing a report against state that no longer existed. EXIT stays bare so the
+# normal path cleans up once.
+trap cleanup EXIT
+trap 'echo; echo "cadre: interrupted, cleaning up." >&2; cleanup; trap - EXIT; exit 130' INT TERM
 
 # ---- resolve the two commits ------------------------------------------------
 
@@ -82,7 +88,11 @@ fi
 # not consider new files a change, so a branch whose whole contribution is new
 # files looks identical to HEAD here. Rejecting it would contradict the promise
 # that untracked work is included.
-NEW=$(git -C "$REPO" ls-files --others --exclude-standard | wc -l)
+# Checked: piping straight into wc -l would turn a git failure into "0 new
+# files" and drop them from the review without a word.
+newlist=$(git -C "$REPO" ls-files --others --exclude-standard) \
+  || die "could not list untracked files in $REPO"
+NEW=$(printf '%s' "$newlist" | grep -c . || true)
 
 if [ "$BASE" = "$SNAP" ] && [ "$NEW" -eq 0 ]; then
   die "base and the reviewed state are the same commit ($(printf '%.9s' "$BASE"))
@@ -108,16 +118,46 @@ WORKDIR=$(mktemp -d "$CADRE_WORK/review-XXXXXXXX") || die "cannot create a work 
 chmod 700 "$WORKDIR"
 TPL="$WORKDIR/template"
 
-# mktemp made it; git clone insists on creating it itself.
-git clone -q --no-checkout "file://$(readlink -f "$REPO")" "$TPL" \
-  || die "clone failed"
-git -C "$TPL" fetch -q origin "+$SR:$SR" "+$BR:$BR" || die "could not fetch the review refs"
-git -C "$TPL" checkout -q --detach "$SR" || die "could not check out the snapshot"
-# No origin, matching the benchmark path: nothing to fetch history back from.
-# Checked: a surviving origin is a live file:// remote pointing at the user's
-# own repo, which every auto-approving reviewer can fetch from.
-git -C "$TPL" remote remove origin >/dev/null 2>&1 \
+# ★ A SYNTHETIC two-commit repo, not a clone of yours. This is the difference
+# between a reviewer seeing your change and a reviewer seeing your history.
+#
+# A full clone carries every commit ever made, while secrets_preflight can only
+# scan the tree that is checked out. Measured: a `.env` committed once and
+# deleted long before the review base survives in a clone, passes the preflight
+# because it is not in the current tree, and comes straight back out of
+# `git log -p --all -- .env`. Auto-approving reviewers have git.
+#
+# So: fetch ONLY the two trees this review is about, --depth=1 so no ancestors
+# come with them, and build two fresh commits with commit-tree. The result has
+# exactly the base and the change under review in it, `BASE...HEAD` resolves
+# normally, and there is no earlier history to mine because it was never
+# transferred. Verified: the deleted-credential case yields zero hits.
+git init -q "$TPL" || die "could not init the review checkout"
+git -C "$TPL" remote add origin "file://$(readlink -f "$REPO")" \
+  || die "could not add the source remote"
+git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" \
+  || die "could not fetch the review refs"
+btree=$(git -C "$TPL" rev-parse "$BR^{tree}") || die "cannot resolve the base tree"
+stree=$(git -C "$TPL" rev-parse "$SR^{tree}") || die "cannot resolve the snapshot tree"
+mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
+         -c commit.gpgsign=false commit-tree "$@"; }
+c1=$(mk "$btree" -m "base") || die "could not build the base commit"
+c2=$(mk "$stree" -p "$c1" -m "change under review") || die "could not build the review commit"
+git -C "$TPL" update-ref -d "$SR"; git -C "$TPL" update-ref -d "$BR"
+# The remote is a live file:// path into the user's repo, and every reviewer
+# runs with tool auto-approval. It goes before anything is checked out.
+git -C "$TPL" remote remove origin \
   || die "could not remove the origin remote from the checkout"
+git -C "$TPL" checkout -q --detach "$c2" || die "could not check out the change"
+# Drop the fetched objects that are no longer referenced, so the original
+# commits are not merely unreferenced but gone.
+git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1
+git -C "$TPL" gc --prune=now -q >/dev/null 2>&1
+# What the reviewers diff against is the synthetic base. Keep the REAL shas for
+# the manifest: a provenance record naming commits that exist only in a deleted
+# temp directory cannot be used to reproduce anything.
+REAL_BASE="$BASE" REAL_SNAP="$SNAP"
+BASE="$c1"
 
 # ★ Untracked files. stash create does not carry them, and most changes worth
 # reviewing add a file, so a reviewer that cannot see it reviews half the
@@ -152,9 +192,10 @@ if [ "$NEW" -gt 0 ]; then
   echo "  carried $NEW untracked file(s) into the checkout"
 fi
 
-# Refuse before any auto-approving CLI sees the tree. Note this scans the
-# CHECKOUT only: the clone still carries history, so a credential committed and
-# later deleted is reachable with git log. Not solved, just stated.
+# Refuse before any auto-approving CLI sees the tree. This scans the CHECKOUT
+# only, which is exactly why the checkout is synthetic: in a full clone a
+# credential committed once and deleted long ago is absent from the tree, so it
+# passes here, and is still one `git log -p` away. Two commits, no history.
 secrets_preflight "$TPL"
 
 SUB=$(git -C "$TPL" ls-files -s | awk '$1 == "160000"' | head -3)
@@ -173,15 +214,19 @@ else
 fi
 
 {
+  # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
+  # two-commit repo, so its own shas are meaningless the moment it is deleted,
+  # and a provenance record you cannot resolve is not provenance.
   echo "repo:      $(readlink -f "$REPO")"
-  echo "base:      $BASE"
-  echo "snapshot:  $SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
+  echo "base:      $REAL_BASE"
+  echo "snapshot:  $REAL_SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
+  echo "untracked: $NEW file(s) carried in"
   echo "roster:    ${reviewers[*]}"
   echo "prompt:    $(cksum < "$PROMPT" | cut -d' ' -f1)"
   echo "cadre:     $(git -C "$CADRE_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$OUT/manifest.txt"
 
-echo "reviewing ${BASE:0:9}..${SNAP:0:9} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
+echo "reviewing ${REAL_BASE:0:9}..${REAL_SNAP:0:9} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
 
 mapfile -t SCRUB < <(scrubbed_env)
 
@@ -261,7 +306,7 @@ done
 
 REPORT="$OUT/report.md"
 {
-  echo "# Review: ${BASE:0:9}..${SNAP:0:9}"
+  echo "# Review: ${REAL_BASE:0:9}..${REAL_SNAP:0:9}"
   echo
   sed 's/^/    /' "$OUT/manifest.txt"
   echo
