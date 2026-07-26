@@ -721,8 +721,70 @@ check "settle marks the settled one"  "grep -q '\[L1\]' <<<\"\$OUT\""
 check "non-zero while something new"  "[ $RC -ne 0 ]"
 check "review file left alone"        "grep -q 'timestamps are strings' '$D/review.md'"
 
+# ★ Models FENCE their JSON, and the extractor used to take the first { to EOF
+# -- carrying the closing ``` with it, which jq rejects. A judge that answered
+# perfectly was then reported as one that "failed or stopped early", and the
+# correct findings appeared inside the error's own diagnostic lines. Measured
+# with qwen judging a real panel. Every stub above returns bare JSON, which is
+# exactly why the suite was green while live settle was broken: judge stubs are
+# tidier than judges.
+for shape in fenced tagged prose_after leading_prose; do
+  case $shape in
+    fenced)        pre='```';     post='```' ;;
+    tagged)        pre='```json'; post='```' ;;
+    prose_after)   pre='```json'; post='```
+Let me know if you want more detail.' ;;
+    leading_prose) pre='Here is the match:
+```json'; post='```' ;;
+  esac
+  cat > "$D/agents.d/judgestub.sh" <<A
+run_judgestub() {
+  cat <<'J'
+$pre
+{"findings":[{"summary":"timestamps are strings","status":"SETTLED","ledger_id":"L1"},
+             {"summary":"unchecked exit code in run.sh","status":"NEW","ledger_id":null}]}
+$post
+J
+}
+A
+  OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1); RC=$?
+  check "$shape JSON parses"          "! grep -q 'nothing was matched' <<<\"\$OUT\""
+  check "$shape finds the NEW one"    "grep -q 'unchecked exit code' <<<\"\$OUT\""
+  check "$shape keeps the SETTLED one" "grep -q '\[L1\]' <<<\"\$OUT\""
+done
+# A brace inside a string must not end the object early -- summaries quote code.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() {
+  cat <<'J'
+```json
+{"findings":[{"summary":"the guard { returns early } here","status":"NEW","ledger_id":null}]}
+```
+J
+}
+A
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1)
+check "braces inside strings survive" "grep -q 'returns early' <<<\"\$OUT\""
+# Still has to REFUSE a fenced block that is not complete JSON.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() {
+  cat <<'J'
+```json
+{"findings":[{"summary":"cut off
+```
+J
+}
+A
+OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1); RC=$?
+check "fenced but broken still fails" "grep -q 'nothing was matched' <<<\"\$OUT\""
+check "and still does not exit 0"     "[ $RC -ne 0 ]"
+
 # ★ Everything settled means a wrapper can stop. That exit status IS the
 # stopping rule, so it has to be exact.
+cat > "$D/agents.d/judgestub.sh" <<'A'
+run_judgestub() {
+  echo '{"findings":[{"summary":"timestamps are strings","status":"SETTLED","ledger_id":"L1"}]}'
+}
+A
 cat > "$D/agents.d/judgestub.sh" <<'A'
 run_judgestub() {
   echo '{"findings":[{"summary":"timestamps are strings","status":"SETTLED","ledger_id":"L1"}]}'
