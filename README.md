@@ -78,7 +78,7 @@ around a number.
 
 | Provider | Free tier | Notes for this tool |
 |---|---|---|
-| [Cerebras](https://inference.cerebras.ai/) | 1M tokens/day, ~30 req/min | Very fast. An 8K context cap on free models, so ideal as a judge, tight for a whole-diff review. |
+| [Cerebras](https://inference.cerebras.ai/) | 1M tokens/day, ~30 req/min | Very fast, and verified working **as a judge**. ★ As a *reviewer* through `opencode` it currently hard-fails: the second assistant turn after a tool call is rejected with `reasoning_content ... unsupported`. Judge only, for now. |
 | [Groq](https://console.groq.com/) | ~30 req/min, ~6K tokens/min | Fastest free inference. The low TPM is the binding constraint, not the request count. |
 | [Mistral](https://console.mistral.ai/) | 1 req/sec, 500K tokens/min, 1B tokens/month | Most generous by volume, and Codestral is a code model. Also what the shipped `vibe` adapter uses. |
 | [OpenRouter](https://openrouter.ai/) | ~20 req/min per model, ~30 free models | One key, many lineages. The cheapest way to reach a model family you do not have. |

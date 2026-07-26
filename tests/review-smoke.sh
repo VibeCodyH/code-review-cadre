@@ -144,6 +144,21 @@ R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
 check "all 3 accounted for in parallel" "[ \$(grep -c '^- \`' '$R/report.md') -eq 3 ]"
 check "parallel work dir cleaned"       "[ -z \"\$(ls -A '$D/work')\" ]"
 
+# ★ jobs < roster size. With --jobs 3 and three reviewers the slot loop never
+# runs, so the one branch that can deadlock or miscount stayed untested.
+OUT=$(run_cadre "$D" review --roster good,good2,trunc --jobs 2 --label throttle --base main "$S")
+R2="$D/state/reviews/throttle"
+check "throttled queue runs everyone"   "[ \$(grep -c '^- \`' '$R2/report.md') -eq 3 ]"
+check "throttled work dir cleaned"      "[ -z \"\$(ls -A '$D/work')\" ]"
+
+echo "== default base resolution =="
+# Every other case passes --base. This is the path a real user hits first.
+D=$(case_dir defaultbase); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good "$S")
+check "falls back to main with no origin" "grep -q 'base: main' <<<\"\$OUT\""
+check "and completes the run"             "grep -q '1 ok' <<<\"\$OUT\""
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
