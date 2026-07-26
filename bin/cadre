@@ -572,6 +572,9 @@ cmd_synthesize() {
   local per=0
   if [ "$total" -gt "$cap" ]; then
     per=$(( cap / usable ))
+    # A share of 0 would announce a truncation and then perform none, quietly
+    # sending the whole oversized body anyway.
+    [ "$per" -lt 1 ] && per=1
     echo "⚠ reviews total $total bytes, over CADRE_SYNTH_MAX ($cap). Truncating each to $per."
   fi
 
