@@ -41,6 +41,16 @@ run_kiro() {
   # answer in a trust banner, retry notices, a `> ` echo and a credits footer,
   # plus private-mode escapes like [?25h. Anchored: the banner only appears at
   # the top, and a reviewer quoting "Credits:" mid-review must survive.
+  # ★ Kiro blames the wrong thing on its way out. When a run dies for a REAL
+  # reason -- "Kiro rate limit reached: Request quota exceeded", or "The model
+  # you've selected is temporarily unavailable" -- it still signs off with
+  #   error: Tool approval required but --no-interactive was specified.
+  #          Use --trust-all-tools to automatically approve tools.
+  # as the last line, and cadre passes --trust-all-tools on every call, so that
+  # sentence is never true here. It is the last thing in the .failed file, which
+  # is the first thing a human reads, and it sends them hunting a config bug in
+  # this adapter while the actual cause scrolls by above. Annotated rather than
+  # deleted: if kiro ever emits it alone, the line still has to survive.
   local esc; esc=$(printf '\033')
   ( cd "$dir" && timeout -k 30 "$TIMEOUT" kiro-cli chat --no-interactive \
       --trust-all-tools "${m[@]}" "$prompt" 2>&1 ) \
@@ -48,5 +58,6 @@ run_kiro() {
           -e '1,8{' -e '/^All tools are now trusted/d' -e '/^Agents can sometimes do/d' \
           -e '/^Learn more at https:\/\/kiro\.dev/d' -e '}' \
           -e '/^WARNING: Retry #[0-9]/d' \
-          -e '/^ *▸ Credits: .* Time: /d'
+          -e '/^ *▸ Credits: .* Time: /d' \
+          -e 's|^error: Tool approval required but --no-interactive was specified.*|[cadre] Ignore the "tool approval" error kiro prints here: this call passed --trust-all-tools, so that is never the cause. The real reason is above.|'
 }

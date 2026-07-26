@@ -22,7 +22,7 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc synthrate; do
+           synthquote synthtrunc synthrate synthtiny; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   cat > "$1/agents.d/good.sh" <<'A'
@@ -654,6 +654,51 @@ OUT=$(run_cadre "$D" review --roster good,good2 --synth synthtrunc \
 check "same text, nonzero -> failed"  "[ -s '$D/state/reviews/st/synthesis.md.failed' ]"
 check "and no synthesis was saved"    "[ ! -e '$D/state/reviews/st/synthesis.md' ]"
 check "the reviews survive it"        "ls '$D/state/reviews/st'/good-*.md >/dev/null 2>&1"
+# ★ PINNING a deliberate choice, not describing an accident. Under 500 bytes the
+# keyword scan IS believed even at exit 0, because some CLIs answer a refusal on
+# stdout and still exit clean -- that is the whole reason rate_limited() exists
+# on the review path, and kiro has since been caught reporting a quota failure as
+# an unrelated tool-approval error, so "the CLI told the truth about why it
+# stopped" is not a safe assumption. The floor is where the two risks cross: a
+# real merge clears 500 bytes without trying (synthrate needs 60 padding lines to
+# do it), while a refusal is one sentence. Fail closed, and loudly -- the reviews
+# are still on disk. Change the number here and you are choosing which way a
+# refusal-shaped merge goes; do not "clean this up".
+cat > "$D/agents.d/synthtiny.sh" <<'A'
+run_synthtiny() { echo "429 too many requests"; }
+A
+OUT=$(run_cadre "$D" review --roster good,good2 --synth synthtiny \
+        --base main --label sy "$S")
+check "sub-500 refusal shape -> failed" "[ -s '$D/state/reviews/sy/synthesis.md.failed' ]"
+check "no synthesis saved for it"       "[ ! -e '$D/state/reviews/sy/synthesis.md' ]"
+check "the reviews still survive"       "ls '$D/state/reviews/sy'/good-*.md >/dev/null 2>&1"
+
+echo "== ★ kiro's parting error blames the wrong thing =="
+# Measured live, both seats of a 4-reviewer panel. Kiro died for two DIFFERENT
+# real reasons and signed off with the same wrong one, as the final line of a
+# 50KB transcript -- so the last thing a human reads is an accusation that the
+# adapter forgot a flag it demonstrably passes. Not hypothetical: it cost a
+# diagnosis. The annotation has to keep the real cause and kill the false one.
+K=$(case_dir kiroerr)
+mkdir -p "$K/bin"
+cat > "$K/bin/kiro-cli" <<'A'
+#!/bin/sh
+printf '\033[?25hAll tools are now trusted (--trust-all-tools)\n'
+printf 'Findings: nothing blocking in the diff.\n'
+printf ' \342\226\270 Credits: 3 Time: 4s\n'
+printf '\n \342\232\240\357\270\217  Kiro rate limit reached:\n    Request quota exceeded.\n'
+printf 'error: Tool approval required but --no-interactive was specified. Use --trust-all-tools to automatically approve tools.\n'
+exit 1
+A
+chmod +x "$K/bin/kiro-cli"
+OUT=$(PATH="$K/bin:$PATH" "$ROOT/bin/agentcall" kiro -d /tmp -m ro 'review' 2>&1)
+check "the false cause is gone"      "! grep -q '^error: Tool approval required' <<<\"\$OUT\""
+check "and is replaced, not dropped" "grep -q 'never the cause' <<<\"\$OUT\""
+check "the REAL cause survives"      "grep -q 'Request quota exceeded' <<<\"\$OUT\""
+check "the review text survives"     "grep -q 'nothing blocking in the diff' <<<\"\$OUT\""
+check "trust banner still stripped"  "! grep -q 'All tools are now trusted' <<<\"\$OUT\""
+check "credits footer still stripped" "! grep -q 'Credits:' <<<\"\$OUT\""
+check "private-mode escape stripped" "! grep -q '25h' <<<\"\$OUT\""
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
