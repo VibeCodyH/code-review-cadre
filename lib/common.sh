@@ -43,6 +43,40 @@ trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[
 spec_agent() { printf '%s' "${1%%:*}"; }
 spec_model() { local s="$1"; [ "${s#*:}" = "$s" ] || printf '%s' "${s#*:}"; }
 
+# ★ Which MODEL FAMILY a roster slot actually is, which is not the same question
+# as which CLI it runs. A panel is worth exactly its independence, and the fastest
+# way to lose that without noticing is to add a harness that fronts models you
+# already have: `claude` beside `cursor:claude-opus-5-thinking-high` reads as two
+# reviewers and is one lineage twice. Cursor's model list alone spans four
+# families that other adapters here already cover.
+#
+# Classify by the MODEL when a slot names one, because a single adapter can front
+# many lineages -- opencode reaches about thirty -- and by the agent otherwise.
+# Anything unrecognised falls through to its own name, so two unknown families
+# never collide, and two slots of the SAME bare adapter do, which is right: they
+# are the same default model.
+spec_family() {
+  local s="$1" a m key
+  a=$(spec_agent "$s"); m=$(spec_model "$s")
+  key=$(printf '%s' "${m:-$a}" | tr 'A-Z' 'a-z')
+  case "$key" in
+    *nemotron*)                                    echo nvidia ;;
+    *claude*|*opus*|*sonnet*|*haiku*|*fable*)      echo anthropic ;;
+    *codex*|*gpt-*|*gpt5*|*o1-*|*o3-*|*sol*)       echo openai ;;
+    *grok*)                                        echo xai ;;
+    *qwen*)                                        echo alibaba ;;
+    *kimi*|*moonshot*)                             echo moonshot ;;
+    *deepseek*)                                    echo deepseek ;;
+    *composer*)                                    echo cursor ;;
+    *gemini*|*gemma*)                              echo google ;;
+    *llama*|*muse-spark*)                          echo meta ;;
+    *mistral*|*magistral*|*ministral*|*codestral*|*pixtral*|*mixtral*) echo mistral ;;
+    vibe)                                          echo mistral ;;
+    copilot)                                       echo openai ;;
+    *) printf '%s' "$key" | tr -c 'a-z0-9' '-' ;;
+  esac
+}
+
 # Run $CADRE_JUDGE on stdin. It takes the same agent:provider/model spec a
 # candidate does, so the judge model is choosable: the judge is a model too, and
 # a free one is enough for it. agentcall itself takes -M, not the spec form.

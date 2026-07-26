@@ -684,6 +684,25 @@ check "missing ledger explains itself" "grep -q 'nothing settled yet' <<<\"\$OUT
 OUT=$(run_cadre "$D" ledger show 2>&1)
 check "ledger show without a file"    "grep -q 'no ledger at' <<<\"\$OUT\""
 
+echo "== ★ two seats, one lineage =="
+# The property the whole tool rests on, and the easiest to lose by accident:
+# adding a CLI feels like adding a reviewer, but a harness fronting gpt-5 or
+# claude is the same opinion in a different wrapper. Cursor alone can collide
+# with the codex, claude and grok adapters. Warn, never refuse -- running one
+# family twice on purpose is a real experiment.
+D=$(case_dir family); S="$D/src"
+git -C "$S" checkout -qb feature
+echo committed >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:sonnet-4-thinking \
+        --synth none --base main --label fam1 "$S")
+check "same family is called out"     "grep -q 'one lineage in two seats' <<<\"\$OUT\""
+check "it names both seats"           "grep -q 'good:claude-opus-5' <<<\"\$OUT\""
+check "and says why it matters"       "grep -q 'overstates the panel' <<<\"\$OUT\""
+check "warns, does not refuse"        "grep -q '2 ok' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:qwen3-coder \
+        --synth none --base main --label fam2 "$S")
+check "different families stay quiet" "! grep -q 'one lineage in two seats' <<<\"\$OUT\""
+
 echo "== ★ a prompt too big for argv must say so, not die in the shell =="
 # Measured live: a 184KB synthesis over a 3-reviewer panel killed an argv-only
 # adapter with `timeout: Argument list too long` -- an error naming neither the

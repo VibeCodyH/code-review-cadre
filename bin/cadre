@@ -506,8 +506,15 @@ cmd_review() {
   fi
 
   if [ -n "$synth" ] && [ "$synth" != none ]; then
-    local sa; sa=$(spec_agent "$synth")
-    command -v "$sa" >/dev/null 2>&1 || die "--synth is '$synth' but '$sa' is not installed"
+    local sa si; sa=$(spec_agent "$synth")
+    # Ask agentcall, not the name: an adapter may run a binary it is not named
+    # after, and refusing a synthesizer that works is worse than the typo this
+    # catches. Captured rather than piped -- see lib/run-review.sh on pipefail.
+    si=$("$CADRE_ROOT/bin/agentcall" --installed 2>/dev/null)
+    case $'\n'"$si"$'\n' in
+      *$'\n'"$sa"$'\n'*) ;;
+      *) die "--synth is '$synth' but '$sa' is not installed" ;;
+    esac
     is_promptless "$sa" && die "--synth cannot be '$sa': that adapter ignores the prompt and
      ships its own review contract, so it cannot merge reviews."
   fi
@@ -525,6 +532,29 @@ cmd_review() {
   local out="$CADRE_HOME/reviews/$label"
   mkdir -p "$CADRE_HOME/reviews" || die "cannot create $CADRE_HOME/reviews"
   mkdir "$out" 2>/dev/null || die "$out already exists. Pick another --label."
+
+  # ★ Say it when the panel is less independent than it looks. This is the ONE
+  # property the whole tool rests on, and it is the easiest to lose by accident
+  # -- adding a CLI feels like adding a reviewer, and a harness that fronts
+  # gpt-5 or claude is not a new opinion, it is the same one wearing a different
+  # CLI. A warning, never a refusal: deliberately running one family twice is a
+  # legitimate thing to do (comparing two efforts of the same model is a real
+  # experiment), and cadre does not get to overrule the roster.
+  local fam=() dupfam sp
+  for sp in "${specs[@]}"; do fam+=("$(spec_family "$sp")"); done
+  dupfam=$(printf '%s\n' "${fam[@]}" | sort | uniq -d)
+  if [ -n "$dupfam" ]; then
+    local f i
+    while IFS= read -r f; do
+      local names=""
+      for i in "${!specs[@]}"; do
+        [ "${fam[$i]}" = "$f" ] && names="${names:+$names, }${specs[$i]}"
+      done
+      echo "⚠ $names are both $f models. That is one lineage in two seats:"
+      echo "  they fail in the same places, so agreement between them is not"
+      echo "  evidence and a [2/n] tag overstates the panel."
+    done <<< "$dupfam"
+  fi
 
   local prov=() sp
   for sp in "${specs[@]}"; do prov+=("$(spec_agent "$sp"):$(spec_model "$sp" | cut -d/ -f1)"); done
