@@ -68,6 +68,9 @@ spec_family() {
     *kimi*|*moonshot*)                             echo moonshot ;;
     *deepseek*)                                    echo deepseek ;;
     *composer*)                                    echo cursor ;;
+    *minimax*)                                     echo minimax ;;
+    swe-1*|*inkling*)                              echo cognition ;;
+    *glm*)                                         echo zhipu ;;
     *gemini*|*gemma*)                              echo google ;;
     *llama*|*muse-spark*)                          echo meta ;;
     *mistral*|*magistral*|*ministral*|*codestral*|*pixtral*|*mixtral*) echo mistral ;;
@@ -322,7 +325,7 @@ classify_run() {
   # review again, on an entire platform, with no error. Found by a panel
   # reviewer on cadre's own diff.
   local esc; esc=$(printf '\033')
-  if [ -z "$(sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]; then
+  if [ -z "$(sed -e "s/${esc}\[[0-9;?]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]; then
     echo failed; return 0
   fi
   # ★ THE ADAPTER'S OWN VERDICT COMES FIRST, both markers together, ahead of

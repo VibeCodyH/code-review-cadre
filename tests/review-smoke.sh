@@ -60,7 +60,10 @@ A
   # is non-empty, rc is 0, and a reviewer that said nothing scored as a clean
   # pass. Emptiness has to mean empty of content, not of bytes.
   cat > "$1/agents.d/chrome.sh" <<'A'
-run_chrome() { printf '\033[0m\n\033[0m\n   \n'; }
+# ★ [?25h is a PRIVATE-MODE escape (cursor show), and the strip only allowed
+# digits and semicolons between [ and the letter, so it survived and made a
+# no-review run look non-empty. Kiro emits it on every call.
+run_chrome() { printf '\033[0m\n\033[?25h\033[?2004l\n   \n'; }
 A
   # Same chrome, but with a real (very short) review inside it. Must stay ok:
   # "findings=0" is a valid review and a length floor used to throw those away.
@@ -487,7 +490,7 @@ echo "== ★ chrome-stripping must not eat the review itself =="
 # happened to start with the word build. Silent loss of review content is worse
 # than the chrome it was removing.
 ESC=$(printf '\033')
-STRIP="sed -e 's/${ESC}\[[0-9;]*[a-zA-Z]//g' -e '1,5{' -e '/^> build · /d' -e '}'"
+STRIP="sed -e 's/${ESC}\[[0-9;?]*[a-zA-Z]//g' -e '1,5{' -e '/^> build · /d' -e '}'"
 BQ='> build the release pipeline silently fails'
 check "a '> build ...' quote survives" "[ \"\$(printf '%s\n' '$BQ' | $STRIP)\" = '$BQ' ]"
 check "the real banner still goes"     "[ -z \"\$(printf '> build · m\n' | $STRIP | tr -d '[:space:]')\" ]"

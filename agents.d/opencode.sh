@@ -43,5 +43,5 @@ run_opencode() {
   fi
   printf '%s' "$prompt" \
     | timeout -k 30 "$TIMEOUT" opencode run --dir "$dir" "${om[@]}" --auto 2>&1 \
-    | sed -e "s/${esc}\[[0-9;]*[a-zA-Z]//g" -e '1,5{' -e '/^> build · /d' -e '}'
+    | sed -e "s/${esc}\[[0-9;?]*[a-zA-Z]//g" -e '1,5{' -e '/^> build · /d' -e '}'
 }
