@@ -1,0 +1,308 @@
+<p align="center">
+  <img src="assets/hero.png" alt="Code Review Cadre" width="900">
+</p>
+
+# Code Review Cadre
+
+**Every AI reviewer has a blind spot. They do not all have the SAME one.**
+
+Cadre puts several models on the same diff, grades them against real bugs from
+your own git history, and tells you which combination to keep. Not which one
+scores highest. Which ones fail in DIFFERENT places.
+
+You probably have four or five coding agent CLIs installed and you use one at a
+time. Each is good. Each has a blind spot, and it is not random: it comes from
+the model family underneath. Run three reviewers that share a lineage and you
+bought one opinion three times.
+
+## The output is a roster, not a leaderboard
+
+```
+CANDIDATE                   K1      K2      K3
+stubA                       HIT     MISS    MISS
+stubB                       MISS    HIT     MISS
+
+★ NOTHING in this lineup catches: K3
+```
+
+That last line is the product. Two candidates that each hit half the key make a
+better panel than two that hit the same half, and the gap tells you what kind of
+reviewer you are still missing.
+
+What you want from reviewer number four is not a better score. It is a DIFFERENT
+set of failures.
+
+## What Cadre actually does
+
+- **Mines your history for real bugs.** Finds commits where the author broke
+  something and repaired it right after, and keeps only the pairs where the fix
+  also touched a test. The answer key is what shipped, not a model's opinion.
+- **Grades HIT, DEFER, MISS.** A reviewer that found the bug and argued it was
+  fine is worse than one that missed it, and Cadre disqualifies it outright.
+- **Staffs the panel.** `cadre panel` prints the coverage matrix above and names
+  the items nothing in your lineup catches.
+- **Refuses to leak the answers.** Truncated clones, keys outside the tree, a
+  credential preflight that stops the run. These are behaviours, not advice.
+- **Runs anything.** One adapter file per CLI, and any model on a multi-provider
+  CLI is already a valid candidate with no code at all.
+
+## Build a whole panel for free
+
+You do not need a single paid subscription to run this. You need a reviewer and
+a judge, and there is a free option for both.
+
+**Reviewer: [CodeRabbit](https://www.coderabbit.ai/).** Three reviews an hour on
+the free tier, which is more than a benchmark pass needs, and it is a real
+reviewer rather than a demo. If you are not in the Claude or OpenAI ecosystem
+and have no interest in joining, start here. The adapter is
+[`agents.d/coderabbit.sh`](agents.d/coderabbit.sh) and it ships working.
+
+Real credit to the CodeRabbit team ([coderabbit.ai](https://www.coderabbit.ai/),
+[github.com/coderabbitai](https://github.com/coderabbitai)) for putting a usable
+free tier on a paid product. It is the reason this tool has an answer for
+someone with no budget, and that answer would otherwise be "sorry."
+
+**Judge: any free model.** The judge reads a review and a key and returns JSON.
+It does not need a frontier model. `CADRE_JUDGE` takes the same
+`agent:provider/model` spec a candidate does:
+
+```bash
+export CADRE_JUDGE=opencode:cerebras/gpt-oss-120b
+cadre run coderabbit 2
+```
+
+### Free tiers worth pointing Cadre at
+
+Rate limits as of July 2026. They move, so check the provider before you plan
+around a number.
+
+| Provider | Free tier | Notes for this tool |
+|---|---|---|
+| [Cerebras](https://inference.cerebras.ai/) | 1M tokens/day, ~30 req/min | Very fast. An 8K context cap on free models, so ideal as a judge, tight for a whole-diff review. |
+| [Groq](https://console.groq.com/) | ~30 req/min, ~6K tokens/min | Fastest free inference. The low TPM is the binding constraint, not the request count. |
+| [Mistral](https://console.mistral.ai/) | 1 req/sec, 500K tokens/min, 1B tokens/month | Most generous by volume, and Codestral is a code model. Also what the shipped `vibe` adapter uses. |
+| [OpenRouter](https://openrouter.ai/) | ~20 req/min per model, ~30 free models | One key, many lineages. The cheapest way to reach a model family you do not have. |
+| [Google Gemini](https://aistudio.google.com/) | 10-15 req/min, ~1,500 req/day | Flash tier is plenty for a judge. |
+| [GitHub Models](https://github.com/marketplace/models) | 50 req/day high tier, 150 mini, 8K in / 4K out | Lowest ceiling here, but you may already have it. |
+
+Reaching any of them is an `opencode` provider entry plus one key, and then they
+are ordinary specs: `opencode:cerebras/gpt-oss-120b`. No adapter needed. See
+[opencode's provider docs](https://opencode.ai/docs/providers).
+
+**Free tiers are the cheapest route to the thing that actually matters here: a
+model lineage you do not already have.** Four free models from four families
+beat two paid ones from the same lab.
+
+Two caveats before they bite you. CodeRabbit **cannot be your judge**, since it
+ships its own review contract and takes no prompt, so it has nothing to grade
+with. And it gets a different brief from everyone else for that same reason,
+which is worth remembering when you read its row in the matrix.
+
+### If you DO pay for several
+
+Then you are already buying the seats and using one at a time. Cadre puts them
+all on the same diff and tells you which combination earns its keep, and which
+one you are paying for twice under different branding.
+
+## Quick start
+
+```bash
+git clone https://github.com/VibeCodyH/code-review-cadre ~/code-review-cadre
+export PATH="$HOME/code-review-cadre/bin:$PATH"
+
+cadre doctor                      # what's installed, what's missing
+cadre setup ~/my-repo             # mine (target, fix) commit pairs
+cadre make-pass login-race ~/my-repo <target-sha> <fix-sha>
+$EDITOR ~/.local/state/cadre/keys/login-race.md    # read and fix the draft key
+cadre add-pass login-race
+cadre run codex 2                 # run it, grade it, get a slot
+cadre panel                       # compare everything graded, staff the team
+```
+
+You need `git`, `jq`, `awk`, GNU coreutils, bash 4.4+, and at least two agent
+CLIs. One to review, one to judge. Neither has to be paid.
+
+`$EDITOR` on line four is not optional and not automatable. A key a model wrote
+and a model grades measures agreement with the model, so you read the draft
+before the pass will register. The setup step needs a human. `cadre run` after
+it does not.
+
+## Where the answer key comes from
+
+Not from a model's opinion. From what the author actually fixed next.
+
+The miner looks for commits where B repairs A, blames the exact lines B changed,
+and keeps the pair only when the fix ALSO touched a test. That last filter did
+more for quality than everything else put together. An author who writes a test
+next to the repair is telling you the bug was real, reproducible, and possible
+to describe. Which is the same as saying it's possible to grade.
+
+Most `fix:` commits don't survive that. On a real repo the raw yield was almost
+all type checker and CI repairs. You can't grade a reviewer on "the compiler was
+unhappy."
+
+`cadre make-pass` uses a model to DRAFT the key off the fix commit, because
+transcribing a diff into a rubric is tedious work. Then it refuses to register
+the pass until you've read the draft and deleted the marker.
+
+## HIT, DEFER, MISS
+
+Every key item gets one of three grades:
+
+- HIT. Found the bug and called it a problem.
+- DEFER. Found the bug and said it was fine.
+- MISS. Never saw it.
+
+Most benchmarks fold DEFER into MISS, since either way the bug ships. That's the
+wrong call.
+
+A reviewer that missed the bug is limited. A reviewer that found the bug and
+argued it was intentional is dangerous, and it argues WELL, usually by quoting
+the code's own comment or a test that asserts the broken behavior as correct. In
+a panel, that's worse than saying nothing. It talks the other reviewers out of a
+real finding and it brings a citation.
+
+So a DEFER on a blocking item disqualifies a candidate outright, whatever its
+hit rate. That's not a tunable weight. One confident wrong approval on a data
+loss bug costs more than a hundred missed nits save.
+
+## Staffing the panel
+
+`cadre run` grades one candidate and gives it a slot: primary, secondary, or do
+not slot. `cadre panel` staffs the team, reading every candidate you've graded
+and printing the coverage matrix at the top of this page.
+
+On the private repo this was built for, a candidate hit 4 of 6 blocking items,
+worse than every incumbent, and got slotted anyway. It found a live bug all
+three incumbents missed across six runs, on both of its own runs. The only thing
+different about it was the model family.
+
+So read the per item rows in the report, not the totals. And when you add a
+chair, add a LINEAGE you don't already have. A different wrapper over the same
+underlying family is not a fourth opinion. Some review products are front ends
+over the same two or three models, so check the vendor's own docs.
+
+The catch, and it's real: the decorrelated one is usually noisier. That
+candidate went in as SECONDARY. Never run alone, and a clean pass from it
+doesn't mean anything, because it produced one on a commit it had called
+blocking the run before. Same checkout, same prompt.
+
+## When you hit a rate limit
+
+Cadre expects this. A reply that looks like a rate-limit refusal is retried on
+the **same** model with exponential backoff (`CADRE_RETRIES`, default 3, and
+`CADRE_RETRY_WAIT`, default 60s doubling to a 600s cap). If it is still limited
+it is recorded as a failed run, never as a review.
+
+It will not fall back to a different model, and that is deliberate. Filing model
+B's review under model A is the exact mislabeling this tool exists to catch. A
+benchmark that quietly swaps the thing it is measuring is worse than one that
+stops. The detector is length-guarded, so a real review OF a rate limiter that
+says "429" and "quota exceeded" while quoting your code is not mistaken for a
+refusal.
+
+Budget the wall-clock: on defaults a run that stays limited costs about three
+minutes before giving up. Each wait is printed, so it is not hung. On a tight
+free tier, lower `CADRE_RETRIES` or run one reviewer at a time.
+
+## It won't leak your answers or your secrets
+
+If the key is "the bug the author fixed next," then the fix commit's subject line
+states the answer, every reviewer has git, and some have web access. So:
+
+- Graded passes run in a `--depth 2` clone pinned at the target, with `origin`
+  removed. There's no future history to read and nothing to fetch it back from.
+- Keys live outside the reviewed tree. `cadre doctor` exits non-zero on a pass
+  where they aren't, and `cadre run` refuses that pass.
+- Checkouts live outside the state directory entirely, because otherwise the
+  agent's own working directory spells out where the keys are.
+- The runner refuses when the output directory sits inside the checkout, or
+  contains it. Otherwise reviewer #1's findings are one `ls` from the tree
+  reviewer #2 reads, and you get contamination that looks exactly like agreement.
+- Agents run with `CADRE_HOME` and friends stripped from their environment.
+- A review that repeats two or more key headings word for word is flagged
+  SUSPECT, excluded from scoring, and the whole pass is reported INVALID.
+- Credential shaped files in the checkout stop the run before any agent starts.
+  You're pointing auto approving CLIs at your source and some of them upload it.
+
+**What that is not:** a sandbox. Several of these CLIs need full tool approval
+to read the diff at all, so they can read your filesystem. Stripping the
+environment stops the key being advertised. It doesn't stop an agent that goes
+looking, and the verbatim check only catches copying, not paraphrase. Want a
+real boundary, run them in a container with only the checkout mounted. And no
+harness can tell you whether your target's bug is already described in a public
+issue. That one's on you when you pick the target.
+
+## Receipts: we ran it on this repo first
+
+Before the first commit, three reviewers from three model families went over
+this scaffold. What they caught is the argument for panels, so here it is.
+
+- **Grok alone** found the harness exporting `CADRE_HOME` into the agent's
+  environment, handing every auto-approving reviewer the path to the answer key.
+- **muse-spark alone** found that `codex:some-model` ran the default model and
+  filed the result under the requested one. A benchmark mislabeling itself.
+- **Codex alone** then defeated the fix for the first one: the agent's working
+  directory was still inside the state dir, so `cat ../../keys/$(basename $PWD).md`
+  reached the answer with no environment variable involved.
+- **Grok and muse-spark both** found the judge's JSON parser breaking on
+  pretty-printed output and silently scoring valid grades as UNUSABLE.
+
+No single one of them was enough. Everything reproducible was reproduced before
+it was touched.
+
+Codex also hit its timeout and returned an **empty string**, which reads
+downstream as "found nothing" rather than "died." That is the worst thing an
+adapter can do and it was in ours. Later it failed a different way: it refuses
+to start outside a git repository, and the judge runs in a scratch directory, so
+anyone using Codex as their judge would have watched every grade come back
+UNUSABLE with the reason swallowed. Both fixed. The panel found bugs in the
+harness by failing inside it, which is about as honest as a first run gets.
+
+**What this is and isn't.** One repo, three reviewers, one run each. Enough to
+show the failures were decorrelated here. It is not a sample size, there are no
+confidence intervals, and it does not prove the effect holds on your code. That
+is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
+
+## What it doesn't do
+
+- No leaderboard. The panel is the output.
+- It doesn't change your review lineup. It prints a recommendation and the
+  evidence behind it. Who speaks on your PRs is your call.
+- No cost estimate in dollars. `cadre run` prints a call count and that's it.
+- No resume past skipping outputs that already exist.
+- No sandbox. See above, and mean it.
+
+## Adding a reviewer
+
+A new model on a CLI you already have needs nothing. Just
+`cadre run opencode:vendor/model`. That's also the cheapest way to reach a model
+family your other CLIs can't, which is exactly what the panel needs.
+
+A whole new CLI is one file:
+
+```bash
+agentcall --new mycli
+agentcall --print-command mycli -d . "hello"
+cadre run mycli 2
+```
+
+[docs/ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md) lists the two traps that have
+caught every CLI added so far. Read it before you trust a new adapter. One of
+them will hand you a confident review of a diff the agent never opened.
+
+## Claude Code plugin
+
+Optional wrappers in [`plugin/`](plugin/): `/cadre-setup`, `/cadre-run`,
+`/cadre-slot`. The core is a standalone CLI on purpose. A benchmark for "which
+model should review my code" can't require one vendor's client.
+
+## Docs
+
+- [METHOD.md](docs/METHOD.md). Why fix commits, why DEFER disqualifies, why a
+  different failure set beats a better score.
+- [PRIOR-ART.md](docs/PRIOR-ART.md). What already existed, what's actually new
+  here, and where this thing is weak.
+- [ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md).
+
+MIT.

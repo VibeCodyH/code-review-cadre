@@ -1,0 +1,386 @@
+#!/usr/bin/env bash
+# Code Review Cadre: benchmark AI code reviewers on YOUR repo and staff a panel.
+#
+#   cadre setup <repo-dir> [limit]        mine (target, fix) commit pairs
+#   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
+#                                         build the leak-controlled checkout and
+#                                         DRAFT an answer key for you to correct
+#   cadre add-pass <label>                register a corrected draft as a pass
+#   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
+#   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
+#   cadre passes                          list registered passes
+#   cadre agents                          list adapters
+#   cadre doctor [--probe]                check the install and the passes
+#
+# <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
+# Recommends. Never changes your review lineup. See README.md.
+set -uo pipefail
+
+SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+export CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
+# shellcheck source=lib/common.sh
+. "$CADRE_ROOT/lib/common.sh"
+# shellcheck source=lib/grade.sh
+. "$CADRE_ROOT/lib/grade.sh"
+
+PASSES="$CADRE_HOME/passes.conf"
+
+usage() {
+  cat <<'EOF'
+Code Review Cadre: benchmark AI code reviewers on YOUR repo and staff a panel.
+
+  cadre setup <repo-dir> [limit]        mine (target, fix) commit pairs
+  cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
+                                        build the leak-controlled checkout and
+                                        DRAFT an answer key for you to correct
+  cadre add-pass <label>                register a corrected draft as a pass
+  cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
+  cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
+  cadre panel                           compare all graded candidates, propose a panel
+  cadre passes                          list registered passes
+  cadre agents                          list adapters
+  cadre doctor [--probe]                check the install and the passes
+
+<agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
+
+Environment:
+  CADRE_HOME    state dir (default ${XDG_STATE_HOME:-~/.local/state}/cadre)
+  CADRE_WORK    where checkouts live. MUST be outside CADRE_HOME, or an agent
+                reaches the answer keys by relative path from its own cwd.
+  CADRE_JUDGE   agent that grades reviews against the key. Takes the same
+                agent:provider/model spec a candidate does
+  CADRE_STACK   one line of context added to the review brief
+  CADRE_TEST_CMD  override the detected test command
+  CADRE_RETRIES     attempts when a call comes back rate limited (default 3)
+  CADRE_RETRY_WAIT  first backoff in seconds, doubling, capped at 600 (default 60)
+EOF
+}
+
+# True when $1 is inside directory $2. readlink -m so a path that does not
+# exist yet still resolves.
+is_inside() {
+  local a b; a=$(readlink -m "$1"); b=$(readlink -m "$2")
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  [ "$a" = "$b" ] && return 1
+  case "$a/" in "$b"/*) return 0 ;; esac
+  return 1
+}
+
+init_home() {
+  mkdir -p "$CADRE_HOME/keys" "$CADRE_HOME/passes.d" "$CADRE_WORK"
+  [ -f "$PASSES" ] || cp "$CADRE_ROOT/templates/passes.conf" "$PASSES"
+}
+
+# The judge is a model too. Default to the first installed candidate and SAY
+# which one, because a silently-chosen judge is a silently-chosen bias.
+pick_judge() {
+  [ -n "$CADRE_JUDGE" ] && return 0
+  local a
+  for a in claude codex grok opencode; do
+    command -v "$a" >/dev/null 2>&1 && { CADRE_JUDGE="$a"; return 0; }
+  done
+  return 1
+}
+need_judge() {
+  pick_judge || die "no judge available, set CADRE_JUDGE to an agent agentcall can run"
+  # Catch a typo or a missing CLI here. Otherwise every call fails and the whole
+  # pass reports UNUSABLE, which reads like a bad candidate rather than a bad
+  # judge. CADRE_JUDGE may carry a model: check the agent half.
+  local ja; ja=$(spec_agent "$CADRE_JUDGE")
+  command -v "$ja" >/dev/null 2>&1 || die "CADRE_JUDGE is '$CADRE_JUDGE' but '$ja' is not installed"
+}
+
+cmd_passes() {
+  [ -f "$PASSES" ] || { echo "no passes yet. Start with: cadre setup <repo-dir>"; return 0; }
+  printf '%-18s %-10s %-24s %-10s %s\n' LABEL SHA CHECKOUT BASE KEY
+  local label sha dir base key
+  while IFS='|' read -r label sha dir base key; do
+    case "$label" in ''|\#*) continue ;; esac
+    printf '%-18s %-10s %-24s %-10s %s\n' "$label" "$sha" "$dir" "$base" "$key"
+  done < "$PASSES"
+}
+
+cmd_setup() {
+  local repo="${1:?usage: cadre setup <repo-dir> [limit]}" limit="${2:-200}"
+  [ -d "$repo/.git" ] || die "not a git repo: $repo"
+  init_home
+  local out="$CADRE_HOME/shortlist-$(basename "$(readlink -f "$repo")").tsv"
+  echo "mining fix-commit pairs in $repo (last $limit fix-shaped commits)…"
+  "$CADRE_ROOT/lib/mine-fixes.sh" "$repo" "$limit" | tee "$out"
+  echo
+  echo "saved: $out"
+  cat <<EOF
+
+Each row is a candidate pass: the author broke something in target_sha and
+repaired it in fix_sha, WITH a test change proving the defect was real.
+
+Pick a row where the fix is a behavioural repair you would have wanted a
+reviewer to catch, then:
+
+  cadre make-pass <label> $repo <target_sha> <fix_sha>
+EOF
+}
+
+cmd_make_pass() {
+  local label="${1:?usage: cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>}"
+  local repo="${2:?need repo dir}" target="${3:?need target sha}" fix="${4:?need fix sha}"
+  case "$label" in *[!a-zA-Z0-9_-]*) die "label must be [a-zA-Z0-9_-]" ;; esac
+  init_home; need_judge
+  need git; need jq
+
+  mkdir -p "$CADRE_WORK"
+  local dest; dest=$(mktemp -d "$CADRE_WORK/$label-XXXXXXXX") || die "could not create a checkout dir"
+  rmdir "$dest"   # git clone wants to create it
+  git -C "$repo" cat-file -e "$target^{commit}" 2>/dev/null || die "no such commit: $target"
+  git -C "$repo" cat-file -e "$fix^{commit}" 2>/dev/null    || die "no such commit: $fix"
+
+  # ★ Leak control. The fix commit's SUBJECT LINE usually states the answer and
+  # every reviewer has git. A shallow single-branch clone pinned at the target
+  # has no future history to read. docs/METHOD.md §5.
+  local tmpbranch="cadre/$label"
+  git -C "$repo" rev-parse --verify -q "$tmpbranch" >/dev/null 2>&1 && \
+    die "branch $tmpbranch already exists in $repo, pick another label"
+  git -C "$repo" branch "$tmpbranch" "$target" >/dev/null 2>&1 || die "could not create $tmpbranch"
+  git clone --quiet --depth 2 --single-branch --branch "$tmpbranch" \
+      "file://$(readlink -f "$repo")" "$dest" || { git -C "$repo" branch -D "$tmpbranch" >/dev/null 2>&1; die "clone failed"; }
+  git -C "$repo" branch -D "$tmpbranch" >/dev/null 2>&1
+  # No origin at all, so nothing can fetch the future history back in.
+  git -C "$dest" remote remove origin >/dev/null 2>&1 || true
+
+  echo "checkout: $dest"
+  echo "history visible to a reviewer:"
+  git -C "$dest" log --oneline | sed 's/^/  /'
+  local n; n=$(git -C "$dest" rev-list --count HEAD)
+  [ "$n" -le 2 ] || echo "  ⚠ $n commits visible, deeper than expected, check for leaks"
+
+  secrets_preflight "$dest"
+
+  echo
+  echo "drafting an answer key with $CADRE_JUDGE …"
+  local keyfile="$CADRE_HOME/keys/$label.md" tmp
+  tmp=$(mktemp)
+  {
+    cat "$CADRE_ROOT/lib/prompts/keygen.md"
+    echo
+    echo "=============== TARGET COMMIT ($target) ==============="
+    git -C "$repo" show --stat --patch "$target" | head -c 200000
+    echo
+    echo "=============== FIX COMMIT ($fix) ==============="
+    git -C "$repo" show --stat --patch "$fix" | head -c 200000
+  } > "$tmp"
+  {
+    echo "<!-- CADRE-DRAFT: machine-written, not yet reviewed by a human."
+    echo "     Correct it, then delete this comment and run: cadre add-pass $label -->"
+    echo
+    judge_call < "$tmp"
+  } > "$keyfile"
+  rm -f "$tmp"
+
+  local base="HEAD~1"
+  [ "$n" -lt 2 ] && echo "  ⚠ only one commit visible (target is a root commit), edit the base field in passes.conf by hand"
+  printf '%s|%s|%s|%s|%s\n' "$label" "${target:0:9}" "$dest" "$base" "keys/$label.md" \
+    > "$CADRE_HOME/passes.d/$label.meta"
+
+  cat <<EOF
+
+draft key: $keyfile
+
+★ READ IT AND FIX IT. A key the judge wrote and the judge grades against
+measures agreement-with-the-generator, not review quality. The fix commit is
+your external evidence; the draft is just a transcription of it, and it will
+get severities wrong, invent items, or miss the point of the repair.
+
+Then register it:
+
+  cadre add-pass $label
+EOF
+}
+
+cmd_add_pass() {
+  local label="${1:?usage: cadre add-pass <label>}"
+  init_home
+  local meta="$CADRE_HOME/passes.d/$label.meta"
+  [ -f "$meta" ] || die "no draft for '$label', run cadre make-pass first"
+  local keyfile="$CADRE_HOME/keys/$label.md"
+  [ -f "$keyfile" ] || die "no key at $keyfile"
+  grep -q 'CADRE-DRAFT' "$keyfile" && \
+    die "$keyfile still carries the DRAFT marker, read it, correct it, delete the marker"
+  grep -qoE '\bK[0-9]+\b' "$keyfile" || die "$keyfile has no K1/K2… items"
+  grep -qiE 'blocking|should-fix|nit' "$keyfile" || \
+    die "$keyfile has no severity words, the grader reads severity out of the item headings"
+  grep -q "^$label|" "$PASSES" 2>/dev/null && die "pass '$label' is already registered"
+  cat "$meta" >> "$PASSES"
+  echo "registered: $(cat "$meta")"
+  echo "next: cadre run codex 2"
+}
+
+cmd_run() {
+  local spec="${1:?usage: cadre run <agent-spec> [runs] [pass-label]}"
+  local runs="${2:-2}" only="${3:-}"
+  init_home; need_judge; need jq
+
+  # A freshly initialised passes.conf is the comment-only template, so -s is
+  # true and nothing is registered. Fail at the gate, not four steps later.
+  local npasses; npasses=$(grep -cvE '^[[:space:]]*(#|$)' "$PASSES" || true)
+  [ "${npasses:-0}" -gt 0 ] || die "no passes registered, start with: cadre setup <repo-dir>"
+  if [ -n "$only" ]; then
+    grep -q "^[[:space:]]*$only|" "$PASSES" || die "no pass named '$only' (see: cadre passes)"
+    npasses=1
+  fi
+  echo "judge: $CADRE_JUDGE   candidate: $spec"
+  if [ "$(spec_agent "$spec")" = "$(spec_agent "$CADRE_JUDGE")" ]; then
+    echo "⚠ the judge and the candidate are the same CLI, it will be grading itself."
+  fi
+  echo "up to $((npasses * runs)) review calls + $((npasses * runs)) judge calls."
+  echo "(a ceiling, not a plan: outputs and grades that already exist are reused)"
+  echo
+  run_gauntlet "$spec" "$runs" 0 "$only"
+}
+
+cmd_grade() {
+  local spec="${1:?usage: cadre grade <agent-spec> [runs]}" runs="${2:-2}"
+  init_home; need_judge; need jq
+  run_gauntlet "$spec" "$runs" 1 "${3:-}"
+}
+
+# Compare every graded candidate and propose a panel. The step that makes the
+# output a roster instead of a rank: it reads the per-item rows out of the
+# reports and asks which items NOTHING in the lineup covers.
+cmd_panel() {
+  init_home
+  local reports=("$CADRE_HOME"/report-*.md)
+  [ -e "${reports[0]}" ] || die "no graded candidates yet. Run: cadre run <agent>"
+
+  local specs=() items=() r spec line
+  declare -A grade
+  for r in "${reports[@]}"; do
+    spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
+    specs+=("$spec")
+    while IFS= read -r line; do
+      local kv k v
+      for kv in $(grep -oE '\bK[0-9]+=(HIT|DEFER|MISS)' <<<"$line"); do
+        k=${kv%%=*}; v=${kv#*=}
+        case " ${items[*]} " in *" $k "*) ;; *) items+=("$k") ;; esac
+        # Best grade this candidate ever achieved on the item. A DEFER is
+        # recorded even when another run hit, because a DEFER is the finding.
+        case "${grade[$spec,$k]:-}" in
+          DEFER) ;;
+          HIT) [ "$v" = DEFER ] && grade[$spec,$k]=DEFER ;;
+          *)   grade[$spec,$k]=$v ;;
+        esac
+      done
+    done < "$r"
+  done
+  [ ${#specs[@]} -gt 0 ] || die "no readable reports in $CADRE_HOME"
+
+  local k s
+  printf '%-28s' 'CANDIDATE'
+  for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do printf '%-8s' "$k"; done
+  echo
+  for s in "${specs[@]}"; do
+    printf '%-28s' "$s"
+    for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
+      printf '%-8s' "${grade[$s,$k]:-.}"
+    done
+    echo
+  done
+
+  echo
+  local gaps=() deferrers=()
+  for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
+    local covered=0
+    for s in "${specs[@]}"; do [ "${grade[$s,$k]:-}" = HIT ] && covered=1; done
+    [ "$covered" -eq 0 ] && gaps+=("$k")
+  done
+  for s in "${specs[@]}"; do
+    for k in "${items[@]}"; do
+      [ "${grade[$s,$k]:-}" = DEFER ] && { deferrers+=("$s"); break; }
+    done
+  done
+
+  if [ ${#deferrers[@]} -gt 0 ]; then
+    echo "DO NOT SLOT: ${deferrers[*]}"
+    echo "  Deferred on an item, found the defect and argued it was fine. That is"
+    echo "  worse than missing it. See docs/METHOD.md section 3."
+    echo
+  fi
+  if [ ${#gaps[@]} -gt 0 ]; then
+    echo "★ NOTHING in this lineup catches: ${gaps[*]}"
+    echo "  This is the most useful line here. Adding a higher-scoring candidate"
+    echo "  that agrees with the others changes nothing. Add a model family you"
+    echo "  do not already have and see whether it covers these."
+  else
+    echo "Every key item is caught by at least one candidate."
+  fi
+  echo
+  echo "Pick the smallest set of rows that covers every column. Prefer a"
+  echo "candidate that covers a column no one else does, even at a lower total."
+  echo "cadre does not choose for you."
+}
+
+# Exits non-zero when a pass is broken. README and docs both say doctor FAILS a
+# pass whose key sits inside the checkout, so it has to actually fail.
+cmd_doctor() {
+  local probe="${1:-}" bad=0
+  echo "CADRE_ROOT  $CADRE_ROOT"
+  echo "CADRE_HOME  $CADRE_HOME"
+  local t
+  for t in git jq awk; do
+    printf '%-11s %s\n' "$t" "$(command -v "$t" >/dev/null 2>&1 && echo ok || echo MISSING)"
+  done
+  pick_judge || true
+  printf '%-11s %s\n' judge "${CADRE_JUDGE:-NONE, set CADRE_JUDGE}"
+  echo
+  echo "adapters:"
+  "$CADRE_ROOT/bin/agentcall" --list | sed 's/^/  /'
+  if [ "$probe" = --probe ]; then
+    echo
+    echo "probing (one call per installed CLI):"
+    "$CADRE_ROOT/bin/agentcall" --probe | sed 's/^/  /'
+  fi
+  echo
+  echo "passes:"
+  if [ ! -s "$PASSES" ]; then
+    echo "  none registered. Run: cadre setup <repo-dir>"
+  else
+    local label sha dir base key kf tgt
+    while IFS='|' read -r label sha dir base key; do
+      case "$label" in ''|\#*) continue ;; esac
+      kf="$key"; case "$kf" in /*) ;; *) kf="$CADRE_HOME/$key" ;; esac
+      tgt="$dir"; case "$tgt" in /*) ;; *) tgt="$CADRE_HOME/$dir" ;; esac
+      printf '  %-18s ' "$label"
+      if [ ! -d "$tgt" ]; then echo "MISSING CHECKOUT $tgt"; bad=1
+      elif [ ! -f "$kf" ]; then echo "MISSING KEY $kf"; bad=1
+      elif is_inside "$kf" "$tgt"; then
+        echo "★ KEY IS INSIDE THE CHECKOUT, reviewers can read the answers"; bad=1
+      elif ! grep -qiE 'blocking|should-fix|nit' "$kf"; then echo "key has no severity words"; bad=1
+      else
+        echo "ok, $(grep -oE '\bK[0-9]+\b' "$kf" | sort -u | wc -l) key items, $(git -C "$tgt" rev-list --count HEAD 2>/dev/null) commits visible"
+      fi
+    done < "$PASSES"
+  fi
+  cat <<'EOF'
+
+Not implemented yet (do not rely on them):
+  - cost estimation in currency; `cadre run` prints a CALL COUNT only
+  - resuming a partially-failed pass beyond "skip outputs that already exist"
+  - sandboxing the agents. Scrubbing CADRE_* from their environment stops the
+    key path being advertised; an agent with filesystem read can still go
+    looking. `cadre run` flags a review that quotes the key verbatim.
+EOF
+  [ "$bad" -eq 0 ] || { echo; echo "doctor: one or more passes are broken (see ★ above)"; return 1; }
+}
+
+case "${1:-}" in
+  setup)     shift; cmd_setup "$@" ;;
+  make-pass) shift; cmd_make_pass "$@" ;;
+  add-pass)  shift; cmd_add_pass "$@" ;;
+  run)       shift; cmd_run "$@" ;;
+  grade)     shift; cmd_grade "$@" ;;
+  panel)     shift; cmd_panel "$@" ;;
+  passes)    shift; cmd_passes "$@" ;;
+  agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
+  doctor)    shift; cmd_doctor "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;
+esac

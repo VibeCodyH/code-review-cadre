@@ -1,0 +1,13 @@
+fix_sha	target_sha	src	test	share	age	fix_subject
+39790a459	ea889c72a	1	1	100%	14	Fix using files in both input and output (#1058)
+4940511bb	fdffcb6ba	2	1	100%	6	Fix fd-specific options (#974)
+bd547e4f3	316f562a4	2	1	100%	1	Fix calling script `.pipe` multiple times (#846)
+be7eb8551	07a9890e3	1	1	100%	3	Fix stack trace workaround (#818)
+d50c4cc8a	6bbd265ef	1	2	100%	14	Fix `maxListeners` warning when running multiple processes in parallel (#785)
+7707fc727	249e7c45e	1	2	72%	21	Fix `all` option combined with `ignore` (#703)
+b8c1f555f	62a5207c3	1	1	100%	5	Fix `error.message` when using `encoding: 'buffer'` (#701)
+ec383fec8	62a5207c3	2	1	74%	1	Fix inconsistency between `result.stdout` and `error.stdout` (#686)
+4d8f9ca57	7efd50cf1	1	2	76%	11	Fix using multiple `stdin` values (#661)
+61a16233d	7efd50cf1	3	1	60%	11	Fix Node.js streams not being cleaned up on process error (#660)
+07585d058	eae327cc0	1	1	75%	14	Fix argument concatenation with `$` (#553)
+9cd5e2a39	2a12986eb	3	1	100%	3	Better stdio option handling - fixes #24

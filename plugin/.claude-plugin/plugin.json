@@ -1,0 +1,6 @@
+{
+  "name": "code-review-cadre",
+  "description": "Benchmark AI code reviewers on your own repo and staff a review panel. Thin wrappers over the standalone cadre CLI.",
+  "version": "0.1.0",
+  "license": "MIT"
+}

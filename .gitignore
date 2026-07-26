@@ -1,0 +1,9 @@
+# Everything the harness produces lives in $CADRE_HOME, not here. These are
+# only for the case where someone points CADRE_HOME at the repo.
+/checkouts/
+/keys/
+/passes.d/
+/passes.conf
+/report-*.md
+/shortlist-*.tsv
+*.grade.json

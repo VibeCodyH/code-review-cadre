@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# One calling convention for every coding-agent CLI on the box.
+#
+#   agentcall <agent> [-d DIR] [-m MODE] [-M MODEL] [PROMPT]
+#   agentcall <agent> ... < prompt.txt        # prompt on stdin
+#   agentcall --list                          # agents + what each is good for
+#   agentcall --probe [agent ...]             # auth/health check
+#   agentcall --print-command <agent> ...     # show the invocation, run nothing
+#   agentcall --new <name>                    # scaffold an adapter
+#
+#   MODE: ro (default, read-only where the CLI supports it) | rw
+#
+# Prints the agent's final text on stdout and nothing else.
+# One adapter per CLI in agents.d/. See docs/ADDING-AN-AGENT.md.
+# codex/claude recipes started from RobertTLange/headless-cli.
+set -uo pipefail
+
+SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
+CADRE_HOME="${CADRE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/cadre}"
+
+# Shipped adapters load first; a user adapter of the same name wins.
+SHIPPED_D="$CADRE_ROOT/agents.d"
+USER_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"
+
+TIMEOUT="${CADRE_TIMEOUT:-900}"
+
+AGENTS=""
+_load_dir() {
+  [ -d "$1" ] || return 0
+  local f n
+  for f in "$1"/*.sh; do
+    [ -e "$f" ] || continue
+    n=$(basename "$f" .sh)
+    # A user adapter REPLACES the shipped one. Sourcing alone leaves a shipped
+    # nomodel_/noprompt_ marker alive, still rejecting what the override
+    # supports, so clear the contract first. Partial overrides are worse.
+    [ "$1" = "$USER_D" ] && unset -f "nomodel_$n" "noprompt_$n" "notes_$n" 2>/dev/null
+    # shellcheck disable=SC1090
+    . "$f"
+    case " $AGENTS " in *" $n "*) ;; *) AGENTS="$AGENTS $n" ;; esac
+  done
+}
+_load_dir "$SHIPPED_D"
+_load_dir "$USER_D"
+AGENTS=$(printf '%s\n' $AGENTS | sort | tr '\n' ' ')
+
+# Adapters are loaded, so these have done their job. Drop the export attribute,
+# keeping the values here, so the agent we spawn cannot read the key path off
+# its own environment. CADRE_PASS_BASE stays: a git rev, and coderabbit needs it.
+export -n CADRE_HOME CADRE_ROOT CADRE_AGENTS_D 2>/dev/null || true
+unset CADRE_JUDGE CADRE_PASS_DIR CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
+
+# --print-command: print the native invocation instead of running it.
+DRY="${AGENTCALL_DRY:-}"
+_run() {
+  if [ -n "$DRY" ]; then printf '%q ' "$@"; echo; return 0; fi
+  "$@"
+}
+
+die() { echo "agentcall: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'EOF'
+agentcall <agent> [-d DIR] [-m ro|rw] [-M MODEL] [PROMPT]
+          --list                     agents + what each is good for
+          --probe [agent ...]        auth/health check
+          --print-command <agent> …  show the native invocation, run nothing
+          --new <name>               scaffold an adapter
+
+Prompt comes from the PROMPT argument, or stdin if omitted.
+
+Adding an agent:
+  a MODEL on an existing CLI  ->  nothing to add; use  agent:provider/model
+                                  (e.g. opencode:meta/some-model-1.1)
+  a whole new CLI             ->  agentcall --new <name>, edit the stub
+  grade it and get a slot     ->  cadre run <name>
+EOF
+}
+
+list_agents() {
+  local a
+  printf '%-11s %s\n' AGENT 'notes (measured, not guessed)'
+  printf '%-11s %s\n' '----------' '------------------------------------------------------'
+  for a in $AGENTS; do
+    if command -v "notes_$a" >/dev/null 2>&1; then
+      notes_"$a" | while IFS= read -r line; do printf '%-11s %s\n' "$a" "$line"; a=''; done
+    else
+      printf '%-11s %s\n' "$a" '(no notes)'
+    fi
+  done
+  echo
+  echo "shipped: $SHIPPED_D"
+  echo "yours:   $USER_D  (same filename overrides a shipped adapter)"
+}
+
+probe_one() {
+  local a="$1" out
+  printf '%-11s ' "$a"
+  command -v "$a" >/dev/null 2>&1 || { echo "not installed"; return; }
+  out=$(run_agent "$a" "$PWD" ro "" "Reply with exactly: OK" 2>&1 | tr '\n' ' ')
+  case "$out" in
+    *OK*)                                    echo "ok" ;;
+    *auth*|*Auth*|*token*|*login*|*API_KEY*) echo "NEEDS AUTH: ${out:0:80}" ;;
+    *quota*|*Quota*|*limit*)                 echo "QUOTA/LIMIT: ${out:0:80}" ;;
+    *)                                       echo "unclear: ${out:0:80}" ;;
+  esac
+}
+
+# run_agent <agent> <dir> <mode> <model> <prompt>
+# Adapters read $dir/$mode/$model/$prompt as locals of this function.
+# shellcheck disable=SC2034
+run_agent() {
+  local a="$1" dir="$2" mode="$3" model="$4" prompt="$5"
+  command -v "run_$a" >/dev/null 2>&1 || die "unknown agent '$a' (have:$AGENTS)"
+  # An adapter that cannot pass a model must SAY so. Taking agent:model and
+  # running the default files the result under a model that never ran.
+  if [ -n "$model" ] && command -v "nomodel_$a" >/dev/null 2>&1; then
+    die "$a takes no model, drop the ':$model' from the spec"
+  fi
+  run_"$a"
+}
+
+scaffold_agent() {
+  local name="$1"
+  [ -n "$name" ] || die "--new needs a name"
+  case "$name" in *[!a-z0-9_-]*) die "agent name must be [a-z0-9_-]" ;; esac
+  mkdir -p "$USER_D"
+  local f="$USER_D/$name.sh"
+  [ -e "$f" ] && die "$f already exists"
+  cat > "$f" <<EOF
+# agentcall adapter: $name
+# \$dir \$mode \$model \$prompt \$TIMEOUT are in scope. Print the FINAL TEXT only.
+# ★ Read docs/ADDING-AN-AGENT.md first. Two traps catch every new CLI, and one
+# of them hands you a confident review of a diff the agent never opened.
+#
+#   agentcall --print-command $name -d . "hello"   # is the invocation right?
+#   agentcall --probe $name                        # does it authenticate?
+#   cadre run $name                                # grade it, get a slot
+
+notes_$name() {
+  cat <<'NOTES'
+one line on what this agent is good for, plus any measured quirk
+NOTES
+}
+
+run_$name() {
+  local ro=(); [ "\$mode" = ro ] && ro=()          # read-only flags, if any
+  local m=();  [ -n "\$model" ] && m=(--model "\$model")
+
+  # stdin, not argv: a diff-sized prompt exceeds ARG_MAX.
+  # -k 30 because SIGTERM alone leaves a CLI that traps it running.
+  printf '%s' "\$prompt" | _run timeout -k 30 "\$TIMEOUT" $name "\${ro[@]}" "\${m[@]}" 2>&1
+}
+EOF
+  echo "created $f"
+  echo "next: edit it, then  agentcall --print-command $name -d . 'hello'"
+}
+
+# --- args -------------------------------------------------------------------
+[ $# -eq 0 ] && { usage; exit 2; }
+
+case "$1" in
+  --list)  list_agents; exit 0 ;;
+  --new)   shift; scaffold_agent "${1:-}"; exit 0 ;;
+  --print-command) DRY=1; shift ;;
+  --probe) shift; for a in ${*:-$AGENTS}; do probe_one "$a"; done; exit 0 ;;
+  -h|--help) usage; exit 0 ;;
+esac
+
+agent="$1"; shift
+dir="$PWD"; mode="ro"; model=""
+while getopts "d:m:M:" opt; do
+  case "$opt" in
+    d) dir="$OPTARG" ;;
+    m) mode="$OPTARG" ;;
+    M) model="$OPTARG" ;;
+    *) usage; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# "$*", not "$1": agentcall codex -d . review this file must not silently
+# become the one-word prompt "review".
+prompt="$*"
+[ -z "$prompt" ] && [ ! -t 0 ] && prompt=$(cat)
+# An adapter defining noprompt_<name> takes no prompt (coderabbit).
+if [ -z "$prompt" ] && ! command -v "noprompt_$agent" >/dev/null 2>&1; then
+  die "no prompt (argument or stdin)"
+fi
+[ -d "$dir" ] || die "no such directory: $dir"
+case "$mode" in ro|rw) ;; *) die "mode must be ro or rw" ;; esac
+
+# Adapters that pass the prompt on argv fail at ARG_MAX with a generic error
+# that reads like the agent's fault. Say so before it happens.
+if [ "${#prompt}" -gt 100000 ]; then
+  echo "agentcall: prompt is ${#prompt} bytes; adapters that use argv (see" >&2
+  echo "  docs/ADDING-AN-AGENT.md) may fail at ARG_MAX with an unrelated error." >&2
+fi
+
+run_agent "$agent" "$dir" "$mode" "$model" "$prompt"
