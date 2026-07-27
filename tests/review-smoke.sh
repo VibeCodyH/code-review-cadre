@@ -451,6 +451,15 @@ check "grade reports outage, not bad JSON"    "grep -q 'RATE-LIMITED or OUT OF Q
 # one two ways. The adjudicator prompt required evidence from `79b56ee`; the judge
 # did not, and that gap is the root cause rather than judge quality.
 check "judge prompt demands quotes"    "grep -q 'quotes' '$ROOT/lib/prompts/judge.md'"
+
+# ★ The other half of the same lesson. A quote makes a split VISIBLE; a rule that
+# names its mechanism stops the split happening. Two graders split on one item in
+# three and every split turned on one unwritten question -- whether arguing a write
+# is ungated by citing a guard ELSEWHERE earns credit. A grader swap cannot fix
+# that: an underspecified rule produces a defensible split at any judge quality.
+check "keygen demands a named mechanism"  "grep -q 'NAME the specific mechanism' '$ROOT/lib/prompts/keygen.md'"
+check "and rules on the other-guard case" "grep -q 'DIFFERENT mechanism earns credit' '$ROOT/lib/prompts/keygen.md'"
+check "and prefers artifacts to ideas"    "grep -q 'names an ARTIFACT' '$ROOT/lib/prompts/keygen.md'"
 check "and says a MISS needs no quote" "grep -q 'for a MISS' '$ROOT/lib/prompts/judge.md'"
 check "and refuses paraphrase"         "grep -q 'paraphrase' '$ROOT/lib/prompts/judge.md'"
 check "and says no sentence means MISS" "grep -q 'cannot find a sentence' '$ROOT/lib/prompts/judge.md'"

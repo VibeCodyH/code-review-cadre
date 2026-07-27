@@ -51,3 +51,31 @@ Rules that matter more than completeness:
    point a reviewer at the wrong code, and the grader cannot tell.
 8. Every scoring rule must be falsifiable from the review text alone. The grader
    sees only this key and the review, never the repository.
+9. ★★ A scoring rule must NAME the specific mechanism, and must say whether
+   reaching the same conclusion through a DIFFERENT mechanism earns credit.
+   Write both halves explicitly:
+
+     K1 is a HIT only if the review claims <route> writes without consulting
+     <the named gate, e.g. resolveOloPushMode> and requires that gate be honored.
+     ★ A review that argues the same write is ungated by citing a DIFFERENT
+     guard elsewhere (a sibling's own dry-run check, a wrapper it bypasses)
+     DOES / DOES NOT earn credit. <pick one, in the key, before any run>
+
+   Measured, and this is the most expensive failure this file has produced: two
+   capable graders ran over the same nine reviews and split on ONE ITEM IN
+   THREE. Every split turned on that one unwritten question. The stored grades
+   proved it -- one grader's `quotes` credited the item on a sentence about a
+   sibling function's guard, while naming a different sentence for the other
+   item than a human reader had. They were not disagreeing about a verdict,
+   they were reading different sentences, and the rule never told them which
+   one counted.
+
+   ★ Swapping graders CANNOT fix this. An underspecified rule produces a
+   defensible split at any judge quality, and the resulting scores span the
+   scale -- one candidate was graded 2/6, 4/6, and 6/6 by three readers,
+   ordered by nothing but leniency. Ambiguity here costs more than a weak
+   grader, because it is invisible: every one of those grades looked healthy.
+10. Prefer a rule that names an ARTIFACT the review must mention -- an env var,
+   a function, a column -- over one that describes an idea the review must
+   convey. "Names OLO_RECON_DRY_RUN or resolveOloPushMode" is checkable by two
+   readers the same way. "Understands the write is ungated" is not.
