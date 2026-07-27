@@ -443,6 +443,28 @@ check "kimi suspension reads as limited"      "$RL"
 printf '{"items":{"K1":"HIT"},"extras":[]}\n' > "$QRAW"
 check "a real grade does NOT read as limited" "! $RL"
 check "grade reports outage, not bad JSON"    "grep -q 'RATE-LIMITED or OUT OF QUOTA' '$ROOT/lib/grade.sh'"
+
+# ★ A grade with no traceability can only be arbitrated by a human re-reading the
+# review, which is how this grading loop stopped being self-correcting. Measured:
+# two graders split on one item in three over the same nine reviews, and the stored
+# grades could not say whether they credited DIFFERENT sentences or read the SAME
+# one two ways. The adjudicator prompt required evidence from `79b56ee`; the judge
+# did not, and that gap is the root cause rather than judge quality.
+check "judge prompt demands quotes"    "grep -q 'quotes' '$ROOT/lib/prompts/judge.md'"
+check "and says a MISS needs no quote" "grep -q 'for a MISS' '$ROOT/lib/prompts/judge.md'"
+check "and refuses paraphrase"         "grep -q 'paraphrase' '$ROOT/lib/prompts/judge.md'"
+check "and says no sentence means MISS" "grep -q 'cannot find a sentence' '$ROOT/lib/prompts/judge.md'"
+check "grade prints the quote"         "grep -q 'q=\$(jq -r --arg k' '$ROOT/lib/grade.sh'"
+check "and marks an unquoted HIT"      "grep -q 'credited with NO quote' '$ROOT/lib/grade.sh'"
+# The extraction must survive a real payload, a missing quote, and the multi-line
+# strings judges actually emit -- a raw newline in the report breaks the run's line.
+QJ="$SANDBOX/q.json"
+printf '%s' '{"items":{"K1":"HIT"},"quotes":{"K1":"the route\n  honors  neither guard"}}' > "$QJ"
+check "quote is whitespace-collapsed" \
+  "[ \"\$(jq -r '(.quotes.K1 // \"\") | gsub(\"\\\\s+\"; \" \")' '$QJ')\" = 'the route honors neither guard' ]"
+printf '%s' '{"items":{"K1":"HIT"}}' > "$QJ"
+check "a missing quotes block is empty, not null" \
+  "[ -z \"\$(jq -r '(.quotes.K1 // \"\") | gsub(\"\\\\s+\"; \" \")' '$QJ')\" ]"
 check "and says it is not about the candidate" "grep -q 'NOT a fact about the candidate' '$ROOT/lib/grade.sh'"
 
 # The command must refuse rather than quietly reuse the judge. The judge only ever

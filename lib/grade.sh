@@ -287,6 +287,22 @@ run_gauntlet() {
       ex=$(jq -r '(.extras // []) | join("; ")' "$gf")
       [ -n "$ex" ] && extras_all="$extras_all- $label run $n: $ex"$'\n'
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
+      # ★ Print the sentence that earned each HIT. Without it a grade is a verdict
+      # nobody can re-check: two graders split on one item in three here and the
+      # artifacts could not say whether they credited different sentences or read
+      # the same one two ways, so only a human re-read could settle it -- which is
+      # exactly the loop that stopped being self-correcting. An unquoted HIT is
+      # still counted (the grade is the judge's to make) but it is marked, because
+      # it is the shape a credit-by-adjacency takes.
+      for k in $items; do
+        case "$(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gf")" in HIT|DEFER) ;; *) continue ;; esac
+        local q; q=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "$gf")
+        if [ -n "$q" ] && [ "$q" != null ]; then
+          echo "  - $k ↳ \"$q\"" >> "$report"
+        else
+          echo "  - $k ⚠ credited with NO quote, so this grade cannot be re-checked" >> "$report"
+        fi
+      done
     done
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"

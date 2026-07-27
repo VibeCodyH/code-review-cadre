@@ -24,6 +24,19 @@ Also report:
               restatements of what the diff does.
   unusable  - true if the text is truncated, empty, or an error rather than a review
 
+  quotes    - ★ REQUIRED. For every item you graded HIT or DEFER, the sentence
+              from the REVIEW, copied verbatim, that made you decide it. Not a
+              paraphrase and not your reasoning: the reviewer's own words. Use ""
+              for a MISS. If you cannot find a sentence to copy, it is a MISS --
+              that is what MISS means.
+
+★ Why `quotes` is not optional. Two graders ran over these same reviews and split on
+one item in three. Because the grade recorded only HIT/MISS, nobody could tell whether
+they had credited DIFFERENT sentences or read the SAME sentence two ways -- so the
+disagreement could only be settled by a human re-reading the review, which is how this
+grading loop stopped being self-correcting. A quote makes a split diagnosable in
+seconds. The adjudicator prompt learned this first; this one is late to it.
+
 Output ONLY a JSON object, no prose, no code fence:
-{"items":{"K1":"HIT","K2":"MISS"},"verdict":"blocking","claimed_execution":true,
- "extras":["label one"],"unusable":false}
+{"items":{"K1":"HIT","K2":"MISS"},"quotes":{"K1":"the reviewer's exact sentence","K2":""},
+ "verdict":"blocking","claimed_execution":true,"extras":["label one"],"unusable":false}
