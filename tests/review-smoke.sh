@@ -416,6 +416,18 @@ check "evidence survives when given"   "jq -e '.findings[0].evidence' '$A/a.json
 check "adj path carries the adjudicator" "grep -q 'by-\$asl.adj.json' '$ROOT/lib/adjudicate.sh'"
 check "and still carries the candidate"  "grep -q '\$csl-run\$n.by-' '$ROOT/lib/adjudicate.sh'"
 
+# ★ The SAME bug lived in the grade path and was worse there: `cadre grade` runs
+# with rescore=1, which `rm -f`s the grade file before writing. So a second judge
+# did not merely collide with the first one's grades -- it DELETED them, destroying
+# the control group of the one experiment that can validate the keyed track. The
+# report file had it too, so the second judge silently overwrote the first's report.
+check "grade path carries the judge"   "grep -q 'by-\$jsl.grade.json' '$ROOT/lib/grade.sh'"
+check "report carries the judge"       "grep -q 'report-\$sl-by-\$jsl.md' '$ROOT/lib/grade.sh'"
+check "and still carries the candidate" "grep -q '\$sl-run\$n.by-' '$ROOT/lib/grade.sh'"
+# Slug the FULL spec: `opencode:ollama/qwen3-judge` and `opencode:ollama/qwen3:14b`
+# are both `opencode`, so two local judges would collide under one name.
+check "judge slug is the full spec"    "grep -q 'jsl=\$(slug \"\$CADRE_JUDGE\")' '$ROOT/lib/grade.sh'"
+
 # The command must refuse rather than quietly reuse the judge. The judge only ever
 # sees review text and a key; ruling on whether code contains a defect needs the repo.
 OUT=$(CADRE_HOME="$SANDBOX/adjhome" CADRE_JUDGE=good CADRE_ADJUDICATOR= \

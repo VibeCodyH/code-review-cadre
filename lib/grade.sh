@@ -140,7 +140,16 @@ key_problems() {
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"
   local sl; sl=$(slug "$spec")
-  local report="$CADRE_HOME/report-$sl.md"
+  # ★ The JUDGE is in the grade filename and the report filename, for the reason
+  # `1821318` put the adjudicator in the adjudication filename -- a lesson this
+  # path had not learned. Keyed on the candidate alone, a second judge DELETES the
+  # first one's grades (`rescore=1` does `rm -f "$gf"` right below) and overwrites
+  # its report, so the one experiment that can validate this track -- run two
+  # graders over the same reviews and compare per item -- destroys its own control
+  # group as it runs. Slug the FULL spec, not spec_agent: `opencode:ollama/qwen3-judge`
+  # and `opencode:ollama/qwen3:14b` are both `opencode` and would collide.
+  local jsl; jsl=$(slug "$CADRE_JUDGE")
+  local report="$CADRE_HOME/report-$sl-by-$jsl.md"
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
 
@@ -214,7 +223,7 @@ run_gauntlet() {
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
         continue
       fi
-      local gf="$CADRE_HOME/$label/$sl-run$n.grade.json"
+      local gf="$CADRE_HOME/$label/$sl-run$n.by-$jsl.grade.json"
       # `cadre grade` means RE-grade. A stale grade file would make a corrected
       # key produce identical numbers, the one thing a rescore rules out.
       [ "$rescore" = 1 ] && rm -f "$gf" "$gf.judge-raw"
