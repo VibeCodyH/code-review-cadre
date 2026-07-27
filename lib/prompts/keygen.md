@@ -39,3 +39,15 @@ Rules that matter more than completeness:
 5. If the FIX is a revert, or the defect is a type error, lint, or CI repair,
    say so and recommend rejecting this pair. Those are not gradeable review
    targets.
+6. ★ A `fix(...)` subject line is NOT evidence of a defect. Diff the TARGET
+   against its OWN contemporaries -- the sibling call sites, the comment above
+   it, the type it returns, the schema it writes to -- and ask whether it breaks
+   a promise the code already made. If the TARGET did the same thing every
+   sibling did at that time, the FIX changed the requirements and there was no
+   defect to find. Recommend rejecting that pair. Measured: a pair was accepted
+   on its subject line alone, and the "defect" turned out to be the identical
+   formula every contemporary used.
+7. Line numbers must be from the TARGET commit. Line numbers from current main
+   point a reviewer at the wrong code, and the grader cannot tell.
+8. Every scoring rule must be falsifiable from the review text alone. The grader
+   sees only this key and the review, never the repository.
