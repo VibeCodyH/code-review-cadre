@@ -700,6 +700,35 @@ check "trust banner still stripped"  "! grep -q 'All tools are now trusted' <<<\
 check "credits footer still stripped" "! grep -q 'Credits:' <<<\"\$OUT\""
 check "private-mode escape stripped" "! grep -q '25h' <<<\"\$OUT\""
 
+echo "== ★ pi: silent success is the worst failure =="
+# Measured on a real panel seat: openai/gpt-oss-120b ended its turn with a
+# `thinking` part and no `text` part, so pi printed nothing and exited 0 -- and
+# the seat landed as a 0-byte .failed with no cause written in it. classify_run
+# caught the emptiness, but a human opening that file learns nothing. The
+# adapter has to name what happened. Nonzero too: returning 0 with no output is
+# indistinguishable from a reviewer that looked and found no defects.
+PD=$(case_dir pisilent)
+printf '#!/bin/sh\nexit 0\n' > "$PD/bin/pi"; chmod +x "$PD/bin/pi"
+cp "$ROOT/agents.d/pi.sh" "$PD/agents.d/"
+OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
+      "$ROOT/bin/agentcall" pi -d /tmp -m ro -M openrouter/openai/gpt-oss-120b 'review' 2>&1); RC=$?
+check "silent pi is not a clean pass" "[ $RC -ne 0 ]"
+check "and says it did not complete"  "grep -q '^DID NOT COMPLETE' <<<\"\$OUT\""
+check "it names the reasoning cause"  "grep -q 'reasoning and no text part' <<<\"\$OUT\""
+check "and names the model"           "grep -q 'openrouter/openai/gpt-oss-120b' <<<\"\$OUT\""
+# A model that DOES emit text must pass through untouched, exit code included.
+printf '#!/bin/sh\necho "REVIEW: one finding."\nexit 0\n' > "$PD/bin/pi"
+OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
+      "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
+check "a talking pi passes through"   "grep -q 'REVIEW: one finding' <<<\"\$OUT\""
+check "and keeps its exit code"       "[ $RC -eq 0 ]"
+# A REAL failure keeps its nonzero status rather than being masked as empty.
+printf '#!/bin/sh\necho "400: model not found"\nexit 1\n' > "$PD/bin/pi"
+OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
+      "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
+check "a real error stays nonzero"    "[ $RC -ne 0 ]"
+check "and keeps the provider text"   "grep -q '400: model not found' <<<\"\$OUT\""
+
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
 # findings the human already dismissed, because the reviewers have no memory.
