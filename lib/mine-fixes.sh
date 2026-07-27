@@ -32,13 +32,22 @@ mapfile -t FIXES < <(
 
 printf 'fix_sha\ttarget_sha\tsrc\ttest\tshare\tage\tfix_subject\n'
 
+# ★ Every filter below is a place the table can silently become empty. Without
+# a tally the output is a bare header and the reader cannot tell an empty repo
+# from a filter that ate everything -- measured on a 1004-commit repo where all
+# 200 fix-shaped commits died on the test-change filter alone. Counted here,
+# reported on stderr so the TSV on stdout stays parseable.
+n_cand=0 n_kept=0
+d_footprint=0 d_nosrc=0 d_notest=0 d_noblame=0 d_nodominant=0 d_share=0 d_age=0
+
 for line in "${FIXES[@]}"; do
   [ -n "$line" ] || continue
+  n_cand=$((n_cand + 1))
   B=$(cut -f1 <<<"$line"); BT=$(cut -f2 <<<"$line"); BS=$(cut -f3- <<<"$line")
 
   # Only single-parent commits with a modest, code-shaped footprint.
-  nfiles=$(git -C "$REPO" diff --name-only "$B^" "$B" 2>/dev/null | grep -cE '\.(ts|tsx|js|jsx|py|go|rs|java|rb)$') || continue
-  [ "${nfiles:-0}" -ge 1 ] && [ "${nfiles:-0}" -le 4 ] || continue
+  nfiles=$(git -C "$REPO" diff --name-only "$B^" "$B" 2>/dev/null | grep -cE '\.(ts|tsx|js|jsx|py|go|rs|java|rb)$') || { d_footprint=$((d_footprint + 1)); continue; }
+  [ "${nfiles:-0}" -ge 1 ] && [ "${nfiles:-0}" -le 4 ] || { d_footprint=$((d_footprint + 1)); continue; }
 
   # A fix that only edits tests or type declarations is not a behavioural defect
   # a reviewer could have caught in the target diff. Require at least one real
@@ -46,13 +55,13 @@ for line in "${FIXES[@]}"; do
   nsrc=$(git -C "$REPO" diff --name-only "$B^" "$B" 2>/dev/null \
          | grep -E '\.(ts|tsx|js|jsx|py|go|rs|java|rb)$' \
          | grep -viE '(^|/)(tests?|__tests__|spec|e2e)/|\.(test|spec)\.|\.d\.ts$' -c) || nsrc=0
-  [ "${nsrc:-0}" -ge 1 ] || continue
+  [ "${nsrc:-0}" -ge 1 ] || { d_nosrc=$((d_nosrc + 1)); continue; }
 
   # Require the fix to carry a test change too, the author proving the defect
   # was real. This is the single strongest signal that the target is gradeable.
   has_test=$(git -C "$REPO" diff --name-only "$B^" "$B" 2>/dev/null \
              | grep -ciE '(^|/)(tests?|__tests__|spec|e2e)/|\.(test|spec)\.') || has_test=0
-  [ "${has_test:-0}" -ge 1 ] || continue
+  [ "${has_test:-0}" -ge 1 ] || { d_notest=$((d_notest + 1)); continue; }
 
   # Blame the parent at the pre-image line ranges B touched.
   declare -A votes=(); total=0
@@ -72,7 +81,7 @@ for line in "${FIXES[@]}"; do
     done <<<"$ranges"
   done < <(git -C "$REPO" diff --name-only "$B^" "$B" -- 2>/dev/null | grep -E '\.(ts|tsx|js|jsx|py|go|rs|java|rb)$')
 
-  [ "$total" -gt 0 ] || { unset votes; continue; }
+  [ "$total" -gt 0 ] || { unset votes; d_noblame=$((d_noblame + 1)); continue; }
 
   # Dominant blame target.
   A=""; best=0
@@ -80,15 +89,58 @@ for line in "${FIXES[@]}"; do
     if [ "${votes[$k]}" -gt "$best" ]; then best=${votes[$k]}; A=$k; fi
   done
   unset votes
-  [ -n "$A" ] || continue
-  [ "$A" != "$B" ] || continue
+  [ -n "$A" ] || { d_nodominant=$((d_nodominant + 1)); continue; }
+  [ "$A" != "$B" ] || { d_nodominant=$((d_nodominant + 1)); continue; }
 
   share=$(( best * 100 / total ))
-  [ "$share" -ge 60 ] || continue
+  [ "$share" -ge 60 ] || { d_share=$((d_share + 1)); continue; }
 
-  AT=$(git -C "$REPO" log -1 --format=%at "$A" 2>/dev/null) || continue
+  AT=$(git -C "$REPO" log -1 --format=%at "$A" 2>/dev/null) || { d_age=$((d_age + 1)); continue; }
   age=$(( (BT - AT) / 86400 ))
-  [ "$age" -ge 0 ] && [ "$age" -le "$MAXAGE" ] || continue
+  [ "$age" -ge 0 ] && [ "$age" -le "$MAXAGE" ] || { d_age=$((d_age + 1)); continue; }
 
+  n_kept=$((n_kept + 1))
   printf '%s\t%s\t%s\t%s\t%s%%\t%s\t%s\n' "${B:0:9}" "${A:0:9}" "$nsrc" "$has_test" "$share" "$age" "$BS"
 done
+
+# ---- why the table is the size it is ------------------------------------
+# stderr on purpose: cmd_setup pipes stdout through `tee`, and a diagnostic
+# mixed into the TSV would corrupt every downstream reader of the file.
+{
+  echo
+  echo "kept $n_kept of $n_cand fix-shaped commit(s). Dropped:"
+  printf '  %5d  not 1-4 code files\n'                        "$d_footprint"
+  printf '  %5d  no source file outside tests/ or *.d.ts\n'   "$d_nosrc"
+  printf '  %5d  the fix changed no test file\n'              "$d_notest"
+  printf '  %5d  nothing to blame in the parent\n'            "$d_noblame"
+  printf '  %5d  no single dominant target commit\n'          "$d_nodominant"
+  printf '  %5d  dominant target under 60%% of the blame\n'   "$d_share"
+  printf '  %5d  target older than %s days\n'                 "$d_age" "$MAXAGE"
+
+  if [ "$n_kept" -eq 0 ] && [ "$n_cand" -gt 0 ]; then
+    echo
+    echo "NOTHING SURVIVED. That is a property of this repo's history, not a crash."
+    if [ "$d_notest" -ge $(( (n_cand + 1) / 2 )) ]; then
+      cat <<'EOF'
+The test-change filter took most of them. It is the strongest signal that a
+defect was real (the author proved it with a test), but a repo that does not
+commit tests alongside fixes will never satisfy it, and plenty of working repos
+do not.
+
+You do not need the miner. `cadre make-pass` takes the two shas directly:
+
+  cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
+
+Pick a fix commit you remember, find what it repaired, and read the draft key
+carefully. Without the test filter the pairing is a guess, so the burden of
+proving the target really introduced the defect moves onto you. ★ Check the
+target against the code AROUND it at that time, not against the fix's subject
+line: a commit titled "fix: ..." is often a requirements change, and a key built
+on one scores every reviewer as missing a bug that was never there.
+EOF
+    else
+      echo "Try a larger limit (cadre setup <repo> 500) or a longer max age"
+      echo "(mine-fixes.sh <repo> <limit> <max-age-days>) before hand-picking."
+    fi
+  fi
+} >&2

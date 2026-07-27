@@ -271,6 +271,99 @@ check "deleted secret NOT reachable"  "! grep -q 'history-only-secret' '$G'"
 check "history is only the two commits" "[ \$(grep -c '^commit ' '$G') -le 2 ]"
 check "the run still succeeded"       "grep -q '1 ok' <<<\"\$OUT\""
 
+echo "== ★ a key whose item lost its heading must not register =="
+# Measured: a still-running make-pass held its redirect open and clobbered a key
+# mid-write. K1's heading was destroyed. The old checks were file-global ("a K
+# appears somewhere, a severity word appears somewhere") and both passed, because
+# the Scoring rules section still mentions K1 in prose. doctor said "ok, 2 key
+# items" and three graded runs scored a BLOCKING item with no severity at all,
+# so the slot verdict came off the wrong denominator.
+D=$(case_dir key_validate)
+mkdir -p "$D/state/keys" "$D/state/passes.d"
+cat > "$D/state/keys/broken.md" <<'K'
+# Answer key for deadbeef (a thing)
+
+## The key
+
+### K2 - SHOULD-FIX - this heading survived
+
+body text
+
+## Scoring rules
+
+- K1 is a HIT only if the review claims the thing.
+K
+printf 'broken|deadbeef|%s|HEAD~1|keys/broken.md\n' "$D/src" > "$D/state/passes.d/broken.meta"
+OUT=$(run_cadre "$D" add-pass broken)
+check "add-pass refuses the mangled key"  "grep -q 'not gradeable' <<<\"\$OUT\""
+check "it names the orphaned item"        "grep -q 'K1 is referenced' <<<\"\$OUT\""
+check "nothing was registered"            "! grep -q '^broken|' '$D/state/passes.conf' 2>/dev/null"
+
+cat > "$D/state/keys/broken.md" <<'K'
+# Answer key for deadbeef (a thing)
+
+## The key
+
+### K1 - the heading lost its severity word
+
+body text
+K
+OUT=$(run_cadre "$D" add-pass broken)
+check "a severity-less heading is refused" "grep -q 'no BLOCKING/SHOULD-FIX/NIT' <<<\"\$OUT\""
+
+echo "== ★ an empty shortlist must say WHICH filter emptied it =="
+# Measured on a 1004-commit repo: all 200 fix-shaped commits died on the
+# test-change filter, and `cadre setup` printed a bare header followed by
+# "Pick a row where...". There were no rows. The tally goes to stderr so the
+# TSV on stdout stays parseable.
+mk_fix_repo() {  # mk_fix_repo <src-dir> <with-test 0|1>
+  local s="$1" t="$2"
+  printf 'function a(){return 1}\n' > "$s/lib.js"
+  git -C "$s" add -A; git -C "$s" commit -qm "feat: add a"
+  printf 'function a(){return 2}\n' > "$s/lib.js"
+  if [ "$t" = 1 ]; then mkdir -p "$s/test"; printf 'a()\n' > "$s/test/lib.test.js"; fi
+  git -C "$s" add -A; git -C "$s" commit -qm "fix: a returned the wrong value"
+}
+
+D=$(case_dir miner_notest); S="$D/src"
+mk_fix_repo "$S" 0
+OUT=$(run_cadre "$D" setup "$S" 20)
+check "the tally names the test filter"   "grep -q 'the fix changed no test file' <<<\"\$OUT\""
+check "it says nothing survived"          "grep -q 'NOTHING SURVIVED' <<<\"\$OUT\""
+check "it points at make-pass instead"    "grep -q 'cadre make-pass <label> <repo-dir>' <<<\"\$OUT\""
+check "it does NOT say to pick a row"     "! grep -qi 'pick a row' <<<\"\$OUT\""
+
+D=$(case_dir miner_withtest); S="$D/src"
+mk_fix_repo "$S" 1
+OUT=$(run_cadre "$D" setup "$S" 20)
+check "a qualifying pair is kept"         "grep -q 'kept 1 of' <<<\"\$OUT\""
+check "and the next step is offered"      "grep -q 'Pick a row' <<<\"\$OUT\""
+check "the tally stays OUT of the tsv"    "! grep -q 'Dropped:' '$D/state/shortlist-src.tsv'"
+check "the tsv has a header and one row"  "[ \$(wc -l < '$D/state/shortlist-src.tsv') -eq 2 ]"
+
+echo "== ★ the preflight must not refuse a repo over a folder name or a config file =="
+# Both of these were live and both refused a whole real repo on its first run.
+# `-name 'credentials'` with no -type f matched the Next.js route DIRECTORY
+# src/app/.../credentials/, and `.npmrc` was matched on filename alone -- so
+# `package-lock=false`, the most common .npmrc there is, failed every Node repo.
+P=$(mktemp -d)
+mkdir -p "$P/src/app/integrations/credentials"
+echo 'export default 1' > "$P/src/app/integrations/credentials/page.tsx"
+echo 'package-lock=false' > "$P/.npmrc"
+OUT=$(bash -c "source '$ROOT/lib/common.sh'; secrets_preflight '$P'" 2>&1); RC=$?
+check "benign .npmrc + credentials/ dir accepted" "[ $RC -eq 0 ]"
+check "and it says nothing at all"                "[ -z \"\$OUT\" ]"
+
+printf '//registry.npmjs.org/:_authToken=abc123\n' > "$P/.npmrc"
+OUT=$(bash -c "source '$ROOT/lib/common.sh'; secrets_preflight '$P'" 2>&1); RC=$?
+check "an .npmrc carrying a token IS refused"     "[ $RC -eq 3 ]"
+check "and it names the file"                     "grep -q '.npmrc' <<<\"\$OUT\""
+
+P2=$(mktemp -d); echo 'API_TOKEN=x' > "$P2/.env"
+OUT=$(bash -c "source '$ROOT/lib/common.sh'; secrets_preflight '$P2'" 2>&1); RC=$?
+check "a .env is still refused on the name alone" "[ $RC -eq 3 ]"
+rm -rf "$P" "$P2"
+
 echo "== ★ CADRE_HOME inside or EQUAL TO the reviewed repo is refused =="
 D=$(case_dir nested_home); S="$D/src"
 git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f

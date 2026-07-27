@@ -84,6 +84,29 @@ key_severity() {
 # Numeric order without sort -V, which BSD sort does not have.
 key_items() { grep -oE '\bK[0-9]+\b' "$1" | sort -u | sed 's/^K//' | sort -n | sed 's/^/K/'; }
 
+# ★ Every K item must own a HEADING carrying a severity word. Checking the file
+# globally ("has a K somewhere, has the word blocking somewhere") passes a key
+# whose headings are gone, because the Scoring rules section mentions K1 and K2
+# in prose. Measured: a key was clobbered mid-write by a still-running
+# make-pass, K1's heading was destroyed, `doctor` said "ok, 2 key items", and
+# three graded runs scored that item with NO severity -- so a BLOCKING item was
+# silently counted as unweighted and the slot verdict was computed from the
+# wrong denominator. Prints one problem per line; empty output means usable.
+key_problems() {
+  local kf="$1" item sev
+  [ -s "$kf" ] || { echo "key file is empty"; return; }
+  local items; items=$(key_items "$kf")
+  [ -n "$items" ] || { echo "no K1/K2… items"; return; }
+  for item in $items; do
+    if ! grep -qiE "^#+ *\*{0,2}$item\b" "$kf"; then
+      echo "$item is referenced but has no '### $item - SEVERITY - …' heading"
+      continue
+    fi
+    sev=$(key_severity "$kf" "$item")
+    [ -n "$sev" ] || echo "$item's heading carries no BLOCKING/SHOULD-FIX/NIT severity word"
+  done
+}
+
 # run_gauntlet <agent-spec> <runs> <rescore 0|1> [pass-label]
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"

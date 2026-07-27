@@ -134,11 +134,24 @@ cmd_setup() {
   echo "mining fix-commit pairs in $repo (last $limit fix-shaped commits)…"
   "$CADRE_ROOT/lib/mine-fixes.sh" "$repo" "$limit" | tee "$out"
   echo
+  # ★ Do not tell someone to "pick a row" from an empty table. The miner has
+  # already explained on stderr WHICH filter emptied it; this only has to stop
+  # promising a next step that does not exist.
+  local rows; rows=$(($(wc -l < "$out") - 1))
+  [ "$rows" -lt 0 ] && rows=0
+  if [ "$rows" -eq 0 ]; then
+    cat <<EOF
+no pass candidates. See the tally above for which filter emptied the table.
+The header-only file is still at: $out
+EOF
+    return 0
+  fi
   echo "saved: $out"
   cat <<EOF
 
-Each row is a candidate pass: the author broke something in target_sha and
-repaired it in fix_sha, WITH a test change proving the defect was real.
+Each of the $rows row(s) is a candidate pass: the author broke something in
+target_sha and repaired it in fix_sha, WITH a test change proving the defect
+was real.
 
 Pick a row where the fix is a behavioural repair you would have wanted a
 reviewer to catch, then:
@@ -231,9 +244,12 @@ cmd_add_pass() {
   [ -f "$keyfile" ] || die "no key at $keyfile"
   grep -q 'CADRE-DRAFT' "$keyfile" && \
     die "$keyfile still carries the DRAFT marker, read it, correct it, delete the marker"
-  grep -qoE '\bK[0-9]+\b' "$keyfile" || die "$keyfile has no K1/K2… items"
-  grep -qiE 'blocking|should-fix|nit' "$keyfile" || \
-    die "$keyfile has no severity words, the grader reads severity out of the item headings"
+  local probs; probs=$(key_problems "$keyfile")
+  [ -z "$probs" ] || {
+    echo "cadre: refusing to register '$label'. The key is not gradeable:" >&2
+    printf '%s\n' "$probs" | sed 's/^/  /' >&2
+    die "severity is read out of each item's heading, so an item without one scores as if it does not matter"
+  }
   grep -q "^$label|" "$PASSES" 2>/dev/null && die "pass '$label' is already registered"
   cat "$meta" >> "$PASSES"
   echo "registered: $(cat "$meta")"
@@ -1060,9 +1076,10 @@ EOF
       elif [ ! -f "$kf" ]; then echo "MISSING KEY $kf"; bad=1
       elif is_inside "$kf" "$tgt"; then
         echo "★ KEY IS INSIDE THE CHECKOUT, reviewers can read the answers"; bad=1
-      elif ! grep -qiE 'blocking|should-fix|nit' "$kf"; then echo "key has no severity words"; bad=1
+      elif [ -n "$(key_problems "$kf")" ]; then
+        echo "KEY NOT GRADEABLE:"; key_problems "$kf" | sed 's/^/      /'; bad=1
       else
-        echo "ok, $(grep -oE '\bK[0-9]+\b' "$kf" | sort -u | wc -l) key items, $(git -C "$tgt" rev-list --count HEAD 2>/dev/null) commits visible"
+        echo "ok, $(key_items "$kf" | wc -l) key items, $(git -C "$tgt" rev-list --count HEAD 2>/dev/null) commits visible"
       fi
     done < "$PASSES"
   fi

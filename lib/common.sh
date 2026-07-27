@@ -242,16 +242,40 @@ secrets_preflight() {
   # the '.env.example' most repos track, so without this the preflight exits 3
   # on the first run against a real repo and the tool looks broken. A template
   # is the one file in this list that is meant to be committed.
-  hits=$(cd "$dir" && find . \
+  # ★ -type f -o -type l, because the name tests below match DIRECTORIES too.
+  # `src/app/integrations/olo/credentials/page.tsx` is a route segment in every
+  # Next.js app that has a credentials screen, and without this the whole repo
+  # is refused over a folder name.
+  local name_hits config_hits
+  name_hits=$(cd "$dir" && find . \
            \( -name '.git' -o -name node_modules -o -name vendor -o -name target \) -prune -o \
-           \( \( -name '.env' -o -name '.env.*' -o -name '.envrc' \
+           \( \( -type f -o -type l \) \
+              \( -name '.env' -o -name '.env.*' -o -name '.envrc' \
               -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \
               -o -name 'id_rsa' -o -name 'id_dsa' -o -name 'id_ecdsa' -o -name 'id_ed25519' \
               -o -name 'credentials' -o -name '*credentials*.json' -o -name 'service-account*.json' \
-              -o -name '.npmrc' -o -name '.netrc' -o -name '.pypirc' -o -name '.dockercfg' \
               -o -name 'terraform.tfstate' \) \
               ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
               ! -name '*.dist' ! -name '*.tmpl' \) -print 2>"$errs" | head -40)
+  # ★ These four are CONFIG files that usually carry no credential at all. The
+  # most common .npmrc in the world is one line of `package-lock=false`, and
+  # refusing on the filename alone fails every Node repo on its first run --
+  # the same "the tool looks broken" failure the *.example exemption prevents.
+  # So gate them on CONTENT: an auth-shaped line, or a file we cannot read.
+  # Unreadable counts as a hit, same principle as the find-stderr check below.
+  config_hits=$(cd "$dir" && find . \
+           \( -name '.git' -o -name node_modules -o -name vendor -o -name target \) -prune -o \
+           \( \( -type f -o -type l \) \
+              \( -name '.npmrc' -o -name '.netrc' -o -name '_netrc' \
+              -o -name '.pypirc' -o -name '.dockercfg' \) \
+              ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
+              ! -name '*.dist' ! -name '*.tmpl' \) -print 2>>"$errs" \
+         | while IFS= read -r f; do
+             if [ ! -r "$f" ] || grep -qiE '_auth|_password|"auth"|password|machine[[:space:]]' "$f"; then
+               printf '%s\n' "$f"
+             fi
+           done | head -40)
+  hits=$(printf '%s\n%s\n' "$name_hits" "$config_hits" | grep -v '^[[:space:]]*$' || true)
   if [ -s "$errs" ]; then
     {
       echo "cadre: refusing to run. The secrets preflight could not read all of $dir:"
