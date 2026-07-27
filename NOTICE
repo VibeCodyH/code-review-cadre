@@ -11,7 +11,11 @@ THE MIT PORTION
 On 2026-07-26 this repository was published publicly under the MIT License,
 through and including the commit whose hash at the time of publication was:
 
-    70bf29a
+    71d040a  "Write down where each CLI is documented, and where its docs
+              are wrong"  (2026-07-26 22:50 -0400)
+
+That is the last commit that reached the public remote before the repository
+was made private on 2026-07-27.
 
 Anyone who obtained a copy of the repository during that window received it
 under the MIT License, and that grant is irrevocable for the version they
