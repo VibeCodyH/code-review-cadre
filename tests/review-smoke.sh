@@ -466,6 +466,17 @@ check "rescore grades to a side file"  "grep -q 'grade_one \"\$keyfile\" \"\$rf\
 check "and swaps only on success"      "grep -q 'mv -f \"\$gf.new\" \"\$gf\"' '$ROOT/lib/grade.sh'"
 check "and no longer deletes upfront"  "! grep -q 'rm -f \"\$gf\" \"\$gf.judge-raw\"' '$ROOT/lib/grade.sh'"
 
+# ★ agy is a GRADER, never a reviewer or adjudicator. Its two limits -- it refuses
+# security-flavoured analysis, and headless it auto-denies its own tool permissions
+# -- both bite jobs that read a checkout. Judging reads no checkout and asks for no
+# vulnerability hunt, so it is exempt from both. That distinction only protects
+# anyone if the adapter says so, because the failure is a REFUSAL filed as a result.
+check "agy adapter exists"           "[ -f '$ROOT/agents.d/agy.sh' ]"
+check "and defines its run function" "grep -q 'run_agy()' '$ROOT/agents.d/agy.sh'"
+check "and refuses a model suffix"   "grep -q 'nomodel_agy()' '$ROOT/agents.d/agy.sh'"
+check "and says GRADING ONLY"        "grep -q 'GRADING ONLY' '$ROOT/agents.d/agy.sh'"
+check "and names the refusal limit"  "grep -qi 'refuses security' '$ROOT/agents.d/agy.sh'"
+
 check "keygen demands a named mechanism"  "grep -q 'NAME the specific mechanism' '$ROOT/lib/prompts/keygen.md'"
 check "and rules on the other-guard case" "grep -q 'DIFFERENT mechanism earns credit' '$ROOT/lib/prompts/keygen.md'"
 check "and prefers artifacts to ideas"    "grep -q 'names an ARTIFACT' '$ROOT/lib/prompts/keygen.md'"
