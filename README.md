@@ -488,10 +488,17 @@ which they would do anyway. No telemetry, no analytics, no version check, no
 crash reporter. Don't take our word for it:
 
 ```bash
-git grep -nE 'curl|wget|http' -- bin lib agents.d     # returns nothing
+git grep -nE 'curl|wget|http' -- bin lib agents.d     # three hits, none a fetch
 ```
 
-The one line that looks like an exception isn't. `make-pass` runs `git clone`,
+Read the three. `bin/cadre` prints `https://opencode.ai` in a hint when opencode
+isn't installed, and carries `neon-http` inside a worked example of the triage
+file's format. `agents.d/kiro.sh` deletes kiro's own `Learn more at https://kiro.dev`
+banner from the CLI's output, which is the opposite of reaching for it. No
+fetcher is invoked anywhere, and this line is worth re-running rather than
+trusting: it is a claim about a moving tree, and it has been wrong before.
+
+The other line that looks like an exception isn't either. `make-pass` runs `git clone`,
 but against `file://` on a path already on your disk, because a shallow local
 clone is how a checkout gets pinned with no future history in it. There is no
 remote for it to reach.
@@ -612,5 +619,8 @@ model should review my code" can't require one vendor's client.
 - [PRIOR-ART.md](docs/PRIOR-ART.md). What already existed, what's actually new
   here, and where this thing is weak.
 - [ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md).
+- [CLI-REFERENCE.md](docs/CLI-REFERENCE.md). Vendor docs and changelog for every
+  CLI on the roster, the version each adapter was last known good against, and
+  the places where a vendor's own docs are wrong.
 
 MIT.
