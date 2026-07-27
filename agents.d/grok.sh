@@ -17,17 +17,25 @@ NOTES
 }
 
 run_grok() {
-  local out pf stop text trunc=0 m=()
+  local out pf stop text trunc=0 m=() ro=()
   [ -n "$model" ] && m=(--model "$model")
+  # ★ ro was previously UNENFORCED here: --always-approve was passed in every
+  # mode, so a "read-only" review could edit, write, and shell out. Its
+  # --sandbox flag no-ops headless, so the deny-list is the only thing that
+  # actually holds. Found alongside the claude adapter's ro being decorative --
+  # the same bug in two of three adapters, while codex had a real -s read-only
+  # sandbox the whole time. An unenforced mode is worse than no mode: it reads
+  # as a guarantee in every report that cites it.
+  [ "$mode" = ro ] && ro=(--disallowed-tools 'edit,write,bash')
   if [ -n "$DRY" ]; then
-    _run timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" \
+    _run timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file PROMPTFILE
     return 0
   fi
   pf=$(mktemp); printf '%s' "$prompt" > "$pf"
   out=$(mktemp)
-  ( cd "$dir" && timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" \
+  ( cd "$dir" && timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file "$pf" ) > "$out" 2>&1
   rm -f "$pf"

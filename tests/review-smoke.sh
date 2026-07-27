@@ -471,6 +471,24 @@ check "and no longer deletes upfront"  "! grep -q 'rm -f \"\$gf\" \"\$gf.judge-r
 # -- both bite jobs that read a checkout. Judging reads no checkout and asks for no
 # vulnerability hunt, so it is exempt from both. That distinction only protects
 # anyone if the adapter says so, because the failure is a REFUSAL filed as a result.
+# ★★ ro must DENY, not merely pre-approve. `--allowedTools` allowlists without
+# denying anything else, so the claude adapter's "read-only" mode was decorative:
+# a candidate held `advisor` (a second, stronger model), `Agent`, and Bash/Edit/
+# Write, used the advisor, and said so in its review. That voided every claude
+# number in the corpus. grok had the same hole -- --always-approve in every mode.
+# codex was the only adapter with a real sandbox. Pinned so ro cannot go hollow again.
+check "claude ro denies by name"     "grep -q 'disallowedTools' '$ROOT/agents.d/claude.sh'"
+check "claude ro drops operator MCP" "grep -q 'strict-mcp-config' '$ROOT/agents.d/claude.sh'"
+# The advisor is NOT in the CLI's tool registry, so --disallowedTools cannot reach
+# it; only blanking `advisorModel` does. Verified by probe: null still yields YES.
+check "claude ro kills the advisor"  "grep -q 'advisorModel' '$ROOT/agents.d/claude.sh'"
+check "claude denies Agent and Bash" "grep -q 'Agent Bash' '$ROOT/agents.d/claude.sh'"
+# `--disallowedTools` CONTAINS the substring `allowedTools`, so match the flag
+# with its dashes or this passes while the broken mechanism is still in place.
+check "claude no longer allowlists"  "! grep -q -- '--allowedTools' '$ROOT/agents.d/claude.sh'"
+check "grok ro denies write tools"   "grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
+check "grok ro is actually passed"   "[ \"\$(grep -c '\\\${ro\\[@\\]}' '$ROOT/agents.d/grok.sh')\" -ge 2 ]"
+
 check "agy adapter exists"           "[ -f '$ROOT/agents.d/agy.sh' ]"
 check "and defines its run function" "grep -q 'run_agy()' '$ROOT/agents.d/agy.sh'"
 check "and refuses a model suffix"   "grep -q 'nomodel_agy()' '$ROOT/agents.d/agy.sh'"
