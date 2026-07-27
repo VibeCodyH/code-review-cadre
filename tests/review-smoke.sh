@@ -428,6 +428,23 @@ check "and still carries the candidate" "grep -q '\$sl-run\$n.by-' '$ROOT/lib/gr
 # are both `opencode`, so two local judges would collide under one name.
 check "judge slug is the full spec"    "grep -q 'jsl=\$(slug \"\$CADRE_JUDGE\")' '$ROOT/lib/grade.sh'"
 
+# ★ An EXHAUSTED judge reported as "its reply did not parse" is a false statement
+# about WHY, and it costs real time: measured, copilot returned a quota notice on
+# all nine runs of a second-grader comparison and the report blamed its JSON, which
+# sent the reader hunting for a wrapper bug in a working adapter. These are the
+# VERBATIM provider strings observed on 2026-07-27, pinned so the scan cannot
+# silently stop matching them.
+QRAW="$SANDBOX/quota-raw"
+printf 'You have exceeded your monthly quota (Request ID: A7C0:222700:5AC15B7)\n' > "$QRAW"
+RL="bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QRAW'\""
+check "copilot quota notice reads as limited" "$RL"
+printf 'error: failed to run prompt: provider.rate_limit: 429 Your account org-f0b is suspended due to insufficient balance, please recharge your account\n' > "$QRAW"
+check "kimi suspension reads as limited"      "$RL"
+printf '{"items":{"K1":"HIT"},"extras":[]}\n' > "$QRAW"
+check "a real grade does NOT read as limited" "! $RL"
+check "grade reports outage, not bad JSON"    "grep -q 'RATE-LIMITED or OUT OF QUOTA' '$ROOT/lib/grade.sh'"
+check "and says it is not about the candidate" "grep -q 'NOT a fact about the candidate' '$ROOT/lib/grade.sh'"
+
 # The command must refuse rather than quietly reuse the judge. The judge only ever
 # sees review text and a key; ruling on whether code contains a defect needs the repo.
 OUT=$(CADRE_HOME="$SANDBOX/adjhome" CADRE_JUDGE=good CADRE_ADJUDICATOR= \

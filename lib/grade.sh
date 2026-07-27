@@ -240,7 +240,20 @@ run_gauntlet() {
       if [ "$(jq -r '.unusable // false' "$gf")" = true ]; then
         unusable=$((unusable + 1))
         local why2="empty, truncated, or an error, NOT a clean pass"
-        [ -s "$gf.judge-raw" ] && why2="the judge's reply did not parse, see $(basename "$gf").judge-raw"
+        if [ -s "$gf.judge-raw" ]; then
+          why2="the judge's reply did not parse, see $(basename "$gf").judge-raw"
+          # ★ An EXHAUSTED judge is not a broken judge, and saying "did not parse"
+          # about a quota message is the mislabeling this tool exists to catch.
+          # grade_one already retried and gave up, so the raw is the provider's
+          # refusal, not JSON that came out wrong. Measured: copilot replied "You
+          # have exceeded your monthly quota" on all nine runs of a second-grader
+          # comparison and the report blamed its JSON -- which sent the reader
+          # looking for a wrapper bug in an adapter that was working fine.
+          rate_limited "$gf.judge-raw" &&
+            why2="★ the judge is RATE-LIMITED or OUT OF QUOTA after ${CADRE_RETRIES:-3} attempts, so this is a
+  judge outage and NOT a fact about the candidate. Do not read the totals below
+  as a score. See $(basename "$gf").judge-raw"
+        fi
         echo "- run $n: **UNUSABLE** ($why2)" >> "$report"
         continue
       fi
