@@ -311,6 +311,50 @@ K
 OUT=$(run_cadre "$D" add-pass broken)
 check "a severity-less heading is refused" "grep -q 'no BLOCKING/SHOULD-FIX/NIT' <<<\"\$OUT\""
 
+echo "== ★ a judge that did not read the review must not be scored =="
+# Measured on a private pass: a reviewer stated SEVEN findings, its own first
+# heading reading "1. blocking - autosave shows Saved without a successful
+# save", and the judge returned verdict "no defects found" with extras []. Its
+# two key items really were misses, so the run scored plausibly while `extras`
+# -- the only record of a reviewer finding a real defect the key never asked
+# about -- was silently zeroed. Over the 45 runs graded before this existed it
+# fires exactly once, and never on a run that credited a key item.
+CADRE_ROOT="$ROOT" . "$ROOT/lib/grade.sh"
+J=$(mktemp -d -p "$SANDBOX")
+# The two shapes reviewers actually emit, one per file.
+cat > "$J/grok.md" <<'R'
+### 1. blocking - autosave shows Saved without a successful save
+### 2. should-fix - status changes ignore current state
+### 3. nit - badge keys on the wrong string
+R
+cat > "$J/codex.md" <<'R'
+1. **blocking** - [wizard.tsx:179](x): the UI reports a save that failed.
+2. **should-fix** - [repo.ts:449](x): versions collide after a delete.
+R
+cat > "$J/one.md" <<'R'
+### 1. blocking - the only thing this review says
+R
+mkjson() { printf '%s' "$1" > "$J/g.json"; }
+
+mkjson '{"items":{"K1":"MISS","K2":"MISS"},"extras":[],"unusable":false}'
+check "silent zeroing is caught"        "judge_incoherent '$J/g.json' '$J/grok.md'"
+check "and in the other review shape"   "judge_incoherent '$J/g.json' '$J/codex.md'"
+# The check must also NOT fire, or it is a blanket ban on empty extras. Every
+# other empty-extras run in the corpus looked like one of these three.
+check "one stated finding is not enough" "! judge_incoherent '$J/g.json' '$J/one.md'"
+mkjson '{"items":{"K1":"HIT","K2":"MISS"},"extras":[],"unusable":false}'
+check "a credited key item clears it"   "! judge_incoherent '$J/g.json' '$J/grok.md'"
+mkjson '{"items":{"K1":"DEFER","K2":"MISS"},"extras":[],"unusable":false}'
+check "a DEFER means it read the review" "! judge_incoherent '$J/g.json' '$J/grok.md'"
+mkjson '{"items":{"K1":"MISS","K2":"MISS"},"extras":["something else"],"unusable":false}'
+check "a listed extra clears it"        "! judge_incoherent '$J/g.json' '$J/grok.md'"
+# A review with no findings and a judge that found none agree. That is a clean
+# no-defects run, not an incoherent one.
+: > "$J/empty.md"; echo "Nothing to flag." >> "$J/empty.md"
+mkjson '{"items":{"K1":"MISS"},"extras":[],"unusable":false}'
+check "an honest no-defects run passes" "! judge_incoherent '$J/g.json' '$J/empty.md'"
+check "counts numbered-bold findings"   "[ \$(review_findings '$J/codex.md') -ge 2 ]"
+
 echo "== ★ an empty shortlist must say WHICH filter emptied it =="
 # Measured on a 1004-commit repo: all 200 fix-shaped commits died on the
 # test-change filter, and `cadre setup` printed a bare header followed by

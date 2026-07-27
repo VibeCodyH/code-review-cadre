@@ -74,6 +74,35 @@ leak_check() {
   echo "$n"
 }
 
+# Findings the review states, counted in the two shapes reviewers actually emit:
+#   codex        1. **blocking** - [file:line](...)
+#   grok/claude  ### 1. blocking - ...
+# Deliberately loose. It backs a check that only fires when the count is >= 2,
+# so over-counting a stray line costs nothing and under-counting hides a bug.
+review_findings() {
+  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *\**(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+}
+
+# ★ A judge that credits nothing in the key, lists no extras, and is reading a
+# review that states two or more findings did not read that review. Measured: on
+# a private pass one reviewer stated SEVEN findings, its own first heading being
+# "1. blocking - autosave shows Saved without a successful save", and the judge
+# returned verdict "no defects found" with extras []. Both of its key items
+# really were misses by hand audit, which is exactly what makes it dangerous --
+# the run scores plausibly while `extras`, the ONLY record of a reviewer finding
+# a real defect the key never asked about, was silently zeroed. Across the 45
+# runs graded before this check existed it fires once, with no false positives:
+# every other empty-extras run credited a key item, so the judge demonstrably
+# read those. HIT or DEFER both count as having read it -- a DEFER means the
+# judge located the item and weighed it.
+judge_incoherent() {
+  local gf="$1" rf="$2"
+  [ -s "$gf" ] && [ -s "$rf" ] || return 1
+  [ "$(jq -r '[.items[]? | select(. == "HIT" or . == "DEFER")] | length' "$gf")" -eq 0 ] || return 1
+  [ "$(jq -r '(.extras // []) | length' "$gf")" -eq 0 ] || return 1
+  [ "$(review_findings "$rf")" -ge 2 ]
+}
+
 # Severity comes from the key's item heading, so a new pass needs no code change.
 key_severity() {
   local keyfile="$1" item="$2"
@@ -204,6 +233,17 @@ run_gauntlet() {
         local why2="empty, truncated, or an error, NOT a clean pass"
         [ -s "$gf.judge-raw" ] && why2="the judge's reply did not parse, see $(basename "$gf").judge-raw"
         echo "- run $n: **UNUSABLE** ($why2)" >> "$report"
+        continue
+      fi
+
+      # Not scored rather than scored wrong: see judge_incoherent. The item
+      # verdicts on such a run may happen to be right, but they were not
+      # reliably arrived at, and a re-grade is one command.
+      if judge_incoherent "$gf" "$rf"; then
+        unusable=$((unusable + 1))
+        echo "- run $n: **UNUSABLE** (the judge credited no key item and listed no" >> "$report"
+        echo "  extras against a review stating $(review_findings "$rf") findings, so it did not read this" >> "$report"
+        echo "  review. Re-grade with \`cadre grade --rescore\`.)" >> "$report"
         continue
       fi
 
