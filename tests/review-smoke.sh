@@ -396,6 +396,18 @@ check "and carries no findings"       "[ \$(cnt 'true') -eq 0 ]"
 mkadj '{"findings":[],"unusable":false}'
 check "no findings is not unusable"   "[ \$(jq -r '.unusable' '$A/a.json') = false ]"
 
+# ★ A verdict nobody can re-check is worth nothing. Measured the hard way: the first
+# real adjudication returned 23 real / 0 false and there was NO field to audit it
+# with, because the prompt asked for citations and the schema had nowhere to put
+# them. Counting evidence-less verdicts silently would have made an unauditable
+# number look as solid as an audited one.
+mkadj '{"findings":[
+ {"claim":"a","verdict":"REAL","scope":"change","severity":"nit","evidence":"src/x.ts:12 does the thing"},
+ {"claim":"b","verdict":"REAL","scope":"change","severity":"nit","evidence":""},
+ {"claim":"c","verdict":"FALSE","scope":null,"severity":null}],"unusable":false}'
+check "evidence-less verdicts counted" "[ \$(jq -r '[.findings[]?|select((.evidence // \"\")==\"\")]|length' '$A/a.json') -eq 2 ]"
+check "evidence survives when given"   "jq -e '.findings[0].evidence' '$A/a.json' >/dev/null"
+
 # The command must refuse rather than quietly reuse the judge. The judge only ever
 # sees review text and a key; ruling on whether code contains a defect needs the repo.
 OUT=$(CADRE_HOME="$SANDBOX/adjhome" CADRE_JUDGE=good CADRE_ADJUDICATOR= \

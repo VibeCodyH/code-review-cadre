@@ -52,13 +52,21 @@ Adjudicate EVERY finding the review states. For each one:
 4. A mix of verdicts is the expected result. All-REAL or all-FALSE will be read as a
    sign you did not actually check.
 5. `claim` must be your own one-line restatement of the finding, short enough to scan.
+6. ★ `evidence` is REQUIRED on every verdict and must name `path:line` from THIS
+   checkout plus the few words there that decide it. A verdict nobody can re-check is
+   worth nothing here — three separate grading failures have already been caught in
+   this harness by re-reading the artifact, and each was only catchable because the
+   artifact said where to look. "Looks correct" is not evidence.
 
 ## Output
 
 Output ONLY a JSON object. No prose, no code fence.
 
-{"findings":[{"claim":"short restatement","verdict":"REAL","scope":"change","severity":"blocking"},
-{"claim":"another","verdict":"FALSE","scope":null,"severity":null}],"unusable":false}
+{"findings":[{"claim":"short restatement","verdict":"REAL","scope":"change","severity":"blocking",
+"evidence":"src/x.ts:412 sets status completed when counts.succeeded > 0"},
+{"claim":"another","verdict":"FALSE","scope":null,"severity":null,
+"evidence":"src/y.ts:88 already guards this with the check the finding says is absent"}],
+"unusable":false}
 
 Set `"unusable": true` and an empty findings list ONLY if the review text below is
 empty, truncated mid-sentence, or is an error message rather than a review.

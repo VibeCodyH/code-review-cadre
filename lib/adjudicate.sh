@@ -119,8 +119,19 @@ run_adjudication() {
       false_n=$((false_n + f));          unfal=$((unfal + u))
       adjudicated=$((adjudicated + rc + rr + f + u))
       echo "- run $n: **$rc real** (change) · $rr real (repo-wide) · $f false · $u unfalsifiable" >> "$report"
+      # ★ Print the evidence, not just the verdict. An adjudication nobody can
+      # re-check is worth nothing: this harness has caught three separate grading
+      # failures by re-reading the artifact, and every one was catchable only
+      # because the artifact said where to look. FALSE verdicts get it too -- those
+      # are the ones that silently delete a reviewer's credit.
       jq -r '.findings[]? | select(.verdict=="REAL" and .scope=="change")
-             | "  - \(.severity // "?"): \(.claim)"' "$af" >> "$report"
+             | "  - \(.severity // "?"): \(.claim)\n    ↳ \(.evidence // "NO EVIDENCE GIVEN")"' "$af" >> "$report"
+      jq -r '.findings[]? | select(.verdict=="FALSE")
+             | "  - false: \(.claim)\n    ↳ \(.evidence // "NO EVIDENCE GIVEN")"' "$af" >> "$report"
+      # A verdict with no evidence cannot be audited, so say so where it is counted
+      # rather than leaving the total looking as solid as an evidenced one.
+      local noev; noev=$(jq -r '[.findings[]? | select((.evidence // "") == "")] | length' "$af")
+      [ "$noev" -eq 0 ] || echo "  ⚠ $noev of these carry NO evidence and cannot be re-checked" >> "$report"
     done
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
