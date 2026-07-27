@@ -98,7 +98,13 @@ run_adjudication() {
       local rf="$CADRE_HOME/$label/$csl-run$n.md"
       # No review is not "no findings". Say which, the same way grading does.
       [ -s "$rf" ] || { echo "- run $n: no review to adjudicate" >> "$report"; continue; }
-      local af="$CADRE_HOME/$label/$csl-run$n.adj.json"
+      # ★ The adjudicator is IN the filename. Keyed on the candidate alone, a second
+      # adjudicator finds the first one's file, skips its own call, and reports the
+      # FIRST one's verdicts under its own name -- filing model B's judgement under
+      # model A, the mislabeling this whole tool exists to catch. It also silently
+      # blocks the one workflow that validates this track: run two adjudicators over
+      # the same reviews and compare.
+      local af="$CADRE_HOME/$label/$csl-run$n.by-$asl.adj.json"
       [ -s "$af" ] || { echo "  $label run$n: adjudicating …" >&2
                         adjudicate_one "$dir" "$rf" "$af" "$agent" "$model"; }
 

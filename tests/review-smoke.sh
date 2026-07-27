@@ -408,6 +408,14 @@ mkadj '{"findings":[
 check "evidence-less verdicts counted" "[ \$(jq -r '[.findings[]?|select((.evidence // \"\")==\"\")]|length' '$A/a.json') -eq 2 ]"
 check "evidence survives when given"   "jq -e '.findings[0].evidence' '$A/a.json' >/dev/null"
 
+# ★ Two adjudicators over the same review must not collide. Keyed on the candidate
+# alone, the second one finds the first one's file, SKIPS its own call, and reports
+# the first one's verdicts under its own name -- model B's judgement filed under
+# model A. It also silently blocks the only workflow that validates this track:
+# run two adjudicators and compare. The adjudicator slug goes in the filename.
+check "adj path carries the adjudicator" "grep -q 'by-\$asl.adj.json' '$ROOT/lib/adjudicate.sh'"
+check "and still carries the candidate"  "grep -q '\$csl-run\$n.by-' '$ROOT/lib/adjudicate.sh'"
+
 # The command must refuse rather than quietly reuse the judge. The judge only ever
 # sees review text and a key; ruling on whether code contains a defect needs the repo.
 OUT=$(CADRE_HOME="$SANDBOX/adjhome" CADRE_JUDGE=good CADRE_ADJUDICATOR= \
