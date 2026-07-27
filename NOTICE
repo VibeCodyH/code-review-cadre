@@ -1,0 +1,54 @@
+Licensing history of Code Review Cadre
+======================================
+
+This project was briefly public under the MIT License before being made
+private and relicensed. That history is recorded here rather than quietly
+dropped, because the earlier grant is real and does not disappear.
+
+THE MIT PORTION
+---------------
+
+On 2026-07-26 this repository was published publicly under the MIT License,
+through and including the commit whose hash at the time of publication was:
+
+    70bf29a
+
+Anyone who obtained a copy of the repository during that window received it
+under the MIT License, and that grant is irrevocable for the version they
+received. They may continue to use, modify, and redistribute that snapshot on
+MIT terms. Nothing in the current LICENSE file changes that, and nothing here
+is an attempt to withdraw it.
+
+If this repository's history is ever rewritten, the hash above refers to the
+snapshot as it was published, not to any commit in the rewritten history.
+
+THE PROPRIETARY PORTION
+-----------------------
+
+Everything committed after that snapshot is proprietary and is governed by
+the LICENSE file in this repository. That includes, among other work:
+
+  - the answer-key path (`cadre make-pass`, `cadre add-pass`, `cadre run`,
+    and the graded-pass format), which is what makes the tool measure review
+    quality rather than review delivery
+  - the miner's filter diagnostics
+  - the credential preflight's content-based gating
+  - all reference pass material and run data
+
+None of that existed in the MIT snapshot.
+
+THIRD-PARTY CODE
+----------------
+
+This project vendors no third-party source code. It shells out to external
+AI coding CLIs, which it does not distribute and which carry their own
+licenses and terms of service.
+
+Ideas and prior art that informed the design, including work this project
+explicitly does not claim to have invented, are credited in
+docs/PRIOR-ART.md.
+
+The defect-coverage and single-model-recall figures cited in the README and
+in any project marketing are from Tony Stone, "A Single LLM Is an Incomplete
+Code Reviewer" (v2), https://doi.org/10.5281/zenodo.21328807. They were not
+measured by this project.

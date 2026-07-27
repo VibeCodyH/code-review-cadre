@@ -623,4 +623,5 @@ model should review my code" can't require one vendor's client.
   CLI on the roster, the version each adapter was last known good against, and
   the places where a vendor's own docs are wrong.
 
-MIT.
+Proprietary. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for the earlier
+MIT-published snapshot and what it does and does not cover.
