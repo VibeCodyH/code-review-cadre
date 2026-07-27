@@ -441,6 +441,34 @@ for spec in "${reviewers[@]}"; do
   fi
 done
 
+# ★ Write the per-slot record to disk BEFORE deleting the scratch files it is
+# built from. Status and timing used to live only in .status-*/.log-*, both
+# removed on the next line, so the moment a panel finished the only surviving
+# record of WHICH reviewer failed and HOW LONG each took was the console
+# scrollback. Fourteen panels ran before this existed and their timings are
+# simply gone -- not reconstructible, because the artifacts on disk carry
+# neither. report.md is prose for a human; this is the same run as data.
+# One line per reviewer slot, tab-separated, no header: greppable, joinable,
+# and append-safe. Bytes come from the artifact rather than the log so the
+# number always describes the file that is actually there.
+{
+  for spec in "${reviewers[@]}"; do
+    sl=$(slug "$spec")
+    st=$(cat "$OUT/.status-$sl" 2>/dev/null || echo failed)
+    # The log line is "  <spec>: <n> bytes in <t>s" or a failure sentence; take
+    # the seconds if they are there and leave the field empty if they are not,
+    # rather than inventing a zero that would average like a real measurement.
+    secs=$(sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl" 2>/dev/null | head -1)
+    art="$OUT/$sl.md"
+    [ -s "$art" ] || art="$OUT/$sl.md.partial"
+    [ -s "$art" ] || art="$OUT/$sl.md.failed"
+    bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(basename "$OUT")" "$spec" "$(spec_family "$spec")" \
+      "$st" "${bytes:-0}" "${secs:-}"
+  done
+} > "$OUT/slots.tsv"
+
 rm -f "$OUT"/.log-* "$OUT"/.status-*
 echo
 echo "$ok_count ok, $degraded_count degraded, $fail_count failed. Report: $REPORT"

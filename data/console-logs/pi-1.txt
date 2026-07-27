@@ -1,0 +1,14 @@
+⚠ two roster entries share a provider; --jobs 4 will make them
+  compete for the same rate limit.
+reviewing e11d2f6c2..0c7824a6f | 4 reviewer(s) | jobs=4
+  pi:openrouter/openai/gpt-oss-120b: started
+  pi:openrouter/google/gemma-4-26b-a4b-it:free: started
+  kiro:minimax-m2.5: started
+  qwen: started
+  pi:openrouter/openai/gpt-oss-120b: FAILED after 7s (rc=0), kept as pi-openrouter-openai-gpt-oss-120b-1215312843.md.failed
+  pi:openrouter/google/gemma-4-26b-a4b-it:free: 2249 bytes in 85s
+  kiro:minimax-m2.5: FAILED after 172s (rc=1), kept as kiro-minimax-m2.5-3080479560.md.failed
+  qwen: FAILED after 900s (rc=0), kept as qwen-3055087130.md.failed
+
+1 ok, 0 degraded, 3 failed. Report: /home/cody/.local/state/cadre/reviews/pi-1/report.md
+only 1 usable review(s); nothing to synthesize.

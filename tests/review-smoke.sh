@@ -729,6 +729,44 @@ OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
 check "a real error stays nonzero"    "[ $RC -ne 0 ]"
 check "and keeps the provider text"   "grep -q '400: model not found' <<<\"\$OUT\""
 
+echo "== ★ the run dataset =="
+# ★ The record has to be written BEFORE the scratch files it is built from are
+# deleted. It was not, for fourteen panels: status and timing lived only in
+# .status-*/.log-*, both removed when the panel finished, so the moment a run
+# ended the only surviving record of which reviewer failed and how long each
+# took was the terminal scrollback. Those timings are gone and cannot be
+# recovered -- the artifacts carry neither.
+D=$(case_dir dataset); S="$D/src"
+git -C "$S" checkout -qb feature
+echo committed >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster good,dead --synth none \
+        --base main --label ds1 "$S")
+R="$D/state/reviews/ds1"
+check "slots.tsv is written"        "[ -s '$R/slots.tsv' ]"
+check "it survives the cleanup"     "[ ! -e '$R/.status-good' ]"
+check "one row per roster seat"     "[ \$(wc -l < '$R/slots.tsv') -eq 2 ]"
+check "a good seat is ok"           "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+check "a dead seat is failed"       "grep -qP '\tdead\t.*\tfailed\t' '$R/slots.tsv'"
+check "timing is captured live"     "grep -qP '\tok\t[0-9]+\t[0-9]+\$' '$R/slots.tsv'"
+# ★ A seat that produced NO artifact must still appear. Deriving rows from
+# filenames instead of the roster would silently drop exactly the failure worth
+# counting -- the panel would report three seats and the dataset two.
+check "no seat vanishes"            "[ \$(cut -f2 '$R/slots.tsv' | sort -u | wc -l) -eq 2 ]"
+
+# The aggregator reads both shapes: rows recorded live, and older panels
+# rebuilt from artifacts. A reconstructed row has no timing, and that field
+# must stay EMPTY -- a zero would average like a real measurement.
+rm -f "$R/slots.tsv"
+OUT=$(run_cadre "$D" dataset "$D/dataset" 2>&1)
+check "aggregate walks the reviews" "[ -s '$D/dataset/slots.tsv' ]"
+check "it reconstructs the panel"   "grep -q reconstructed '$D/dataset/slots.tsv'"
+check "and leaves secs empty"       "grep -qP '\t\treconstructed\$' '$D/dataset/slots.tsv'"
+# ★ Explicitly: NOT a zero. A reconstructed row has no timing, and writing 0
+# would average like a real measurement and drag every mean toward the floor.
+check "never a fabricated zero"     "! grep -qP '\t0\treconstructed\$' '$D/dataset/slots.tsv'"
+check "panels.tsv carries a diff_id" "grep -qP 'ds1\t[0-9a-f]{8}\.\.[0-9a-f]{8}' '$D/dataset/panels.tsv'"
+check "and counts the seats"        "grep -qP 'ds1\t\S+\t2\t1\t0\t1\t' '$D/dataset/panels.tsv'"
+
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
 # findings the human already dismissed, because the reviewers have no memory.

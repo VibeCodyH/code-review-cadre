@@ -1,0 +1,13 @@
+reviewing e5d07c602..e11d2f6c2 | 4 reviewer(s) | jobs=4
+  kiro:minimax-m2.5: started
+  kiro:glm-5: started
+  qwen: started
+  cursor:composer-2.5: started
+  kiro:minimax-m2.5: FAILED after 46s (rc=1), kept as kiro-minimax-m2.5-3080479560.md.failed
+  kiro:glm-5: FAILED after 206s (rc=1), kept as kiro-glm-5-147609158.md.failed
+  qwen: 5694 bytes in 109s
+  cursor:composer-2.5: 3523 bytes in 112s
+
+2 ok, 0 degraded, 2 failed. Report: /home/cody/.local/state/cadre/reviews/free-1/report.md
+synthesizing 2 review(s) with opencode:opencode/deepseek-v4-flash-free ...
+saved: /home/cody/.local/state/cadre/reviews/free-1/synthesis.md

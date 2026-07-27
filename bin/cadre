@@ -1092,6 +1092,7 @@ case "${1:-}" in
   onboard)   shift; cmd_onboard "$@" ;;
   ledger)    shift; cmd_ledger "$@" ;;
   settle)    shift; cmd_settle "$@" ;;
+  dataset)   shift; init_home; "$CADRE_ROOT/lib/aggregate.sh" "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;
 esac
