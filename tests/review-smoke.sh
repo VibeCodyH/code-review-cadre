@@ -457,6 +457,15 @@ check "judge prompt demands quotes"    "grep -q 'quotes' '$ROOT/lib/prompts/judg
 # three and every split turned on one unwritten question -- whether arguing a write
 # is ungated by citing a guard ELSEWHERE earns credit. A grader swap cannot fix
 # that: an underspecified rule produces a defensible split at any judge quality.
+# ★ A rescore deleted the old grade and THEN made a call that can take minutes, so
+# an interruption anywhere in that window destroyed a grade and produced nothing.
+# Measured: an outer timeout killed a nine-run re-grade and three grades were simply
+# gone. Grade to a side file and swap; a review can be re-graded but a baseline
+# nobody kept cannot be recovered.
+check "rescore grades to a side file"  "grep -q 'grade_one \"\$keyfile\" \"\$rf\" \"\$gf.new\"' '$ROOT/lib/grade.sh'"
+check "and swaps only on success"      "grep -q 'mv -f \"\$gf.new\" \"\$gf\"' '$ROOT/lib/grade.sh'"
+check "and no longer deletes upfront"  "! grep -q 'rm -f \"\$gf\" \"\$gf.judge-raw\"' '$ROOT/lib/grade.sh'"
+
 check "keygen demands a named mechanism"  "grep -q 'NAME the specific mechanism' '$ROOT/lib/prompts/keygen.md'"
 check "and rules on the other-guard case" "grep -q 'DIFFERENT mechanism earns credit' '$ROOT/lib/prompts/keygen.md'"
 check "and prefers artifacts to ideas"    "grep -q 'names an ARTIFACT' '$ROOT/lib/prompts/keygen.md'"

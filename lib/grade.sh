@@ -226,8 +226,26 @@ run_gauntlet() {
       local gf="$CADRE_HOME/$label/$sl-run$n.by-$jsl.grade.json"
       # `cadre grade` means RE-grade. A stale grade file would make a corrected
       # key produce identical numbers, the one thing a rescore rules out.
-      [ "$rescore" = 1 ] && rm -f "$gf" "$gf.judge-raw"
-      [ -s "$gf" ] || grade_one "$keyfile" "$rf" "$gf"
+      #
+      # ★ But grade to a SIDE FILE and swap, rather than deleting first. The old
+      # order deleted the existing grade and then made a network call that can
+      # take minutes -- so a rescore interrupted at any point in that window
+      # destroyed a grade and produced nothing to replace it. Measured: a
+      # re-grade of nine runs was killed by an outer timeout and left three of
+      # them simply gone. A judge outage does the same thing more quietly. This
+      # is the same delete-before-write shape that `45211c9` fixed one layer up,
+      # and losing a graded artifact is the most expensive failure here: the
+      # review can be re-graded, but a baseline nobody kept cannot be recovered.
+      if [ "$rescore" = 1 ] || [ ! -s "$gf" ]; then
+        grade_one "$keyfile" "$rf" "$gf.new"
+        if [ -s "$gf.new" ]; then
+          mv -f "$gf.new" "$gf"
+          if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.judge-raw"
+          else rm -f "$gf.judge-raw"; fi
+        else
+          rm -f "$gf.new" "$gf.new.judge-raw"
+        fi
+      fi
 
       local leaked; leaked=$(leak_check "$keyfile" "$rf")
       if [ "$leaked" -ge 2 ]; then
