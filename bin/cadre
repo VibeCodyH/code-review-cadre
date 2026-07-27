@@ -558,11 +558,38 @@ cmd_review() {
     done <<< "$dupfam"
   fi
 
-  local prov=() sp
-  for sp in "${specs[@]}"; do prov+=("$(spec_agent "$sp"):$(spec_model "$sp" | cut -d/ -f1)"); done
-  if [ "$jobs" -gt 1 ] && [ "$(printf '%s\n' "${prov[@]}" | sort | uniq -d | wc -l)" -gt 0 ]; then
-    echo "⚠ two roster entries share a provider; --jobs $jobs will make them"
-    echo "  compete for the same rate limit."
+  # ★ A shared QUOTA POOL is a third way to correlate a panel, beside lineage
+  # and vendor, and it is the one that takes seats out all at once: the models
+  # are genuinely different, so the warning above stays quiet, while one
+  # exhausted account silently removes every seat behind it. Measured -- a panel
+  # ran kiro:minimax-m2.5 beside kiro:glm-5, two real lineages, and BOTH seats
+  # died together on kiro's account quota. Half the panel, one cause, no warning.
+  # ★ The key is the AGENT plus the model's provider prefix if it has one. It
+  # used to be `spec_model | cut -d/ -f1`, which on a slash-less model returns
+  # the WHOLE model name -- so the two kiro seats hashed differently and the
+  # check missed the exact case it exists for. A bare `kiro:glm-5` shares its
+  # pool with every other kiro slot, so the model must not enter the key at all
+  # unless it names a provider.
+  local prov=() sp m
+  for sp in "${specs[@]}"; do
+    m=$(spec_model "$sp")
+    case "$m" in
+      */*) prov+=("$(spec_agent "$sp"):${m%%/*}") ;;
+      *)   prov+=("$(spec_agent "$sp")") ;;
+    esac
+  done
+  local dupprov; dupprov=$(printf '%s\n' "${prov[@]}" | sort | uniq -d)
+  if [ "$jobs" -gt 1 ] && [ -n "$dupprov" ]; then
+    local p names
+    while IFS= read -r p; do
+      names=""
+      for i in "${!specs[@]}"; do
+        [ "${prov[$i]}" = "$p" ] && names="${names:+$names, }${specs[$i]}"
+      done
+      echo "⚠ $names draw on the same account ($p). --jobs $jobs makes them"
+      echo "  compete for one rate limit, and if it runs out they go dark"
+      echo "  TOGETHER -- different models, one point of failure."
+    done <<< "$dupprov"
   fi
 
   if ! CADRE_PRERUN="$prerun" \

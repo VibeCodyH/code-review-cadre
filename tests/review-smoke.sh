@@ -861,6 +861,34 @@ OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:qwen3-coder \
         --synth none --base main --label fam2 "$S")
 check "different families stay quiet" "! grep -q 'one lineage in two seats' <<<\"\$OUT\""
 
+# ★ A shared QUOTA POOL is a third correlation axis, beside lineage and vendor,
+# and it is the one that takes seats out all at once. Measured: a panel ran
+# kiro:minimax-m2.5 beside kiro:glm-5 -- two genuinely different lineages, so
+# the warning above stayed correctly quiet -- and BOTH died together on kiro's
+# account quota. Half a panel, one cause. The check existed and missed it: the
+# key was `spec_model | cut -d/ -f1`, which on a slash-less model returns the
+# WHOLE model name, so two seats of one CLI hashed apart. Bare-model seats of
+# the same agent share a pool by definition; the model belongs in the key only
+# when it names a provider.
+OUT=$(run_cadre "$D" review --roster good:minimax-m2.5,good:glm-5 --jobs 2 \
+        --synth none --base main --label pool1 "$S")
+check "same-CLI seats warned"         "grep -q 'draw on the same account' <<<\"\$OUT\""
+check "it names the account"          "grep -q '(good)' <<<\"\$OUT\""
+check "and says they go dark together" "grep -q 'TOGETHER' <<<\"\$OUT\""
+check "different lineages stay quiet"  "! grep -q 'one lineage in two seats' <<<\"\$OUT\""
+# A provider prefix is what makes two seats of one CLI actually independent.
+OUT=$(run_cadre "$D" review --roster good:openrouter/a-1,good2:together/b-1 --jobs 2 \
+        --synth none --base main --label pool2 "$S")
+check "different providers stay quiet" "! grep -q 'draw on the same account' <<<\"\$OUT\""
+# Same CLI AND same provider prefix is still one pool.
+OUT=$(run_cadre "$D" review --roster good:openrouter/a-1,good:openrouter/b-1 --jobs 2 \
+        --synth none --base main --label pool3 "$S")
+check "same provider prefix warned"   "grep -q 'draw on the same account (good:openrouter)' <<<\"\$OUT\""
+# Serial runs do not compete, so saying so would be noise.
+OUT=$(run_cadre "$D" review --roster good:minimax-m2.5,good:glm-5 --jobs 1 \
+        --synth none --base main --label pool4 "$S")
+check "jobs=1 is not warned about"    "! grep -q 'draw on the same account' <<<\"\$OUT\""
+
 echo "== ★ a prompt too big for argv must say so, not die in the shell =="
 # Measured live: a 184KB synthesis over a 3-reviewer panel killed an argv-only
 # adapter with `timeout: Argument list too long` -- an error naming neither the
