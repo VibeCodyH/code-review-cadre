@@ -355,6 +355,54 @@ mkjson '{"items":{"K1":"MISS"},"extras":[],"unusable":false}'
 check "an honest no-defects run passes" "! judge_incoherent '$J/g.json' '$J/empty.md'"
 check "counts numbered-bold findings"   "[ \$(review_findings '$J/codex.md') -ge 2 ]"
 
+echo "== ★ the open track counts findings, and never derives one ratio =="
+# The keyed score measures agreement with the one fix an author happened to ship.
+# Measured on a real 1,842-line commit: a reviewer scored 0/2 on the key while
+# stating five real defects, one of which the author later shipped a repair for.
+# So the key is a FLOOR and this track measures the rest of the review.
+. "$ROOT/lib/adjudicate.sh"
+A=$(mktemp -d -p "$SANDBOX")
+mkadj() { printf '%s' "$1" > "$A/a.json"; }
+cnt() { jq -r "[.findings[]? | select($1)] | length" "$A/a.json"; }
+
+mkadj '{"findings":[
+ {"claim":"drops a write","verdict":"REAL","scope":"change","severity":"blocking"},
+ {"claim":"stale badge","verdict":"REAL","scope":"change","severity":"nit"},
+ {"claim":"repo has no tests","verdict":"REAL","scope":"repo","severity":"should-fix"},
+ {"claim":"guard is missing","verdict":"FALSE","scope":null,"severity":null},
+ {"claim":"could be cleaner","verdict":"UNFALSIFIABLE","scope":null,"severity":null}],
+ "unusable":false}'
+check "real-and-specific counted"    "[ \$(cnt '.verdict==\"REAL\" and .scope==\"change\"') -eq 2 ]"
+# ★ A repo-wide finding must NOT land in the headline count. "there are no tests"
+# is true, and every candidate can say it without reading the diff, so counting it
+# as value inflates every agent equally and compresses the metric -- the same way
+# a ceiling pass does.
+check "repo-wide split out"          "[ \$(cnt '.verdict==\"REAL\" and .scope!=\"change\"') -eq 1 ]"
+check "false counted"                "[ \$(cnt '.verdict==\"FALSE\"') -eq 1 ]"
+check "unfalsifiable counted"        "[ \$(cnt '.verdict==\"UNFALSIFIABLE\"') -eq 1 ]"
+
+# A malformed adjudicator reply must be UNUSABLE, not a silent zero. Three separate
+# judge failure modes were measured in one day; a fourth model call gets the same
+# distrust. Silence and "found nothing" are different facts.
+printf 'I think the first one looks fine, honestly.' > "$A/prose.txt"
+extract_json < "$A/prose.txt" > "$A/b.json" 2>/dev/null
+check "unparseable reply is not JSON" "! jq -e '.findings' '$A/b.json' >/dev/null 2>&1"
+mkadj "$ADJ_UNUSABLE"
+check "the UNUSABLE shape parses"     "[ \$(jq -r '.unusable' '$A/a.json') = true ]"
+check "and carries no findings"       "[ \$(cnt 'true') -eq 0 ]"
+
+# A review with zero findings is a real result, not an error: nothing to adjudicate
+# and nothing wrong with the run.
+mkadj '{"findings":[],"unusable":false}'
+check "no findings is not unusable"   "[ \$(jq -r '.unusable' '$A/a.json') = false ]"
+
+# The command must refuse rather than quietly reuse the judge. The judge only ever
+# sees review text and a key; ruling on whether code contains a defect needs the repo.
+OUT=$(CADRE_HOME="$SANDBOX/adjhome" CADRE_JUDGE=good CADRE_ADJUDICATOR= \
+      "$ROOT/bin/cadre" adjudicate somecandidate 2>&1 || true)
+check "refuses without an adjudicator" "grep -q 'CADRE_ADJUDICATOR' <<<\"\$OUT\""
+check "and says why it is not the judge" "grep -q 'never sees\|never the repository' <<<\"\$OUT\""
+
 echo "== ★ an empty shortlist must say WHICH filter emptied it =="
 # Measured on a 1004-commit repo: all 200 fix-shaped commits died on the
 # test-change filter, and `cadre setup` printed a bare header followed by

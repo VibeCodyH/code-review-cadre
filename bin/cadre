@@ -9,6 +9,7 @@
 #   cadre add-pass <label>                register a corrected draft as a pass
 #   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
 #   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
+#   cadre adjudicate <agent-spec> [runs]  OPEN track: are its findings real?
 #   cadre panel [--save]                  compare graded candidates, propose a panel
 #   cadre review [opts] [repo-dir]        run the staffed roster on a REAL change
 #   cadre passes                          list registered passes
@@ -28,6 +29,8 @@ export CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
 . "$CADRE_ROOT/lib/common.sh"
 # shellcheck source=lib/grade.sh
 . "$CADRE_ROOT/lib/grade.sh"
+# shellcheck source=lib/adjudicate.sh
+. "$CADRE_ROOT/lib/adjudicate.sh"
 
 PASSES="$CADRE_HOME/passes.conf"
 
@@ -43,6 +46,13 @@ then run that panel on the code you are about to ship.
   cadre add-pass <label>                register a corrected draft as a pass
   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
+  cadre adjudicate <agent-spec> [runs] [label]
+                                        OPEN track. Check EVERY finding the
+                                        candidate stated against the checkout it
+                                        reviewed; report real / false /
+                                        unfalsifiable counts. The keyed score is a
+                                        floor, this measures the rest of the review
+                                        and never feeds the slot recommendation.
   cadre panel [--save [--force]]        compare all graded candidates, propose a
                                         panel; --save writes a commented roster
   cadre review [opts] [repo-dir]        run the staffed roster against a REAL
@@ -73,6 +83,10 @@ Environment:
                 reaches the answer keys by relative path from its own cwd.
   CADRE_JUDGE   agent that grades reviews against the key. Takes the same
                 agent:provider/model spec a candidate does
+  CADRE_ADJUDICATOR  agent for `cadre adjudicate`. Required, and deliberately
+                NOT defaulted from CADRE_JUDGE: it reads the CHECKOUT to rule on
+                whether a finding is real, which the judge never does. Do not
+                point it at the candidate being adjudicated.
   CADRE_STACK   one line of context added to the review brief
   CADRE_TEST_CMD  override the detected test command
   CADRE_RETRIES     attempts when a call comes back rate limited (default 3)
@@ -283,6 +297,25 @@ cmd_grade() {
   local spec="${1:?usage: cadre grade <agent-spec> [runs]}" runs="${2:-2}"
   init_home; need_judge; need jq
   run_gauntlet "$spec" "$runs" 1 "${3:-}"
+}
+
+# The OPEN track. Deliberately its own command and not part of `run`: it is a
+# second model call per run, and the keyed score has to stand on its own without
+# it. See lib/adjudicate.sh for why one ratio is not reported.
+cmd_adjudicate() {
+  local cand="${1:?usage: cadre adjudicate <candidate-spec> [runs] [pass-label]}"
+  local runs="${2:-2}"
+  init_home; need jq
+  # ★ Never defaults to CADRE_JUDGE. The judge grades review TEXT against a key and
+  # has earned no standing to rule on whether code contains a defect -- measured, it
+  # silently returned zero findings against a review stating seven, and graded the
+  # same text two different ways on a re-grade. This call reads the actual checkout,
+  # so it is a different job and it is named separately.
+  [ -n "${CADRE_ADJUDICATOR:-}" ] || die "set CADRE_ADJUDICATOR to the agent that should
+     check these findings against the code. It is deliberately NOT \$CADRE_JUDGE:
+     the judge only ever sees review text and a key, never the repository.
+     Pick something that is not the candidate being adjudicated."
+  run_adjudication "$CADRE_ADJUDICATOR" "$cand" "$runs" "${3:-}"
 }
 
 # Compare every graded candidate and propose a panel. The step that makes the
@@ -1101,6 +1134,7 @@ case "${1:-}" in
   add-pass)  shift; cmd_add_pass "$@" ;;
   run)       shift; cmd_run "$@" ;;
   grade)     shift; cmd_grade "$@" ;;
+  adjudicate) shift; cmd_adjudicate "$@" ;;
   panel)     shift; cmd_panel "$@" ;;
   review)    shift; cmd_review "$@" ;;
   passes)    shift; cmd_passes "$@" ;;
