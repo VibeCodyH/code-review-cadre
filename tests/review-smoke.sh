@@ -483,9 +483,12 @@ check "claude ro drops operator MCP" "grep -q 'strict-mcp-config' '$ROOT/agents.
 # it; only blanking `advisorModel` does. Verified by probe: null still yields YES.
 check "claude ro kills the advisor"  "grep -q 'advisorModel' '$ROOT/agents.d/claude.sh'"
 check "claude denies Agent and Bash" "grep -q 'Agent Bash' '$ROOT/agents.d/claude.sh'"
-# `--disallowedTools` CONTAINS the substring `allowedTools`, so match the flag
-# with its dashes or this passes while the broken mechanism is still in place.
-check "claude no longer allowlists"  "! grep -q -- '--allowedTools' '$ROOT/agents.d/claude.sh'"
+# Scope to the INVOCATION. Two ways to get this wrong, both hit on the way here:
+# `--disallowedTools` contains the substring `allowedTools`, and the adapter's
+# notes quote `--allowedTools` by name to explain why it is unsafe. The question
+# is only ever whether the flag is passed to the CLI.
+check "claude no longer allowlists" \
+  "! sed -n '/^run_claude/,/^}/p' '$ROOT/agents.d/claude.sh' | grep -q -- '--allowedTools'"
 check "grok ro denies write tools"   "grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
 check "grok ro is actually passed"   "[ \"\$(grep -c '\\\${ro\\[@\\]}' '$ROOT/agents.d/grok.sh')\" -ge 2 ]"
 
