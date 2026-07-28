@@ -1356,6 +1356,20 @@ check "claude ro still drops MCP"   "grep -q -- '--strict-mcp-config' '$ROOT/age
 # makes a comparison wrong while it still looks right -- the advisor hole voided
 # a whole round exactly that way.
 check "codex records the open hole" "grep -q 'collaboration.spawn_agent' '$ROOT/agents.d/codex.sh'"
+# ★ CLI-REFERENCE documented `claude -p --allowedTools Read,Grep,...` long after
+# the adapter abandoned it -- and the adapter's own notes say that approach
+# voided a benchmark round, because --allowedTools only PRE-APPROVES and denies
+# nothing. Someone reading the doc would have reimplemented the hole. The doc is
+# generated from --print-command, so drift is silent unless something checks.
+check "docs drop the voided flag"   "! grep -q -- '--allowedTools' '$ROOT/docs/CLI-REFERENCE.md'"
+check "docs show what claude denies" "grep -q -- '--disallowedTools' '$ROOT/docs/CLI-REFERENCE.md' && grep -q -- '--strict-mcp-config' '$ROOT/docs/CLI-REFERENCE.md'"
+check "docs show codex isolation"   "grep -q -- '--ignore-user-config' '$ROOT/docs/CLI-REFERENCE.md'"
+check "docs say the adapter wins"   "grep -q 'the adapter is right and this block is stale' '$ROOT/docs/CLI-REFERENCE.md'"
+# The credential check reads CONTENT for four config files, so "filenames, not
+# contents" stopped being true. The narrowness it was there to convey is real
+# and has to survive the correction: a key in a source file still passes.
+check "preflight claim corrected"   "! grep -q 'reads filenames, not contents' '$ROOT/README.md'"
+check "but still says what it misses" "grep -q 'A key in a source file passes' '$ROOT/README.md'"
 check "and says the sandbox misses it" "grep -q 'governs model-generated SHELL' '$ROOT/agents.d/codex.sh'"
 check "and names the failed flags"  "grep -q 'all three no-ops here' '$ROOT/agents.d/codex.sh'"
 

@@ -40,20 +40,28 @@ so `agentcall --installed` finds them and `command -v cursor` does not.
 ## The call cadre makes
 
 Generated with `agentcall --print-command <agent> -d . "hello"`, which is the
-authoritative answer for the adapter as shipped. `TIMEOUT` is `CADRE_TIMEOUT`
+authoritative answer for the adapter as shipped — so if this block and an
+adapter disagree, the adapter is right and this block is stale. Re-run it after
+touching `agents.d/`. `$CLAUDE_DENY` is the deny list in `agents.d/claude.sh`,
+spelled out there rather than here because it changes whenever a probe finds a
+tool that did not exist before. `TIMEOUT` is `CADRE_TIMEOUT`
 (900 default); `OUTFILE`/`PROMPTFILE` are `mktemp` paths. The prompt argument is
 shown here as `"$prompt"` where the dry run prints the literal probe string, and
 kiro's dry run omits the argument entirely — its real call passes the prompt as
 the last argv word.
 
 ```
-claude       claude -p --allowedTools Read,Grep,Glob,LS,WebFetch,WebSearch     [prompt on stdin]
+claude       claude -p --strict-mcp-config --settings '{"advisorModel":""}' \
+                  --disallowedTools $CLAUDE_DENY                          [prompt on stdin]
 coderabbit   coderabbit review --committed --base $CADRE_PASS_BASE --agent     [takes no prompt]
-codex        codex exec -s read-only --skip-git-repo-check -C . -o OUTFILE -   [prompt on stdin]
+codex        codex exec -s read-only --ignore-user-config \
+                  --skip-git-repo-check -C . -o OUTFILE -                  [prompt on stdin]
 copilot      copilot -p "$prompt"                                             [argv]
 cursor       agent -p --output-format json --force --workspace . --mode plan   [prompt on stdin]
 devin        devin -p --permission-mode dangerous --prompt-file PROMPTFILE     [file]
-grok         grok --cwd . --always-approve --no-auto-update --no-alt-screen \
+grok         env HOME=$CADRE_GROK_HOME grok --cwd . \
+                  --disallowed-tools edit,write --no-subagents \
+                  --always-approve --no-auto-update --no-alt-screen \
                   --output-format json --prompt-file PROMPTFILE                [file]
 kimi         kimi -p "$prompt"                                                [argv]
 kiro         kiro-cli chat --no-interactive --trust-all-tools "$prompt"        [argv]

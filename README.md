@@ -535,8 +535,12 @@ environment stops the key being advertised. It doesn't stop an agent that goes
 looking, and the verbatim check only catches copying, not paraphrase. Want a
 real boundary, run them in a container with only the checkout mounted.
 
-The credential check is narrower than it sounds, too: it matches file *names*,
-not contents. `.env`, `*.pem` and `id_rsa` stop the run. An API key pasted into
+The credential check is narrower than it sounds, too. It works off a list of
+known credential file *names* — `.env`, `*.pem`, `id_rsa` and friends stop the
+run — plus a handful of config files (`.npmrc`, `.netrc`, `.pypirc`,
+`.dockercfg`) where it also reads the contents, because the most common `.npmrc`
+in the world is one harmless line and refusing on the name alone fails every
+Node repo on its first run. Nothing else is read. An API key pasted into
 `src/config.js` is a file called `config.js`, and it sails straight through. It
 catches the obvious mistake and that is all it claims. Cadre is not a secret
 scanner and doesn't ship one, because a scanner binary is a heavy dependency for
@@ -632,7 +636,8 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
   evidence behind it. Who speaks on your PRs is your call.
 - No cost estimate in dollars. `cadre run` prints a call count and that's it.
 - No resume past skipping outputs that already exist.
-- No secret scanning. The credential check reads filenames, not contents.
+- No secret scanning. The credential check works off known credential filenames,
+  and reads contents only for four config files. A key in a source file passes.
 - No sandbox. See above, and mean it.
 - **It cannot tell a bad review from a non-review.** `ok / degraded / failed` is
   decided mechanically — exit status, emptiness, the markers an adapter emits. A

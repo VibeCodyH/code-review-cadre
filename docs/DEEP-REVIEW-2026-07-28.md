@@ -242,9 +242,23 @@ Ranked by what I would do next.
    pinned by tests, because an unrecorded asymmetry is what makes a comparison
    wrong while it still looks right. **A codex seat should be read as
    possibly-assisted when compared against claude.**
-6. Docs corrections found by the drift audit: the CLI-reference rows for
-   `claude` and `grok`, and the "filename not contents" claim. The only item on
-   this list nobody has touched.
+6. ~~Docs corrections found by the drift audit.~~ **Done, and one of them was
+   not cosmetic.** CLI-REFERENCE still documented `claude -p --allowedTools
+   Read,Grep,...` — the approach the adapter abandoned, and the one its own notes
+   say voided a benchmark round, because `--allowedTools` only *pre-approves* and
+   denies nothing. Anyone reading the doc to build their own harness would have
+   reimplemented the hole. The claude, codex and grok rows now match what the
+   adapters actually run, and the block says the adapter wins when they
+   disagree. Separately, "the credential check reads filenames, not contents"
+   stopped being true when `.npmrc`/`.netrc`/`.pypirc`/`.dockercfg` moved to
+   content gating — corrected without losing the point it was making, which is
+   that a key pasted into a source file still sails through.
+
+**Nothing is left on this list.** What remains is not cleanup: it is the two
+things the review could not settle — whether decorrelation is measurable at this
+sample size at all, and whether the fix-commit key selects for the bugs that
+matter. Both are now stated as open in the docs rather than answered by
+implication.
 
 ## One note on method
 
