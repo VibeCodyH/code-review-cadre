@@ -93,7 +93,7 @@ the citation, drop the load-bearing use.
 
 ## Mechanisms: what was broken, and what got fixed
 
-Committed on this branch, all with reproductions and tests (316 passing, up
+Committed on this branch, all with reproductions and tests (448 passing, up
 from 295).
 
 **The panel matrix invented coverage three separate ways.** This mattered more
@@ -159,6 +159,45 @@ where the rest of the tool uses `agent_installed`, so a wrapper-only adapter
 read as "not installed" and quietly shrank the run. An absent review in the open
 track printed its row without incrementing `unusable`, so the totals said
 "unusable runs: 0" for a two-run request with one review.
+
+**A finished sweep reported COMPLETED with 3 of 30 reviews.** This one was found
+by trying to *use* the tool for its own benchmark rather than by reading it, and
+it is the most instructive failure in the review, because **nothing crashed** and
+**four independent defects had to hold at once**:
+
+1. `run-pass.sh` always exited 0 — it ended on `echo`. So `run_gauntlet`'s
+   `|| return 1` had **never once fired** since the day it was written. A
+   candidate that produced nothing carried the same status as one that produced
+   everything.
+2. A **budget** refusal was indistinguishable from a **rate limit**, in both
+   directions, measured on the same night. claude's "You've hit your monthly
+   spend limit" matched no keyword, so each pass failed in about a second and
+   eleven more were attempted over fifty minutes. kimi's "429 … insufficient
+   balance" matched the rate-limit scan and burned three backoff retries against
+   an account with no balance. The distinction that holds is not
+   permanent-vs-transient but *whether waiting inside this sweep can clear it*.
+3. A pass whose **every run was UNUSABLE still counted as graded**, while adding
+   nothing to either side of the ratio — the silent-denominator bug the skipped-
+   pass guard was written for, still live on the path where it costs most. Eleven
+   such passes scored `0/0` and printed "INCONCLUSIVE, check the passes
+   registry", sending the reader to a registry that was fine.
+4. **The report filename carried less than what identified it, for the third
+   time.** `45211c9` put the judge in the name; the dual-grader work put the whole
+   judge *list* in it; the pass **scope** was still missing. A driver sweeping
+   passes one at a time therefore wrote all twelve reports to one path, each
+   truncating the last, and the surviving artifact was 933 bytes describing the
+   final pass while named as though it covered the gauntlet.
+
+The rule worth keeping out of it is narrower than "exit nonzero on failure":
+**reviews-on-disk and no-reviews are different exit codes.** A missing review is
+fifteen minutes of a model's time and the reason to stop a sweep. A review that
+exists but could not be *graded* is a judge outage — the expensive artifact is
+safe and one cheap re-grade fixes it. My first version collapsed them, and the
+test I had just written asserted the wrong one: it pinned `exit 4` on a fixture
+where the review existed and only the second judge failed. Following that exit
+code, a grader blip at hour two of a seven-hour sweep would have thrown away the
+remaining five hours of review production to save a minute of judge calls. Now 4
+means stop and 5 means re-grade, do not re-review.
 
 ## Scope, expanded at the same time
 
