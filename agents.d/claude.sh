@@ -22,10 +22,30 @@ NOTES
 # Everything the CLI exposes that is not needed to READ code. Explicit rather
 # than computed: a name that vanishes from a future CLI is harmless here; a name
 # that silently appears is exactly what the probe exists to catch.
-CLAUDE_DENY="advisor Agent Bash CronCreate CronDelete CronList DesignSync Edit \
+#
+# ★ `advisor` is deliberately NOT in this list, even though killing it is the
+# whole point of ro mode. It is not in the CLI's tool registry, so denying it
+# prints `Permission deny rule "advisor" matches no known tool` -- on STDERR,
+# which run_claude merges into the review text. That warning became line 1 of
+# every claude review in a corpus run, a contaminant no other candidate carried.
+# The deny never disabled it anyway; --settings advisorModel="" does. Denying a
+# name the CLI does not know is not a belt-and-braces, it is data corruption.
+#
+# ★ Bash is deliberately ALLOWED. The review prompt tells every candidate "You
+# may run targeted tests ... if you assert something reproduces, actually run
+# it" -- detect_test_cmd fires on all 12 passes, and codex has executed under
+# its read-only sandbox from day one. Denying Bash here does not create parity,
+# it inverts it: claude alone would be told to run tests it cannot run. Measured:
+# grok ran `tsc --noEmit` in a real pass and reported the result.
+#
+# ★ Workflow is denied because it orchestrates MULTI-AGENT runs -- the advisor
+# hole wearing a different name. It is not in this list because anyone reasoned
+# about it; it is here because the probe printed it. Deny lists cannot be
+# derived, only observed: re-probe after every CLI upgrade.
+CLAUDE_DENY="Agent CronCreate CronDelete CronList DesignSync Edit \
 EnterWorktree ExitWorktree LSP Monitor NotebookEdit PushNotification RemoteTrigger \
 ReportFindings ScheduleWakeup SendMessage Skill TaskCreate TaskGet TaskList \
-TaskOutput TaskStop TaskUpdate ToolSearch Write"
+TaskOutput TaskStop TaskUpdate ToolSearch Workflow Write"
 
 run_claude() {
   local ro=() m=()

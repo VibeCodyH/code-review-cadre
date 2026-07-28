@@ -482,14 +482,34 @@ check "claude ro drops operator MCP" "grep -q 'strict-mcp-config' '$ROOT/agents.
 # The advisor is NOT in the CLI's tool registry, so --disallowedTools cannot reach
 # it; only blanking `advisorModel` does. Verified by probe: null still yields YES.
 check "claude ro kills the advisor"  "grep -q 'advisorModel' '$ROOT/agents.d/claude.sh'"
-check "claude denies Agent and Bash" "grep -q 'Agent Bash' '$ROOT/agents.d/claude.sh'"
+check "claude denies the Agent tool" \
+  "awk '/^CLAUDE_DENY=/{f=1} f{print; if(!/\\\\$/) exit}' '$ROOT/agents.d/claude.sh' | grep -qw Agent"
+# ...and the deny list must NOT name the advisor. The CLI does not know the name,
+# so it warns on STDERR, which run_claude merges into the review. That warning
+# landed as line 1 of every claude review in a corpus run -- a contaminant no
+# other candidate carried. Denying an unknown name is not defence in depth.
+check "deny list omits the advisor" \
+  "! awk '/^CLAUDE_DENY=/{f=1} f{print; if(!/\\\\\$/) exit}' '$ROOT/agents.d/claude.sh' \
+     | grep -qw advisor"
 # Scope to the INVOCATION. Two ways to get this wrong, both hit on the way here:
 # `--disallowedTools` contains the substring `allowedTools`, and the adapter's
 # notes quote `--allowedTools` by name to explain why it is unsafe. The question
 # is only ever whether the flag is passed to the CLI.
 check "claude no longer allowlists" \
   "! sed -n '/^run_claude/,/^}/p' '$ROOT/agents.d/claude.sh' | grep -q -- '--allowedTools'"
-check "grok ro denies write tools"   "grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
+# ★ The regime is EXECUTION-ALLOWED, SECOND-MODELS-DENIED. The review prompt
+# sanctions running targeted tests on every pass, and codex has always executed
+# under its read-only sandbox, so denying bash to the other two would invert
+# parity rather than restore it. What every candidate must lack is a second
+# model: claude's advisor + Workflow, grok's subagents. codex exposes neither.
+check "grok ro denies writes only"   "grep -q \"disallowed-tools 'edit,write'\" '$ROOT/agents.d/grok.sh'"
+check "grok ro still allows bash" \
+  "! grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
+check "grok ro kills subagents"      "grep -q -- '--no-subagents' '$ROOT/agents.d/grok.sh'"
+check "claude ro kills Workflow" \
+  "awk '/^CLAUDE_DENY=/{f=1} f{print; if(!/\\\\$/) exit}' '$ROOT/agents.d/claude.sh' | grep -qw Workflow"
+check "claude ro still allows Bash" \
+  "! awk '/^CLAUDE_DENY=/{f=1} f{print; if(!/\\\\$/) exit}' '$ROOT/agents.d/claude.sh' | grep -qw Bash"
 check "grok ro is actually passed"   "[ \"\$(grep -c '\\\${ro\\[@\\]}' '$ROOT/agents.d/grok.sh')\" -ge 2 ]"
 
 check "agy adapter exists"           "[ -f '$ROOT/agents.d/agy.sh' ]"
