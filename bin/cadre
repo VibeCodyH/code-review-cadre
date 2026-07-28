@@ -376,7 +376,7 @@ cmd_panel() {
   [ -e "${reports[0]}" ] || die "no graded candidates yet. Run: cadre run <agent>"
 
   local rows=() passes=() invalid=() r line pass base judge spec rowid
-  declare -A grade seen rowspec passitems
+  declare -A grade seen rowspec passitems firstv flip
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
     # ★ An INVALID report measured nothing about the candidate. Its surviving
@@ -412,6 +412,21 @@ cmd_panel() {
         case " ${passitems[$pass]:-} " in
           *" $k "*) ;; *) passitems[$pass]="${passitems[$pass]:-} $k" ;;
         esac
+        # ★ Did this candidate's OWN runs agree with each other? The cell below
+        # is the best grade it ever reached, which is the right thing to staff
+        # from -- a reviewer that finds the bug half the time still finds it --
+        # but collapsing to best-ever hides the difference between "caught it
+        # twice" and "caught it once and missed it once". That difference is
+        # the whole question this tool is weakest on: at two runs a cell that
+        # flips is indistinguishable from a lineage that genuinely covers what
+        # the others miss, and a panel staffed on a coin flip is the failure
+        # mode the matrix is supposed to prevent. Recorded, marked, never
+        # silently averaged away.
+        if [ -z "${firstv[$rowid,$pass,$k]:-}" ]; then
+          firstv[$rowid,$pass,$k]=$v
+        elif [ "${firstv[$rowid,$pass,$k]}" != "$v" ]; then
+          flip[$rowid,$pass,$k]=1
+        fi
         # Best grade this candidate ever achieved on the item. A DEFER is
         # recorded even when another run hit, because a DEFER is the finding.
         case "${grade[$rowid,$pass,$k]:-}" in
@@ -443,7 +458,9 @@ cmd_panel() {
       echo
       for s in "${rows[@]}"; do
         printf '%s%-44s' "$pfx" "$s"
-        for ki in $(panel_items "$p"); do printf '%-8s' "${grade[$s,$p,$ki]:-.}"; done
+        for ki in $(panel_items "$p"); do
+          printf '%-8s' "${grade[$s,$p,$ki]:-.}${flip[$s,$p,$ki]:+*}"
+        done
         echo
       done
       echo "$pfx"
@@ -471,6 +488,31 @@ cmd_panel() {
     echo "DO NOT SLOT: ${deferrers[*]}"
     echo "  Deferred on an item, found the defect and argued it was fine. That is"
     echo "  worse than missing it. See docs/METHOD.md section 3."
+    echo
+  fi
+  # ★ An item covered ONLY by a cell that flipped is not covered, it is covered
+  # on a coin flip. This is the line that separates "we staffed a decorrelated
+  # panel" from "one run got lucky", and without it the matrix reads the same
+  # either way.
+  local shaky=()
+  for p in "${passes[@]}"; do
+    for ki in $(panel_items "$p"); do
+      local firm=0 any=0
+      for s in "${rows[@]}"; do
+        [ "${grade[$s,$p,$ki]:-}" = HIT ] || continue
+        any=1; [ -n "${flip[$s,$p,$ki]:-}" ] || firm=1
+      done
+      [ "$any" -eq 1 ] && [ "$firm" -eq 0 ] && shaky+=("$p/$ki")
+    done
+  done
+  if [ ${#shaky[@]} -gt 0 ]; then
+    echo "★ Caught only by a reviewer whose OWN runs disagreed: ${shaky[*]}"
+    echo "  Those cells are marked *. The candidate found it in one run and missed"
+    echo "  it in another, on the same checkout and the same prompt, so this is"
+    echo "  coverage on a coin flip. Run more runs before you staff around it:"
+    echo "  a cell that flips is what variance looks like, and at two runs it is"
+    echo "  indistinguishable from a lineage that genuinely covers what the rest"
+    echo "  of the panel misses."
     echo
   fi
   if [ ${#gaps[@]} -gt 0 ]; then

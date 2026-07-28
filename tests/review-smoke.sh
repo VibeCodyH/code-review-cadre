@@ -1339,6 +1339,31 @@ rm -f "$D/home"/report-stub-*.md "$D/home/roster"
 OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1); RC=$?
 check "all-INVALID refuses to rank"    "[ $RC -ne 0 ] && grep -q 'no scorable reports' <<<\"\$OUT\""
 
+echo "== ★ coverage from a cell the candidate's own runs disagreed on =="
+# The matrix takes the BEST grade across runs, which is right for staffing -- a
+# reviewer that finds the bug half the time still finds it -- but collapsing to
+# best-ever hid the difference between "caught it twice" and "caught it once and
+# missed it once" on the same checkout and prompt. At two runs a flipping cell is
+# indistinguishable from a lineage that genuinely covers what the others miss,
+# which is the single weakest claim this tool makes.
+D=$(mktemp -d -p "$SANDBOX"); mkdir -p "$D/home"; : > "$D/home/passes.conf"
+printf '# Gauntlet: `flaky`\n\n## alpha\n\n- run 1: K1=HIT K2=MISS, v\n- run 2: K1=MISS K2=MISS, v\n' \
+  > "$D/home/report-flaky-by-j.md"
+printf '# Gauntlet: `solid`\n\n## alpha\n\n- run 1: K1=MISS K2=HIT, v\n- run 2: K1=MISS K2=HIT, v\n' \
+  > "$D/home/report-solid-by-j.md"
+OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1)
+check "flip: the cell is marked"       "grep -qE 'flaky.*HIT\*' <<<\"\$OUT\""
+check "flip: a stable HIT is not"      "grep -qE 'solid.*HIT( |\$)' <<<\"\$OUT\" && ! grep -qE 'solid.*HIT\*' <<<\"\$OUT\""
+check "flip: coin-flip coverage named" "grep -q 'OWN runs disagreed: alpha/K1' <<<\"\$OUT\""
+check "flip: and only that item"       "! grep -q 'disagreed:.*K2' <<<\"\$OUT\""
+check "flip: it still counts as caught" "grep -q 'Every key item is caught' <<<\"\$OUT\""
+# With no flips anywhere the warning must stay silent, or it becomes wallpaper.
+D=$(mktemp -d -p "$SANDBOX"); mkdir -p "$D/home"; : > "$D/home/passes.conf"
+printf '# Gauntlet: `solid`\n\n## alpha\n\n- run 1: K1=HIT, v\n- run 2: K1=HIT, v\n' \
+  > "$D/home/report-solid-by-j.md"
+OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1)
+check "flip: silent when stable"       "! grep -q 'OWN runs disagreed' <<<\"\$OUT\" && ! grep -q 'HIT\*' <<<\"\$OUT\""
+
 echo "== ★ a registered pass that never ran must reach the report =="
 # It was printed to the scrollback and dropped from the denominator, so the
 # saved report could claim it caught every blocking item in every run while

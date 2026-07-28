@@ -155,6 +155,33 @@ The one above was slotted **secondary** for a reason (never run alone), and a
 clean pass from it is not a signal, because it produced one on a commit it had
 itself called blocking on the previous run. Same checkout, same prompt.
 
+### What the matrix is, and what it is not
+
+That last sentence is not a footnote, it is the limit of the whole method, so it
+gets said plainly here rather than left for a reader to infer.
+
+`cadre panel` **generates hypotheses. It does not estimate decorrelation.**
+
+The defaults are two runs against a handful of key items. That is on the order of
+tens of binary outcomes — nowhere near enough to estimate co-failure structure,
+separate lineage effects from run-to-run variance, or put an interval on "covers
+what the others miss." The matrix computes no correlation and no uncertainty. It
+prints what happened and asks a human to look at the shape of it.
+
+So a gap in the matrix is a **question worth spending runs on**, not a measured
+property of your panel: *nothing here caught K3 — is that a real hole, or did
+these three all have a bad run?* The way to answer it is more runs, and the tool
+marks the cells where you most need them. A `HIT*` means the candidate's own runs
+disagreed with each other on that item, and an item covered only by starred cells
+is coverage on a coin flip. Cadre says so in as many words rather than letting a
+lucky run print the same cell as a reliable one.
+
+Everything above about seating a different lineage still holds — it is the right
+thing to do on priors, and the private-repo result is real. But "we staffed a
+decorrelated panel" and "one run got lucky" produce the same matrix at n=2, and
+a tool that let you tell them apart only by reading its source would be selling
+you the first while delivering the second.
+
 ## 5. Leak control is a feature, not a caveat
 
 If the key is "the bug the author fixed next," then the fix commit's **subject
