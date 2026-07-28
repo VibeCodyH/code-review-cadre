@@ -15,7 +15,12 @@ CADRE_ROOT="${CADRE_ROOT:-$(dirname "$LIB_DIR")}"
 . "$LIB_DIR/common.sh"
 
 REPO="${1:?usage: run-review.sh <repo> <base-rev> <out-dir> <jobs> <spec ...>}"
-BASE_REV="${2:?need a base rev}"
+# ★ An EMPTY base rev is the mode switch, and it is positional on purpose: the
+# caller cannot forget to pass it the way it could forget an env var, and no
+# adapter environment carries it. Empty means "review this content as it
+# stands", which is the only mode a non-git target can be reviewed in.
+BASE_REV="${2-}"
+MODE=diff; [ -n "$BASE_REV" ] || MODE=target
 OUT="${3:?need an out dir}"
 JOBS="${4:-1}"
 shift 4 2>/dev/null || shift $#
@@ -50,160 +55,292 @@ cleanup() {
 trap cleanup EXIT
 trap 'echo; echo "cadre: interrupted, cleaning up." >&2; cleanup; trap - EXIT; exit 130' INT TERM
 
-# ---- resolve the two commits ------------------------------------------------
-
-git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo: $REPO"
-git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1 \
-  || die "$REPO has no commits yet. Nothing to review against."
-
-BASE=$(git -C "$REPO" rev-parse --verify -q "${BASE_REV}^{commit}") \
-  || die "base does not resolve to a commit: $BASE_REV"
-
-# ★ stash create builds a real commit whose tree IS the working tree, without
-# touching the working tree and without writing a ref. Measured: it captures
-# unstaged edits, staged-only files, renames, binaries and mode changes exactly,
-# and EXCLUDES gitignored files. The obvious alternative,
-# `git diff HEAD --binary | git apply --index`, round-trips through the patch
-# format and corrupts anything behind a .gitattributes clean/smudge filter (LFS
-# especially), because apply --index writes smudged bytes straight to the index.
-# ★ Check the STATUS, not just the output. Measured: a clean tree gives rc=0
-# with empty output, but a broken index (GIT_INDEX_FILE=/dev/null, an
-# unresolved merge) gives rc=128 with empty output too. Reading "empty" as
-# "clean" silently reviews HEAD and drops every working-tree change, which is
-# a wrong answer wearing a correct one's clothes.
-SNAP=$(git -C "$REPO" stash create "cadre review" 2>/dev/null); rc=$?
-if [ "$rc" -ne 0 ]; then
-  die "git stash create failed in $REPO (exit $rc).
-     Cadre cannot snapshot the working tree, and reviewing HEAD instead would
-     silently drop your changes. Check for an unresolved merge or a bad index."
-fi
-DIRTY=1
-if [ -z "$SNAP" ]; then
-  # Clean tree. stash create prints nothing; review HEAD itself.
-  DIRTY=0
-  SNAP=$(git -C "$REPO" rev-parse --verify HEAD) || die "cannot resolve HEAD"
-fi
-
-# Count untracked BEFORE deciding there is nothing to review: stash create does
-# not consider new files a change, so a branch whose whole contribution is new
-# files looks identical to HEAD here. Rejecting it would contradict the promise
-# that untracked work is included.
-# Checked: piping straight into wc -l would turn a git failure into "0 new
-# files" and drop them from the review without a word.
-newlist=$(git -C "$REPO" ls-files --others --exclude-standard) \
-  || die "could not list untracked files in $REPO"
-NEW=$(printf '%s' "$newlist" | grep -c . || true)
-
-if [ "$BASE" = "$SNAP" ] && [ "$NEW" -eq 0 ]; then
-  die "base and the reviewed state are the same commit ($(printf '%.9s' "$BASE"))
-     and there are no new files. There is nothing to review. Pass --base
-     explicitly, e.g. --base HEAD~1."
-fi
-
-# ★ Publish BOTH commits as temp refs before cloning. Resolving a rev in the
-# source proves nothing about the clone: the stash commit is unreferenced, and
-# a base that lives on another branch or a remote-tracking ref does not arrive
-# under the same name. Fetching explicit refs is the only version that always
-# has both objects present.
-SR="refs/cadre/snap-$$"; BR="refs/cadre/base-$$"
-git -C "$REPO" update-ref "$SR" "$SNAP" || die "could not write $SR in $REPO"
-TMPREFS+=("$SR")
-git -C "$REPO" update-ref "$BR" "$BASE" || die "could not write $BR in $REPO"
-TMPREFS+=("$BR")
-
-# ---- build the template checkout --------------------------------------------
-
-mkdir -p "$CADRE_WORK" || die "cannot create $CADRE_WORK"
-WORKDIR=$(mktemp -d "$CADRE_WORK/review-XXXXXXXX") || die "cannot create a work dir"
-chmod 700 "$WORKDIR"
-TPL="$WORKDIR/template"
-
-# ★ A SYNTHETIC two-commit repo, not a clone of yours. This is the difference
-# between a reviewer seeing your change and a reviewer seeing your history.
+# ---- diff mode: resolve the two commits and build the checkout --------------
 #
-# A full clone carries every commit ever made, while secrets_preflight can only
-# scan the tree that is checked out. Measured: a `.env` committed once and
-# deleted long before the review base survives in a clone, passes the preflight
-# because it is not in the current tree, and comes straight back out of
-# `git log -p --all -- .env`. Auto-approving reviewers have git.
-#
-# So: fetch ONLY the two trees this review is about, --depth=1 so no ancestors
-# come with them, and build two fresh commits with commit-tree. The result has
-# exactly the base and the change under review in it, `BASE...HEAD` resolves
-# normally, and there is no earlier history to mine because it was never
-# transferred. Verified: the deleted-credential case yields zero hits.
-# Match the source's object format. A sha1 client cannot fetch from a sha256
-# repo at all: "fatal: mismatched algorithms". Measured, and it aborts the run.
-fmt=$(git -C "$REPO" rev-parse --show-object-format 2>/dev/null) || fmt=sha1
-git init -q --object-format="$fmt" "$TPL" \
-  || git init -q "$TPL" \
-  || die "could not init the review checkout"
-git -C "$TPL" remote add origin "file://$(readlink -f "$REPO")" \
-  || die "could not add the source remote"
-git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" \
-  || die "could not fetch the review refs"
-btree=$(git -C "$TPL" rev-parse "$BR^{tree}") || die "cannot resolve the base tree"
-stree=$(git -C "$TPL" rev-parse "$SR^{tree}") || die "cannot resolve the snapshot tree"
-mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
-         -c commit.gpgsign=false commit-tree "$@"; }
-c1=$(mk "$btree" -m "base") || die "could not build the base commit"
-c2=$(mk "$stree" -p "$c1" -m "change under review") || die "could not build the review commit"
-# Checked. These refs are the ONLY thing keeping the source commits reachable
-# in the checkout, and a commit is reachable means its message and its parents
-# are readable. A silent failure here quietly undoes the isolation above.
-git -C "$TPL" update-ref -d "$SR" || die "could not drop the snapshot ref from the checkout"
-git -C "$TPL" update-ref -d "$BR" || die "could not drop the base ref from the checkout"
-# The remote is a live file:// path into the user's repo, and every reviewer
-# runs with tool auto-approval. It goes before anything is checked out.
-git -C "$TPL" remote remove origin \
-  || die "could not remove the origin remote from the checkout"
-git -C "$TPL" checkout -q --detach "$c2" || die "could not check out the change"
-# Drop the fetched objects that are no longer referenced, so the original
-# commits are not merely unreferenced but gone. Checked: unreferenced is not
-# unreadable, `git cat-file` and `git fsck --lost-found` both still reach an
-# unpruned object, so a failure here leaves the source commits recoverable.
-git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1 \
-  || die "could not expire the reflog in the checkout"
-git -C "$TPL" gc --prune=now -q >/dev/null 2>&1 \
-  || die "could not prune the checkout; the original commits would stay recoverable"
-# What the reviewers diff against is the synthetic base. Keep the REAL shas for
-# the manifest: a provenance record naming commits that exist only in a deleted
-# temp directory cannot be used to reproduce anything.
-REAL_BASE="$BASE" REAL_SNAP="$SNAP"
-BASE="$c1"
+# Unchanged behaviour, moved into a function so target mode can build its own
+# checkout without either path having to test the mode as it goes.
+build_diff_checkout() {
 
-# ★ Untracked files. stash create does not carry them, and most changes worth
-# reviewing add a file, so a reviewer that cannot see it reviews half the
-# change. --exclude-standard honours .gitignore, so .env.local still never
-# enters the checkout.
-# NOT gated on a dirty tree: a tree whose only change is new files is clean as
-# far as stash create is concerned, and that is exactly a new-feature branch.
-if [ "$NEW" -gt 0 ]; then
-  # ★ -C must come BEFORE -cf. GNU tar treats it as positional, so with the
-  # -C last it prints "has no effect" and exits 2. Measured: the copy silently
-  # did nothing while the run reported the files as carried.
-  git -C "$REPO" ls-files -z --others --exclude-standard \
-    | tar -C "$REPO" --null -T - -cf - 2>/dev/null \
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo: $REPO"
+  git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+    || die "$REPO has no commits yet. Nothing to review against."
+
+  BASE=$(git -C "$REPO" rev-parse --verify -q "${BASE_REV}^{commit}") \
+    || die "base does not resolve to a commit: $BASE_REV"
+
+  # ★ stash create builds a real commit whose tree IS the working tree, without
+  # touching the working tree and without writing a ref. Measured: it captures
+  # unstaged edits, staged-only files, renames, binaries and mode changes exactly,
+  # and EXCLUDES gitignored files. The obvious alternative,
+  # `git diff HEAD --binary | git apply --index`, round-trips through the patch
+  # format and corrupts anything behind a .gitattributes clean/smudge filter (LFS
+  # especially), because apply --index writes smudged bytes straight to the index.
+  # ★ Check the STATUS, not just the output. Measured: a clean tree gives rc=0
+  # with empty output, but a broken index (GIT_INDEX_FILE=/dev/null, an
+  # unresolved merge) gives rc=128 with empty output too. Reading "empty" as
+  # "clean" silently reviews HEAD and drops every working-tree change, which is
+  # a wrong answer wearing a correct one's clothes.
+  SNAP=$(git -C "$REPO" stash create "cadre review" 2>/dev/null); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    die "git stash create failed in $REPO (exit $rc).
+       Cadre cannot snapshot the working tree, and reviewing HEAD instead would
+       silently drop your changes. Check for an unresolved merge or a bad index."
+  fi
+  DIRTY=1
+  if [ -z "$SNAP" ]; then
+    # Clean tree. stash create prints nothing; review HEAD itself.
+    DIRTY=0
+    SNAP=$(git -C "$REPO" rev-parse --verify HEAD) || die "cannot resolve HEAD"
+  fi
+
+  # Count untracked BEFORE deciding there is nothing to review: stash create does
+  # not consider new files a change, so a branch whose whole contribution is new
+  # files looks identical to HEAD here. Rejecting it would contradict the promise
+  # that untracked work is included.
+  # Checked: piping straight into wc -l would turn a git failure into "0 new
+  # files" and drop them from the review without a word.
+  newlist=$(git -C "$REPO" ls-files --others --exclude-standard) \
+    || die "could not list untracked files in $REPO"
+  NEW=$(printf '%s' "$newlist" | grep -c . || true)
+
+  if [ "$BASE" = "$SNAP" ] && [ "$NEW" -eq 0 ]; then
+    die "base and the reviewed state are the same commit ($(printf '%.9s' "$BASE"))
+       and there are no new files. There is nothing to review. Pass --base
+       explicitly, e.g. --base HEAD~1."
+  fi
+
+  # ★ Publish BOTH commits as temp refs before cloning. Resolving a rev in the
+  # source proves nothing about the clone: the stash commit is unreferenced, and
+  # a base that lives on another branch or a remote-tracking ref does not arrive
+  # under the same name. Fetching explicit refs is the only version that always
+  # has both objects present.
+  SR="refs/cadre/snap-$$"; BR="refs/cadre/base-$$"
+  git -C "$REPO" update-ref "$SR" "$SNAP" || die "could not write $SR in $REPO"
+  TMPREFS+=("$SR")
+  git -C "$REPO" update-ref "$BR" "$BASE" || die "could not write $BR in $REPO"
+  TMPREFS+=("$BR")
+
+  # ---- build the template checkout --------------------------------------------
+
+  mkdir -p "$CADRE_WORK" || die "cannot create $CADRE_WORK"
+  WORKDIR=$(mktemp -d "$CADRE_WORK/review-XXXXXXXX") || die "cannot create a work dir"
+  chmod 700 "$WORKDIR"
+  TPL="$WORKDIR/template"
+
+  # ★ A SYNTHETIC two-commit repo, not a clone of yours. This is the difference
+  # between a reviewer seeing your change and a reviewer seeing your history.
+  #
+  # A full clone carries every commit ever made, while secrets_preflight can only
+  # scan the tree that is checked out. Measured: a `.env` committed once and
+  # deleted long before the review base survives in a clone, passes the preflight
+  # because it is not in the current tree, and comes straight back out of
+  # `git log -p --all -- .env`. Auto-approving reviewers have git.
+  #
+  # So: fetch ONLY the two trees this review is about, --depth=1 so no ancestors
+  # come with them, and build two fresh commits with commit-tree. The result has
+  # exactly the base and the change under review in it, `BASE...HEAD` resolves
+  # normally, and there is no earlier history to mine because it was never
+  # transferred. Verified: the deleted-credential case yields zero hits.
+  # Match the source's object format. A sha1 client cannot fetch from a sha256
+  # repo at all: "fatal: mismatched algorithms". Measured, and it aborts the run.
+  fmt=$(git -C "$REPO" rev-parse --show-object-format 2>/dev/null) || fmt=sha1
+  git init -q --object-format="$fmt" "$TPL" \
+    || git init -q "$TPL" \
+    || die "could not init the review checkout"
+  git -C "$TPL" remote add origin "file://$(readlink -f "$REPO")" \
+    || die "could not add the source remote"
+  git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" \
+    || die "could not fetch the review refs"
+  btree=$(git -C "$TPL" rev-parse "$BR^{tree}") || die "cannot resolve the base tree"
+  stree=$(git -C "$TPL" rev-parse "$SR^{tree}") || die "cannot resolve the snapshot tree"
+  mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
+           -c commit.gpgsign=false commit-tree "$@"; }
+  c1=$(mk "$btree" -m "base") || die "could not build the base commit"
+  c2=$(mk "$stree" -p "$c1" -m "change under review") || die "could not build the review commit"
+  # Checked. These refs are the ONLY thing keeping the source commits reachable
+  # in the checkout, and a commit is reachable means its message and its parents
+  # are readable. A silent failure here quietly undoes the isolation above.
+  git -C "$TPL" update-ref -d "$SR" || die "could not drop the snapshot ref from the checkout"
+  git -C "$TPL" update-ref -d "$BR" || die "could not drop the base ref from the checkout"
+  # The remote is a live file:// path into the user's repo, and every reviewer
+  # runs with tool auto-approval. It goes before anything is checked out.
+  git -C "$TPL" remote remove origin \
+    || die "could not remove the origin remote from the checkout"
+  git -C "$TPL" checkout -q --detach "$c2" || die "could not check out the change"
+  # Drop the fetched objects that are no longer referenced, so the original
+  # commits are not merely unreferenced but gone. Checked: unreferenced is not
+  # unreadable, `git cat-file` and `git fsck --lost-found` both still reach an
+  # unpruned object, so a failure here leaves the source commits recoverable.
+  git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1 \
+    || die "could not expire the reflog in the checkout"
+  git -C "$TPL" gc --prune=now -q >/dev/null 2>&1 \
+    || die "could not prune the checkout; the original commits would stay recoverable"
+  # What the reviewers diff against is the synthetic base. Keep the REAL shas for
+  # the manifest: a provenance record naming commits that exist only in a deleted
+  # temp directory cannot be used to reproduce anything.
+  REAL_BASE="$BASE" REAL_SNAP="$SNAP"
+  BASE="$c1"
+
+  # ★ Untracked files. stash create does not carry them, and most changes worth
+  # reviewing add a file, so a reviewer that cannot see it reviews half the
+  # change. --exclude-standard honours .gitignore, so .env.local still never
+  # enters the checkout.
+  # NOT gated on a dirty tree: a tree whose only change is new files is clean as
+  # far as stash create is concerned, and that is exactly a new-feature branch.
+  if [ "$NEW" -gt 0 ]; then
+    # ★ -C must come BEFORE -cf. GNU tar treats it as positional, so with the
+    # -C last it prints "has no effect" and exits 2. Measured: the copy silently
+    # did nothing while the run reported the files as carried.
+    git -C "$REPO" ls-files -z --others --exclude-standard \
+      | tar -C "$REPO" --null -T - -cf - 2>/dev/null \
+      | tar -xf - -C "$TPL" 2>/dev/null \
+      || die "could not copy untracked files into the checkout.
+       Reviewing without them would silently omit $NEW new file(s) from the diff."
+    git -C "$TPL" add -A \
+      || die "git add failed in the checkout; the new files would not reach the diff"
+    # ★ -c commit.gpgsign=false and an inline identity. A clone inherits neither
+    # the source repo's local user.name/user.email nor an available signing key,
+    # and a global commit.gpgsign=true then fails the commit. Unchecked, that
+    # left the new files in the worktree but OUT of HEAD, so the reviewers' own
+    # `git diff BASE...HEAD` omitted every one of them while the run said
+    # "carried". Failing loudly beats reviewing half a change.
+    git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
+        -c commit.gpgsign=false commit -q -m "cadre: working tree" \
+      || die "could not commit the untracked files into the checkout"
+    # The reviewed state is now this commit, not the stash. The manifest and the
+    # banner both read SNAP, and recording a commit other than the one reviewed
+    # makes the run unreproducible.
+    SNAP=$(git -C "$TPL" rev-parse HEAD) || die "cannot resolve the checkout HEAD"
+    echo "  carried $NEW untracked file(s) into the checkout"
+  fi
+}
+
+# ---- target mode: review content as it stands -------------------------------
+#
+# No base, no diff, and the target need not be a git repo. A file, a docs
+# directory, a vendored tree someone handed you: whatever you point at.
+#
+# ★ This mode is strictly MORE exposing than a diff review, and the code has to
+# be built around that fact rather than around the convenience of reusing the
+# diff path. A diff review shows a reviewer what changed; this shows it
+# everything under the target. So there is no fetch and no clone here at all:
+# nothing but the named files is copied, and history cannot leak because it is
+# never transferred in any form.
+#
+# The base is the EMPTY TREE. That is not a trick to reuse the diff plumbing --
+# it is what the content is: `BASE...HEAD` resolves normally and shows the whole
+# target as added, so a reviewer's own git commands work the way they do in
+# every other mode, with nothing before it to compare against.
+build_target_checkout() {
+  mkdir -p "$CADRE_WORK" || die "cannot create $CADRE_WORK"
+  WORKDIR=$(mktemp -d "$CADRE_WORK/review-XXXXXXXX") || die "cannot create a work dir"
+  chmod 700 "$WORKDIR"
+  TPL="$WORKDIR/template"
+  git init -q "$TPL" || die "could not init the review checkout"
+
+  # ★ WHAT ENTERS THE CHECKOUT is the whole safety question in this mode, and
+  # .gitignore is the only place a repo says which of its files are not for
+  # sharing. Three sources, one rule:
+  #   - a single file: just that file.
+  #   - a git repo: ask git. --cached --others --exclude-standard is tracked plus
+  #     new, minus ignored, which is the same rule the diff path uses.
+  #   - anything else: copy the tree, then apply any .gitignore that came with
+  #     it below. A directory that is not a repo can still carry the file, and
+  #     honouring it is the difference between reviewing a project and handing
+  #     four auto-approving CLIs its .env.
+  # NUL-delimited throughout: a filename with a space in it is ordinary, and a
+  # newline-delimited list silently splits it into two names that do not exist.
+  local flist="$WORKDIR/filelist" src base_dir
+  if [ -f "$REPO" ]; then
+    src=file; base_dir=$(dirname "$REPO")
+    printf '%s\0' "$(basename "$REPO")" > "$flist" || die "cannot write the file list"
+  elif git -C "$REPO" rev-parse --show-toplevel >/dev/null 2>&1; then
+    src=git; base_dir="$REPO"
+    git -C "$REPO" ls-files -z --cached --others --exclude-standard > "$flist" \
+      || die "could not list the files under $REPO"
+  else
+    src=plain; base_dir="$REPO"
+    # Paths keep their leading ./ -- tar handles them, and stripping it portably
+    # needs GNU find -printf or GNU sed -z, neither of which is on macOS.
+    (cd "$REPO" && find . -name .git -prune -o -type f -print0) > "$flist" \
+      || die "could not list the files under $REPO"
+  fi
+  [ -s "$flist" ] || die "nothing to review under $REPO.
+     Either it is empty, or every file in it is ignored by .gitignore."
+
+  tar -C "$base_dir" --null -T "$flist" -cf - 2>/dev/null \
     | tar -xf - -C "$TPL" 2>/dev/null \
-    || die "could not copy untracked files into the checkout.
-     Reviewing without them would silently omit $NEW new file(s) from the diff."
-  git -C "$TPL" add -A \
-    || die "git add failed in the checkout; the new files would not reach the diff"
-  # ★ -c commit.gpgsign=false and an inline identity. A clone inherits neither
-  # the source repo's local user.name/user.email nor an available signing key,
-  # and a global commit.gpgsign=true then fails the commit. Unchecked, that
-  # left the new files in the worktree but OUT of HEAD, so the reviewers' own
-  # `git diff BASE...HEAD` omitted every one of them while the run said
-  # "carried". Failing loudly beats reviewing half a change.
-  git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
-      -c commit.gpgsign=false commit -q -m "cadre: working tree" \
-    || die "could not commit the untracked files into the checkout"
-  # The reviewed state is now this commit, not the stash. The manifest and the
-  # banner both read SNAP, and recording a commit other than the one reviewed
-  # makes the run unreproducible.
-  SNAP=$(git -C "$TPL" rev-parse HEAD) || die "cannot resolve the checkout HEAD"
-  echo "  carried $NEW untracked file(s) into the checkout"
-fi
+    || die "could not copy $REPO into the review checkout"
+
+  git -C "$TPL" add -A || die "git add failed in the review checkout"
+  # ★ .gitignore applied to the WORKTREE, not just the index. `git add` skips an
+  # ignored file, which keeps it out of the diff and leaves it sitting in the
+  # directory every reviewer runs in -- and secrets_preflight skips ignored files
+  # too, so an ignored .env passed the credential check and was still readable.
+  # Only reachable for a plain tree, since git's own listing never emits one.
+  if [ "$src" = plain ]; then
+    local ign nign
+    ign=$(git -C "$TPL" ls-files -z --others --ignored --exclude-standard) || ign=""
+    if [ -n "$ign" ]; then
+      nign=$(printf '%s' "$ign" | tr -dc '\0' | wc -c | tr -d ' ')
+      (cd "$TPL" && printf '%s' "$ign" | xargs -0 -r rm -f) \
+        || die "could not remove gitignored files from the checkout.
+     They would be readable by every reviewer and invisible to the preflight."
+      find "$TPL" -mindepth 1 -name .git -prune -o -type d -empty -delete 2>/dev/null
+      git -C "$TPL" add -A || die "git add failed after applying .gitignore"
+      echo "  $nign file(s) excluded by .gitignore"
+    fi
+  fi
+
+  # ★ The size ceiling, checked after the copy and before any reviewer exists.
+  # secrets_preflight catches credentials; nothing caught "you pointed this at a
+  # tree with node_modules in it and handed 40,000 files to four models". Counted
+  # from the CHECKOUT so the number is what will actually be read, and measured
+  # with find/du rather than du --files0-from, which is GNU-only.
+  local nfiles nkb maxf maxk
+  nfiles=$(find "$TPL" -path "$TPL/.git" -prune -o -type f -print 2>/dev/null | grep -c . || true)
+  nkb=$(du -sk "$TPL" 2>/dev/null | cut -f1); case "$nkb" in ''|*[!0-9]*) nkb=0 ;; esac
+  maxf="${CADRE_TARGET_MAX_FILES:-2000}"
+  maxk="${CADRE_TARGET_MAX_KB:-20480}"
+  case "$maxf$maxk" in *[!0-9]*) die "CADRE_TARGET_MAX_FILES and CADRE_TARGET_MAX_KB must be numbers" ;; esac
+  if [ "$nfiles" -gt "$maxf" ] || [ "$nkb" -gt "$maxk" ]; then
+    local big
+    big=$(git -C "$TPL" ls-files | sed -n 's|/.*||p' | sort | uniq -c | sort -rn | head -3 \
+          | awk '{printf "       %s (%s files)\n", $2, $1}')
+    die "that target is too big to review whole: $nfiles file(s), ${nkb}KB.
+     Biggest directories:
+$big
+     Every reviewer on the roster reads all of it, so this is a bill as much as
+     it is a review. Point --full at a subdirectory, or raise
+     CADRE_TARGET_MAX_FILES (now $maxf) / CADRE_TARGET_MAX_KB (now $maxk)."
+  fi
+
+  # The base is the EMPTY TREE, so BASE...HEAD is the whole target and the
+  # reviewers' own git commands behave the way they do in diff mode.
+  local mk empty tree c1 c2
+  mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
+           -c commit.gpgsign=false commit-tree "$@"; }
+  empty=$(git -C "$TPL" hash-object -t tree /dev/null) || die "could not resolve the empty tree"
+  tree=$(git -C "$TPL" write-tree) || die "could not write the content tree"
+  c1=$(mk "$empty" -m "empty") || die "could not build the base commit"
+  c2=$(mk "$tree" -p "$c1" -m "content under review") || die "could not build the review commit"
+  git -C "$TPL" checkout -q --detach "$c2" || die "could not check out the content"
+  git -C "$TPL" reflog expire --expire=now --all >/dev/null 2>&1
+  git -C "$TPL" gc --prune=now -q >/dev/null 2>&1
+
+  BASE="$c1"; SNAP="$c2"; btree="$empty"
+  # No source revisions exist in this mode. The manifest must not print an empty
+  # field where a sha goes, so it branches on MODE rather than on these.
+  REAL_BASE=""; REAL_SNAP=""; DIRTY=0; NEW=0
+  # ★ The provenance record for this mode. WORKDIR is a mktemp that gets deleted,
+  # so once the run ends nothing on disk would say which files a reviewer saw --
+  # and "reviewed the docs directory" is not a record anyone can check. The tree
+  # id is a content address, so it verifies a re-run even after the temp dir dies.
+  TARGET_TREE="$tree"; TARGET_NFILES="$nfiles"; TARGET_KB="$nkb"; TARGET_SRC="$src"
+  echo "  $nfiles file(s), ${nkb}KB, from $REPO"
+}
+
+if [ "$MODE" = target ]; then build_target_checkout; else build_diff_checkout; fi
 
 # Refuse before any auto-approving CLI sees the tree. This scans the CHECKOUT
 # only, which is exactly why the checkout is synthetic: in a full clone a
@@ -253,17 +390,33 @@ if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   # {{BASE}} and leaves the placeholder in the brief.
   render_review_prompt "$CADRE_PROMPT_FILE" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 else
-  render_review_prompt "$CADRE_ROOT/lib/prompts/review-live.md" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
+  # ★ A different brief, not the diff brief with the diff sentence deleted. A
+  # reviewer told to review a change reports on volume: pointed at a whole tree
+  # with the diff framing left in, it treats every file as new work and inflates
+  # accordingly. The target brief says so explicitly.
+  BRIEF=review-live.md; [ "$MODE" = diff ] || BRIEF=review-target.md
+  render_review_prompt "$CADRE_ROOT/lib/prompts/$BRIEF" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 fi
 
 {
   # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
   # two-commit repo, so its own shas are meaningless the moment it is deleted,
   # and a provenance record you cannot resolve is not provenance.
-  echo "repo:      $(readlink -f "$REPO")"
-  echo "base:      $REAL_BASE"
-  echo "snapshot:  $REAL_SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
-  echo "untracked: $NEW file(s) carried in"
+  echo "mode:      $MODE"
+  echo "target:    $(readlink -f "$REPO")"
+  if [ "$MODE" = diff ]; then
+    echo "base:      $REAL_BASE"
+    echo "snapshot:  $REAL_SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
+    echo "untracked: $NEW file(s) carried in"
+  else
+    # ★ No revision exists to record, so the file list IS the provenance. Without
+    # it, "cadre review --full ./docs" leaves nothing on disk saying what was in
+    # the checkout: the work dir is a mktemp that gets deleted at exit. The tree
+    # id is a content address, so it verifies a re-run after the temp dir is gone.
+    echo "source:    $TARGET_SRC ($TARGET_NFILES file(s), ${TARGET_KB}KB)"
+    echo "files:     $OUT/files.txt"
+    git -C "$TPL" ls-files > "$OUT/files.txt" || echo "cadre: ⚠ could not record the file list" >&2
+  fi
   # ★ The snapshot sha is a STASH commit: unreferenced in the source once the
   # temp ref is dropped, so the next `git gc` reclaims it and the manifest
   # stops resolving. Measured. The TREE ids are what the reviewers actually
@@ -282,7 +435,11 @@ fi
   echo "cadre:     $(git -C "$CADRE_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$OUT/manifest.txt"
 
-echo "reviewing ${REAL_BASE:0:9}..${REAL_SNAP:0:9} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
+if [ "$MODE" = diff ]; then
+  echo "reviewing ${REAL_BASE:0:9}..${REAL_SNAP:0:9} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
+else
+  echo "reviewing $TARGET_NFILES file(s) as they stand | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
+fi
 
 mapfile -t SCRUB < <(scrubbed_env)
 
@@ -385,7 +542,11 @@ done
 
 REPORT="$OUT/report.md"
 {
-  echo "# Review: ${REAL_BASE:0:9}..${REAL_SNAP:0:9}"
+  if [ "$MODE" = diff ]; then
+    echo "# Review: ${REAL_BASE:0:9}..${REAL_SNAP:0:9}"
+  else
+    echo "# Review: $(basename "$(readlink -f "$REPO")") as it stands ($TARGET_NFILES file(s))"
+  fi
   echo
   sed 's/^/    /' "$OUT/manifest.txt"
   echo

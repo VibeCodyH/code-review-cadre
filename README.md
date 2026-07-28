@@ -264,6 +264,40 @@ That attribution is the point. "3 of 3 flagged this" and "only the secondary
 flagged this" are different facts, and the second one is why you staffed a
 panel instead of buying the highest scorer.
 
+### Reviewing something that isn't a diff
+
+A diff is the common case, not the only one. `--full` points the same roster at
+whatever you name, and reviews it as it stands:
+
+```bash
+cadre review --full                     # this whole repo, as it is
+cadre review --full ./src/billing       # one subdirectory
+cadre review --full ~/handoff/vendor-sdk # a directory that isn't a repo
+cadre review --full ./docs/RUNBOOK.md   # a single file
+```
+
+`--full` and `--base` are opposites and cadre refuses both at once. The
+reviewers get a different brief — one told to review a change reports on volume,
+so pointed at a whole tree under the diff brief it treats every file as new work
+and inflates accordingly.
+
+Two things worth knowing, because this mode shows reviewers *more* than a diff
+review does:
+
+- **`.gitignore` is honoured even when the target is not a repo.** An ignored
+  file is not merely kept out of the diff, it is removed from the directory the
+  reviewers run in — otherwise it would sit there readable, and the credential
+  check skips ignored files by design.
+- **There is a size ceiling.** Every reviewer on the roster reads all of it, so
+  a target is a bill as much as a review. Over 2000 files or 20MB cadre refuses
+  and names the biggest directories, which is almost always a `node_modules` or
+  a `vendor` you did not mean to include. `CADRE_TARGET_MAX_FILES` and
+  `CADRE_TARGET_MAX_KB` raise it if you did.
+
+The review directory records `files.txt`, the exact list the reviewers saw. The
+checkout is a temp directory that gets deleted, so without that list nothing
+afterwards would say what `--full ./docs` actually covered.
+
 A few things it does deliberately:
 
 - **It never runs a reviewer in your repo.** Each one gets its own disposable

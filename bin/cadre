@@ -11,7 +11,8 @@
 #   cadre grade <agent-spec> [runs]       re-grade existing outputs, no agent runs
 #   cadre adjudicate <agent-spec> [runs]  OPEN track: are its findings real?
 #   cadre panel [--save]                  compare graded candidates, propose a panel
-#   cadre review [opts] [repo-dir]        run the staffed roster on a REAL change
+#   cadre review [opts] [target]          run the staffed roster on a REAL change
+#                                         (--full reviews the target as it stands)
 #   cadre passes                          list registered passes
 #   cadre agents                          list adapters
 #   cadre doctor [--probe]                check the install and the passes
@@ -55,10 +56,15 @@ then run that panel on the code you are about to ship.
                                         and never feeds the slot recommendation.
   cadre panel [--save [--force]]        compare all graded candidates, propose a
                                         panel; --save writes a commented roster
-  cadre review [opts] [repo-dir]        run the staffed roster against a REAL
+  cadre review [opts] [target]          run the staffed roster against a REAL
                                         change and collect the reviews
       --base <rev>       diff against this (default: merge-base with the
                          default branch)
+      --full             review <target> as it STANDS, with no diff. The target
+                         can be a repo, a subdirectory, a directory that is not
+                         a repo at all, or a single file. Opposite of --base.
+                         .gitignore is honoured; refuses a target over
+                         CADRE_TARGET_MAX_FILES (2000) or _MAX_KB (20480).
       --roster a,b,c     override $CADRE_HOME/roster
       --jobs N           reviewers in parallel (default 1; they share rate limits)
       --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
@@ -532,9 +538,10 @@ is_promptless() {
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
-  local prerun="${CADRE_PRERUN:-}"
+  local prerun="${CADRE_PRERUN:-}" full=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --full)   full=1; shift ;;
       --base)   base="${2:?--base needs a rev}"; shift 2 ;;
       --roster) roster_arg="${2:?--roster needs specs}"; shift 2 ;;
       --jobs)   jobs="${2:?--jobs needs a number}"; shift 2 ;;
@@ -550,8 +557,20 @@ cmd_review() {
   # Keep the argument: the assignment blanks $repo on failure, so reading it in
   # the error names $PWD and reports the wrong directory as "not a git repo".
   local want="${repo:-.}"
-  repo=$(git -C "$want" rev-parse --show-toplevel 2>/dev/null) \
-    || die "not inside a git repository: $(readlink -m "$want")"
+  # ★ Two modes, and the mode has to be asked for. There is no safe way to infer
+  # it: a repo with no --base already means "diff against the default branch",
+  # so treating a bare path as "review everything" would silently turn a diff
+  # review into a whole-tree review the first time someone forgot a flag.
+  if [ "$full" = 1 ]; then
+    [ -z "$base" ] || die "--base and --full are opposites: --base asks for a
+     diff against a revision, --full asks for the content as it stands. Pick one."
+    [ -e "$want" ] || die "nothing to review at $(readlink -m "$want")"
+    repo=$(readlink -m "$want")
+  else
+    repo=$(git -C "$want" rev-parse --show-toplevel 2>/dev/null) \
+      || die "not inside a git repository: $(readlink -m "$want")
+     To review this as it stands rather than as a diff, use: cadre review --full $want"
+  fi
 
   # Command substitution, not process substitution: resolve_roster's die runs in
   # a subshell, and with `< <(...)` its exit status is lost, so a duplicate or
@@ -569,9 +588,12 @@ cmd_review() {
   for vn in CADRE_HOME CADRE_WORK; do
     eval "vv=\$$vn"
     if [ "$(readlink -m "$vv")" = "$rp" ] || is_inside "$vv" "$repo"; then
-      die "$vn ($vv) is the repo being reviewed, or sits inside it.
+      # ★ Stricter in --full than in diff mode, not looser. A diff review carries
+      # untracked files in; a --full review carries the WHOLE tree in, so state
+      # under the target reaches the reviewers even when nothing has changed.
+      die "$vn ($vv) is the target being reviewed, or sits inside it.
      Its keys, checkouts and prior reports would be copied into the reviewers'
-     checkout as untracked files. Point $vn somewhere outside $rp."
+     checkout. Point $vn somewhere outside $rp."
     fi
   done
 
@@ -580,7 +602,9 @@ cmd_review() {
   mapfile -t specs <<< "$rl"
 
   # Resolve the base here so the error names something the user typed.
-  if [ -z "$base" ]; then
+  if [ "$full" = 1 ]; then
+    : # no base: an empty base is how run-review.sh is told there is no diff.
+  elif [ -z "$base" ]; then
     local db
     db=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
     [ -n "$db" ] || for db in main master; do
@@ -610,7 +634,14 @@ cmd_review() {
   # Single-use labels. Reusing one would hand back the previous review of
   # DIFFERENT code, which is the benchmark path's resume behaviour and is a
   # wrong answer here rather than a saved call.
-  local short; short=$(git -C "$repo" rev-parse --short HEAD)
+  # A --full target need not be a git repo at all, so there is no HEAD to name
+  # it after. Unlabelled, that produced "review--1" for every target.
+  local short
+  if [ "$full" = 1 ]; then
+    short=$(slug "$(basename "$repo")")
+  else
+    short=$(git -C "$repo" rev-parse --short HEAD)
+  fi
   if [ -n "$label" ]; then
     case "$label" in *[!a-zA-Z0-9_-]*) die "--label must be [a-zA-Z0-9_-]" ;; esac
   else

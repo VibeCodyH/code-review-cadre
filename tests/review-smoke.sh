@@ -1364,6 +1364,99 @@ check "short real review stays ok" "[ \"\$(eval $CL)\" = ok ]"
 printf 'rate limit reached. 429 too many requests.\n' > "$Q"
 check "an actual refusal still fails" "[ \"\$(eval $CL)\" = failed ]"
 
+echo "== ★ --full reviews content as it stands, not as a diff =="
+# Asked for directly: "it should be scoped for any review I want", not diffs only.
+D=$(case_dir target_full); S="$D/src"
+OUT=$(run_cadre "$D" review --full --roster good "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
+check "full: a review was produced"    "[ -n \"$G\" ] && [ -s \"$G\" ]"
+check "full: the whole tree is there"  "grep -q 'app.js' '$G'"
+check "full: the diff shows all of it" "sed -n '/--diff--/,\$p' '$G' | grep -q 'app.js'"
+check "full: label is not review--1"   "! grep -q '^review--' <<<\"\$(ls '$D/state/reviews')\""
+check "full: manifest names the mode"  "grep -q '^mode:      target' '$R/manifest.txt'"
+check "full: no empty base field"      "! grep -qE '^(base|snapshot): *\$' '$R/manifest.txt'"
+check "full: banner says as they stand" "grep -q 'as they stand' <<<\"\$OUT\""
+check "full: report header too"        "grep -q 'as it stands' '$R/report.md'"
+# ★ Provenance. The work dir is a mktemp that is deleted at exit, so without this
+# nothing on disk says which files a reviewer actually read.
+check "full: the file list is saved"   "[ -s '$R/files.txt' ] && grep -q 'app.js' '$R/files.txt'"
+check "full: manifest points at it"    "grep -q 'files: *.*files.txt' '$R/manifest.txt'"
+# The brief has to be the target one: a reviewer handed a whole tree under the
+# diff brief treats every file as new work and scales its findings to the volume.
+check "full: target brief used"        "grep -q 'as it stands' '$R/prompt.txt'"
+check "full: no diff framing left"     "! grep -q 'against {{BASE}}' '$R/prompt.txt' && ! grep -q 'git diff' '$R/prompt.txt'"
+check "full: no unrendered placeholder" "! grep -q '{{' '$R/prompt.txt'"
+check "full: --base is refused"        "grep -q 'opposites' <<<\"\$(run_cadre '$D' review --full --base main '$S')\""
+check "full: a missing target is named" "grep -q 'nothing to review' <<<\"\$(run_cadre '$D' review --full '$D/nope')\""
+# The diff path must be untouched by all of this.
+git -C "$S" checkout -qb feature; echo more >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster good --base main --label difftoo "$S")
+check "diff: manifest still says diff" "grep -q '^mode:      diff' '$D/state/reviews/difftoo/manifest.txt'"
+check "diff: base still recorded"      "grep -qE '^base: *[0-9a-f]{7}' '$D/state/reviews/difftoo/manifest.txt'"
+check "diff: no stray files.txt"       "[ ! -e '$D/state/reviews/difftoo/files.txt' ]"
+
+echo "== ★ --full on a plain directory, and .gitignore still applies =="
+# The dangerous half of target mode: the reviewers see the whole tree, so a
+# gitignored .env must not merely be kept out of the index -- it must not be
+# in the directory they run in, because secrets_preflight skips ignored files.
+D=$(case_dir target_plain)
+mkdir -p "$D/plain"; echo 'a doc worth reviewing' > "$D/plain/notes.md"
+printf 'secrets.txt\n' > "$D/plain/.gitignore"; echo 'AWS_SECRET_ACCESS_KEY=abc' > "$D/plain/secrets.txt"
+OUT=$(run_cadre "$D" review --full --roster good "$D/plain")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
+check "plain: non-repo dir reviewed"    "grep -q 'notes.md' '$G'"
+check "plain: it says it is not a repo" "grep -q '^source:    plain' '$R/manifest.txt'"
+check "plain: ignored file NOT in tree" "! grep -q 'secrets.txt' '$G'"
+check "plain: nor in the file list"     "! grep -q 'secrets.txt' '$R/files.txt'"
+check "plain: the exclusion is stated"  "grep -q 'excluded by .gitignore' <<<\"\$OUT\""
+# A credential NOT covered by .gitignore must still stop the run outright.
+D=$(case_dir target_plain2)
+mkdir -p "$D/plain"; echo doc > "$D/plain/notes.md"; echo 'API_TOKEN=x' > "$D/plain/.env"
+OUT=$(run_cadre "$D" review --full --roster good "$D/plain")
+check "plain: a .env still refuses"     "grep -q '.env' <<<\"\$OUT\" && [ ! -d '$D/state/reviews' -o -z \"\$(ls -A '$D/state/reviews' 2>/dev/null)\" ]"
+
+echo "== ★ --full on a single file =="
+D=$(case_dir target_file)
+echo 'lone document content' > "$D/lone.md"
+OUT=$(run_cadre "$D" review --full --roster good "$D/lone.md")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+G=$(ls "$R"/good-*.md 2>/dev/null | head -1)
+check "file: a lone file reviewed"    "grep -q 'lone.md' '$G'"
+check "file: and only that file"      "[ \$(grep -c . '$R/files.txt') -eq 1 ]"
+check "file: label names the file"    "ls '$D/state/reviews' | grep -q 'lone'"
+
+echo "== ★ --full refuses a target too big to hand four models =="
+# secrets_preflight catches credentials. Nothing caught pointing this at a tree
+# with node_modules in it: every reviewer reads all of it, so it is a bill too.
+D=$(case_dir target_big)
+mkdir -p "$D/big/vendor"; for i in $(seq 1 30); do echo x > "$D/big/vendor/f$i.js"; done
+echo one > "$D/big/main.js"
+OUT=$(CADRE_TARGET_MAX_FILES=10 run_cadre "$D" review --full --roster good "$D/big")
+check "big: refused"                  "grep -q 'too big to review whole' <<<\"\$OUT\""
+check "big: names the file count"     "grep -q '31 file' <<<\"\$OUT\""
+check "big: names the worst dir"      "grep -q 'vendor (30 files)' <<<\"\$OUT\""
+check "big: names the way out"        "grep -q 'CADRE_TARGET_MAX_FILES' <<<\"\$OUT\""
+check "big: no reviewer ever ran"     "! grep -q 'REVIEW by good' <<<\"\$OUT\""
+OUT=$(CADRE_TARGET_MAX_FILES=100 run_cadre "$D" review --full --roster good "$D/big")
+check "big: raising the cap works"    "! grep -q 'too big' <<<\"\$OUT\""
+OUT=$(CADRE_TARGET_MAX_FILES=abc run_cadre "$D" review --full --roster good "$D/big")
+check "big: a bad cap is refused"     "grep -q 'must be numbers' <<<\"\$OUT\""
+
+echo "== ★ --full still refuses CADRE_HOME under the target =="
+# Stricter here than in diff mode, not looser: --full copies the WHOLE tree, so
+# the keys reach the reviewers even when nothing has changed.
+D=$(case_dir target_home)
+mkdir -p "$D/tree/.cadre/keys"; echo 'K1 the answer' > "$D/tree/.cadre/keys/k.md"
+echo doc > "$D/tree/notes.md"
+OUT=$(CADRE_HOME="$D/tree/.cadre" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --full --roster good "$D/tree" 2>&1)
+check "full: nested CADRE_HOME refused" "grep -q 'sits inside it' <<<\"\$OUT\""
+OUT=$(CADRE_HOME="$D/tree" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --full --roster good "$D/tree" 2>&1)
+check "full: equality refused too"      "grep -q 'sits inside it' <<<\"\$OUT\""
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
