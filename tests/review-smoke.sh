@@ -1639,12 +1639,18 @@ check "outage: it names which judge"   "grep -q 'good2:' '$R'"
 # still read like a result. 0/0 out of a pass that ran is not a score, so the
 # verdict has to be about the measurement failing, and the exit code has to
 # agree: a driver piping stdout to /dev/null sees only that.
-check "outage: NOTHING MEASURED"       "grep -q 'Verdict: NOTHING MEASURED' '$R'"
 check "outage: not a 0/0 score"        "! grep -q 'blocking items hit' '$R'"
-check "outage: names the dead pass"    "grep -q 'p1: ran, but every run was UNUSABLE' '$R'"
-check "outage: exits nonzero"          "
-  D2=\$(mktemp -d -p '$SANDBOX'); gauntlet_case \"\$D2\" terse '$HITBOTH' '{\"unusable\":true}'
-  run_gaunt \"\$D2\" good,good2 terse >/dev/null 2>&1; [ \$? -eq 4 ]"
+# ★ NOTHING GRADED, not NOTHING MEASURED, and the difference is the whole point:
+# the review is on disk. A driver told "4" stops the sweep, which for a judge
+# outage means abandoning hours of review production to save one cheap re-grade.
+check "outage: NOTHING GRADED"         "grep -q 'Verdict: NOTHING GRADED' '$R'"
+check "outage: says reviews exist"     "grep -q 'The reviews exist' '$R'"
+check "outage: says do not re-review"  "grep -q 'Do not re-review' '$R'"
+check "outage: names the pass"         "grep -q 'p1: 1 review(s) exist but none was gradeable' '$R'"
+RCO=0
+D3=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D3" terse "$HITBOTH" '{"unusable":true}'
+run_gaunt "$D3" good,good2 terse >/dev/null 2>&1 || RCO=$?
+check "outage: exit 5, not 4"          "[ '$RCO' -eq 5 ]"
 check "outage: the good grade is kept" "[ -s \"\$(ls '$D/home/p1'/*by-\$(slug good).grade.json)\" ]"
 check "outage: and says so"            "grep -q 'was NOT discarded' '$R'"
 
@@ -1759,6 +1765,10 @@ check "budget: aborts the sweep"      "grep -q 'ABORTING the sweep here' <<<\"\$
 check "budget: names the pass it quit on" "grep -q \"aborted on 'p1'\" <<<\"\$OUT\""
 check "budget: p2 marked NOT ATTEMPTED"   "grep -q 'p2: NOT ATTEMPTED' <<<\"\$OUT\""
 check "budget: verdict NOTHING MEASURED"  "grep -q 'Verdict: NOTHING MEASURED' <<<\"\$OUT\""
+# ★ And here the reviews genuinely do NOT exist, so it is 4 and the sweep should
+# stop. The pair of assertions is the point: same "nothing scored", opposite
+# correct response, and only the exit code carries it to a driver.
+check "budget: no review was produced"   "grep -q 'p1: no usable review, run-pass.sh exited 4' <<<\"\$OUT\""
 # ★ THE ONE THAT WOULD HAVE CAUGHT IT. Everything above prints to stdout, and
 # the driver that recorded COMPLETED sent stdout to /dev/null. Only the exit code
 # reaches a shell loop that is not reading.

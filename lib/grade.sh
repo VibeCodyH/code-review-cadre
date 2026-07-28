@@ -224,6 +224,15 @@ run_gauntlet() {
   # the one path where it costs most: 11 of 12 passes producing nothing scored
   # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
   local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0
+  # ★ Two failures that must not share an exit code, because the caller's correct
+  # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
+  # time and the reason to stop a sweep. A review that exists but could not be
+  # GRADED is a judge outage: the expensive artifact is safely on disk and one
+  # cheap re-grade fixes it, so a sweep that quits there throws away hours of
+  # review production to save one minute of grading. Collapsing them is how a
+  # driver ends up treating an ollama hiccup at hour two as a reason to abandon
+  # hour three onward.
+  local pass_reviews=0 grading_failed=""
 
   {
     if [ -n "$scoped" ]; then
@@ -319,7 +328,7 @@ run_gauntlet() {
 
     echo "==> $label: grading"
     graded_passes=$((graded_passes + 1))
-    pass_usable=0
+    pass_usable=0; pass_reviews=0
     # ref-* = public repo = contaminated. Warn in the report. passes/README.md.
     case "$label" in ref-*) reference_used=1 ;; esac
     { echo "## $label"; echo; } >> "$report"
@@ -351,6 +360,9 @@ run_gauntlet() {
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
         continue
       fi
+      # The review itself exists. Whatever happens from here is downstream of the
+      # expensive part, so it is cheap to redo and must not read as a lost run.
+      pass_reviews=$((pass_reviews + 1))
       local leaked; leaked=$(leak_check "$keyfile" "$rf")
       if [ "$leaked" -ge 2 ]; then
         suspect=$((suspect + 1))
@@ -544,10 +556,20 @@ run_gauntlet() {
     # like the benchmark ran. Counted as skipped so the guard below downgrades
     # the verdict instead of dressing a short denominator as a result.
     if [ "$pass_usable" -eq 0 ]; then
-      echo "  $label: every run was UNUSABLE, so this pass graded NOTHING"
       echo "**No usable run on this pass, so it contributed no items to the score below.**" >> "$report"
-      skipped="$skipped- $label: ran, but every run was UNUSABLE (nothing graded)"$'\n'
-      nskipped=$((nskipped + 1)); graded_passes=$((graded_passes - 1)); measurement_failed=1
+      nskipped=$((nskipped + 1)); graded_passes=$((graded_passes - 1))
+      # ★ WHICH nothing. The reviews being on disk changes what the operator
+      # should do and what a driver should do, so it changes the exit code too.
+      if [ "$pass_reviews" -gt 0 ]; then
+        echo "  $label: $pass_reviews review(s) on disk, but NONE could be graded"
+        echo "The review(s) themselves exist. This is a grading failure, and \`cadre grade\` re-runs it." >> "$report"
+        skipped="$skipped- $label: $pass_reviews review(s) exist but none was gradeable (re-grade, do not re-review)"$'\n'
+        grading_failed=1
+      else
+        echo "  $label: every run was UNUSABLE, so this pass graded NOTHING"
+        skipped="$skipped- $label: ran, but produced no usable review at all"$'\n'
+        measurement_failed=1
+      fi
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
@@ -560,11 +582,22 @@ run_gauntlet() {
     # either way for the second one, so a driver piping stdout to /dev/null still
     # cannot record COMPLETED.
     if [ "$nskipped" -gt 0 ]; then
+      # ★ And once more, the same split: were the REVIEWS produced or not. Both
+      # verdicts refuse to state a number; they differ in what the operator does
+      # next, which is the only thing the distinction is for.
+      local head1="NOTHING MEASURED" body1 rc1=4
+      body1="Not one usable review was graded, so this says nothing about \`$spec\`.
+It is a failed measurement, and a failed measurement is not a result."
+      if [ -n "$grading_failed" ] && [ -z "$measurement_failed" ]; then
+        head1="NOTHING GRADED"; rc1=5
+        body1="The reviews exist. Not one of them could be GRADED, so there is no score
+here -- but nothing expensive was lost, and \`cadre grade $spec $runs\` re-runs
+the judge over what is already on disk. Do not re-review."
+      fi
       {
-        echo "## Verdict: NOTHING MEASURED"
+        echo "## Verdict: $head1"
         echo
-        echo "Not one usable review was graded, so this says nothing about \`$spec\`."
-        echo "It is a failed measurement, and a failed measurement is not a result."
+        echo "$body1"
         echo
         printf '%s' "$skipped"
         echo
@@ -574,8 +607,8 @@ run_gauntlet() {
       cat "$report"
       echo
       echo "saved: $report"
-      echo "cadre: NOTHING MEASURED for '$spec' -- $nskipped pass(es) produced no usable run" >&2
-      return 4
+      echo "cadre: $head1 for '$spec' -- $nskipped pass(es) scored nothing" >&2
+      return "$rc1"
     fi
     echo "no passes graded. Check 'cadre passes'"; return 1
   fi
@@ -755,5 +788,16 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   if [ -n "$measurement_failed" ]; then
     echo "cadre: some pass(es) produced no usable review. Exit 4, not a result." >&2
     return 4
+  fi
+  # ★ 5, not 4, and the difference is worth an exit code of its own. A sweep
+  # driver's correct response to 4 is to STOP -- the candidate is not producing
+  # reviews and the next pass will go the same way. Its correct response to 5 is
+  # to KEEP GOING and note the pass for a re-grade: the reviews are on disk, they
+  # cost fifteen minutes each, and a judge that blipped costs one cheap call to
+  # redo. Collapsed into one code, an ollama hiccup at hour two throws away five
+  # hours of review production to save a minute of grading.
+  if [ -n "$grading_failed" ]; then
+    echo "cadre: pass(es) produced reviews that could NOT be graded. Exit 5: re-grade, do not re-review." >&2
+    return 5
   fi
 }
