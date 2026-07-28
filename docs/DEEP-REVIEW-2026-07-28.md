@@ -144,6 +144,14 @@ being short was what *enabled* the keyword match, and a concise real review has
 no adapter marker to rescue it. A refusal never states a severity-tagged
 finding, so the keyword match now requires zero findings.
 
+**`cadre review` collapsed every failure to exit 1.** A credential refusal (3)
+was indistinguishable from "the reviewers ran and failed" (1) to anything
+wrapping cadre — including Cody's own WOWnet auto-review pipeline — and a retry
+is the wrong response to a refusal. Found by tightening a test rather than by
+reading the code, which is the third time in this review that mattered: the
+loose version asserted "output contains `.env`" and would have passed whether or
+not the preflight ran at all.
+
 Also: the judge ran unscrubbed while every other model call was scrubbed, so the
 judge saw `CADRE_HOME`. `secrets_preflight` refused on `password = "$PGPASSWORD"`,
 where an env-var reference is not a credential. `run-pass.sh` used `command -v`
