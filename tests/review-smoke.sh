@@ -1396,6 +1396,22 @@ check "diff: manifest still says diff" "grep -q '^mode:      diff' '$D/state/rev
 check "diff: base still recorded"      "grep -qE '^base: *[0-9a-f]{7}' '$D/state/reviews/difftoo/manifest.txt'"
 check "diff: no stray files.txt"       "[ ! -e '$D/state/reviews/difftoo/files.txt' ]"
 
+echo "== ★ --full on a subdirectory of a repo takes only that subdirectory =="
+# README promises `cadre review --full ./src/billing`. ls-files run from a
+# subdirectory is path-limited to it, which is the whole mechanism.
+D=$(case_dir target_sub); S="$D/src"
+mkdir -p "$S/billing"; echo 'charge()' > "$S/billing/charge.js"
+echo 'unrelated' > "$S/elsewhere.js"
+git -C "$S" add -A; git -C "$S" commit -qm sub
+OUT=$(run_cadre "$D" review --full --roster good "$S/billing")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "sub: the subdir is reviewed"    "grep -q 'charge.js' '$R/files.txt'"
+check "sub: the rest of the repo is NOT" "! grep -q 'elsewhere.js' '$R/files.txt' && ! grep -q 'app.js' '$R/files.txt'"
+check "sub: git listing was used"      "grep -q '^source:    git' '$R/manifest.txt'"
+# Synthesis has to work here too: it reads the reviews, never the base.
+OUT=$(run_cadre "$D" review --full --roster good,good2 --synth echoer --label sy "$S/billing")
+check "sub: synthesis ran"             "[ -s '$D/state/reviews/sy/synthesis.md' ]"
+
 echo "== ★ --full on a plain directory, and .gitignore still applies =="
 # The dangerous half of target mode: the reviewers see the whole tree, so a
 # gitignored .env must not merely be kept out of the index -- it must not be

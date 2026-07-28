@@ -317,10 +317,13 @@ $big
 
   # The base is the EMPTY TREE, so BASE...HEAD is the whole target and the
   # reviewers' own git commands behave the way they do in diff mode.
-  local mk empty tree c1 c2
+  local empty tree c1 c2
   mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
            -c commit.gpgsign=false commit-tree "$@"; }
-  empty=$(git -C "$TPL" hash-object -t tree /dev/null) || die "could not resolve the empty tree"
+  # -w, so the object is WRITTEN and not merely hashed. git has the empty tree
+  # hardcoded, so commit-tree accepts it either way today; a version that did
+  # not would fail with "not a valid object name" and this costs nothing.
+  empty=$(git -C "$TPL" hash-object -w -t tree /dev/null) || die "could not resolve the empty tree"
   tree=$(git -C "$TPL" write-tree) || die "could not write the content tree"
   c1=$(mk "$empty" -m "empty") || die "could not build the base commit"
   c2=$(mk "$tree" -p "$c1" -m "content under review") || die "could not build the review commit"
