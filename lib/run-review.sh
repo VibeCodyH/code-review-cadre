@@ -283,7 +283,9 @@ build_target_checkout() {
     ign=$(git -C "$TPL" ls-files -z --others --ignored --exclude-standard) || ign=""
     if [ -n "$ign" ]; then
       nign=$(printf '%s' "$ign" | tr -dc '\0' | wc -c | tr -d ' ')
-      (cd "$TPL" && printf '%s' "$ign" | xargs -0 -r rm -f) \
+      # No -r: it is a GNU extension that BSD xargs rejects outright, and the
+      # empty case it guards is already excluded by the test above.
+      (cd "$TPL" && printf '%s' "$ign" | xargs -0 rm -f) \
         || die "could not remove gitignored files from the checkout.
      They would be readable by every reviewer and invisible to the preflight."
       find "$TPL" -mindepth 1 -name .git -prune -o -type d -empty -delete 2>/dev/null
