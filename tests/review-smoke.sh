@@ -1430,8 +1430,31 @@ check "plain: the exclusion is stated"  "grep -q 'excluded by .gitignore' <<<\"\
 # A credential NOT covered by .gitignore must still stop the run outright.
 D=$(case_dir target_plain2)
 mkdir -p "$D/plain"; echo doc > "$D/plain/notes.md"; echo 'API_TOKEN=x' > "$D/plain/.env"
-OUT=$(run_cadre "$D" review --full --roster good "$D/plain")
-check "plain: a .env still refuses"     "grep -q '.env' <<<\"\$OUT\" && [ ! -d '$D/state/reviews' -o -z \"\$(ls -A '$D/state/reviews' 2>/dev/null)\" ]"
+OUT=$(run_cadre "$D" review --full --roster good "$D/plain"); RC=$?
+# ★ On the EXIT CODE and the exact path. "$OUT contains .env" also matches
+# .env.example and any chatter, and "no review directory" is equally what an
+# unrelated early failure looks like -- so the loose version of this check
+# passed whether or not the credential check ran at all. 3 is preflight's own
+# code, which is the only discriminating signal. Same rule as the diff path.
+check "plain: a .env still refuses"     "[ $RC -eq 3 ]"
+check "plain: and it names that file"   "grep -qE '^  \./?\.env\$' <<<\"\$OUT\""
+check "plain: no reviewer ever ran"     "! grep -q 'REVIEW by good' <<<\"\$OUT\""
+# ★ And the same end to end on the DIFF path, which was never asserted either:
+# cmd_review collapsed every run-review.sh failure to exit 1, so a refusal was
+# indistinguishable from a flaky run to anything wrapping cadre -- and a retry is
+# the wrong response to a credential refusal. The preflight's own code is 3.
+D=$(case_dir target_rc); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+echo 'API_TOKEN=x' > "$S/.env"; git -C "$S" add -A; git -C "$S" commit -qm env
+OUT=$(run_cadre "$D" review --roster good --base main "$S"); RC=$?
+check "diff: a refusal exits 3, not 1"  "[ $RC -eq 3 ]"
+# A fresh case: the .env above is committed, so reusing that tree would refuse
+# again and the assertion would pass for the wrong reason.
+D=$(case_dir target_rc2); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster ghost --base main "$S"); RC=$?
+check "diff: a failed run still exits 1" "[ $RC -eq 1 ]"
+check "diff: and it says every one failed" "grep -q 'every reviewer failed' <<<\"\$OUT\""
 
 echo "== ★ --full on a single file =="
 D=$(case_dir target_file)

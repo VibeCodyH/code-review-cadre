@@ -709,14 +709,22 @@ cmd_review() {
     done <<< "$dupprov"
   fi
 
-  if ! CADRE_PRERUN="$prerun" \
-       "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}"; then
+  # ★ The child's exit code is PASSED THROUGH, not collapsed to 1. Returning a
+  # bare 1 made "credentials in the tree, refused before any reviewer ran" (3)
+  # indistinguishable from "the reviewers ran and failed" (1) to anything
+  # wrapping cadre -- CI, or a review pipeline deciding whether to retry. A
+  # refusal must never look like a flaky run, because the retry is the wrong
+  # response to it.
+  local rrc=0
+  CADRE_PRERUN="$prerun" \
+    "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
+  if [ "$rrc" -ne 0 ]; then
     # rmdir, not rm -rf: it succeeds only when the directory is empty, so a run
     # that died before writing anything leaves nothing behind, and one that
     # produced partial output keeps it. An empty review dir reads as a review
     # that found nothing, and it burns the label for the next attempt.
     rmdir "$out" 2>/dev/null
-    return 1
+    return "$rrc"
   fi
 
   [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
