@@ -16,8 +16,28 @@ and shouts when the run stopped early rather than returning a quiet pass.
 NOTES
 }
 
+# ★ grok executes the OPERATOR's Claude hooks. It reads ~/.claude/settings.json
+# AND settings.local.json through its Claude-compat path, despite its own hook
+# discovery logging total_hooks=0. Measured: a PostToolUse hook of Cody's ran 28
+# times inside one review. Every call failed (`command not found`) so no corpus
+# run was contaminated -- but that is luck, not containment. A UserPromptSubmit
+# hook that emits text would inject operator context into every grok review and
+# leave no trace in the review itself. Same class as claude's advisor: capability
+# the benchmark never declared, arriving through a door nobody opened on purpose.
+#
+# CLAUDE_CONFIG_DIR does NOT close it (tested: hooks still ran, both settings
+# files still read). A HOME with no .claude in it does, and grok keeps its auth
+# and session history because .grok is symlinked back in.
+grok_sandbox_home() {
+  local h="${XDG_CACHE_HOME:-$HOME/.cache}/cadre/grok-home"
+  mkdir -p "$h" || return 1
+  [ -e "$h/.grok" ] || ln -sfn "$HOME/.grok" "$h/.grok"
+  printf '%s' "$h"
+}
+
 run_grok() {
-  local out pf stop text trunc=0 m=() ro=()
+  local out pf stop text trunc=0 m=() ro=() sbh
+  sbh=$(grok_sandbox_home) || sbh="$HOME"
   [ -n "$model" ] && m=(--model "$model")
   # ★ ro was previously UNENFORCED here: --always-approve was passed in every
   # mode, so a "read-only" review could edit, write, and shell out. Its
@@ -34,14 +54,14 @@ run_grok() {
   # the door for future runs.
   [ "$mode" = ro ] && ro=(--disallowed-tools 'edit,write' --no-subagents)
   if [ -n "$DRY" ]; then
-    _run timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
+    _run env HOME="$sbh" timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file PROMPTFILE
     return 0
   fi
   pf=$(mktemp); printf '%s' "$prompt" > "$pf"
   out=$(mktemp)
-  ( cd "$dir" && timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
+  ( cd "$dir" && HOME="$sbh" timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file "$pf" ) > "$out" 2>&1
   rm -f "$pf"

@@ -506,6 +506,13 @@ check "grok ro denies writes only"   "grep -q \"disallowed-tools 'edit,write'\" 
 check "grok ro still allows bash" \
   "! grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
 check "grok ro kills subagents"      "grep -q -- '--no-subagents' '$ROOT/agents.d/grok.sh'"
+# grok runs the OPERATOR's Claude hooks (settings.json + settings.local.json)
+# via its compat path. Measured: a PostToolUse hook fired 28 times inside a
+# review. CLAUDE_CONFIG_DIR does not stop it; a HOME without .claude does.
+check "grok isolates operator HOME"  "grep -q 'grok_sandbox_home' '$ROOT/agents.d/grok.sh'"
+check "and keeps grok auth by link"  "grep -q 'ln -sfn \"\$HOME/.grok\"' '$ROOT/agents.d/grok.sh'"
+check "and applies it to both calls" \
+  "[ \"\$(grep -c 'HOME=\"\$sbh\"' '$ROOT/agents.d/grok.sh')\" -ge 2 ]"
 check "claude ro kills Workflow" \
   "awk '/^CLAUDE_DENY=/{f=1} f{print; if(!/\\\\$/) exit}' '$ROOT/agents.d/claude.sh' | grep -qw Workflow"
 check "claude ro still allows Bash" \
