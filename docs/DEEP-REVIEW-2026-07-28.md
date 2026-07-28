@@ -210,21 +210,41 @@ Ranked by what I would do next.
 2. ~~Stop the external preprint numbers carrying product weight.~~ **Done.**
    Every use now leads with evidence cadre owns and demotes the preprint to
    corroboration with its limits attached.
-3. **Reframe the panel matrix as a hypothesis generator in the docs.** The
-   remaining half of item 2: the docs confess the small n honestly and then still
-   sell roster optimisation from that n. At two runs against a handful of items,
-   "different failure set" is hard to distinguish from independent variance, and
-   `cadre panel` computes no correlation and no uncertainty. It generates
-   hypotheses worth testing, which is genuinely useful; it does not estimate
-   decorrelation, and it should stop implying it does.
-4. **Rename `primary`/`secondary`.** They import the leaderboard the thesis
-   rejects.
-5. Docs corrections found by the drift audit (the CLI-reference rows for
-   `claude` and `grok`, the "filename not contents" claim), and adapter parity:
-   `claude.sh --safe-mode`, `codex.sh --ignore-user-config`, `cursor.sh` sandbox
-   pinning, the grok/qwen rc fallback. Parity is a real leak surface and the only
-   place a second model can quietly gain capability. The standing rule holds —
-   probe the agent, never trust the capability flag.
+3. ~~Reframe the panel matrix as a hypothesis generator.~~ **Done, and it needed
+   a mechanism, not just a paragraph.** The matrix took the best grade across
+   runs, so "caught it twice" and "caught it once, missed it once on the same
+   checkout and prompt" printed identically — which is exactly how "we staffed a
+   decorrelated panel" and "one run got lucky" became indistinguishable. A
+   flipped cell now prints `HIT*`, an item covered only by starred cells gets its
+   own line, and METHOD says plainly that the matrix generates hypotheses rather
+   than estimating decorrelation.
+4. ~~Rename `primary`/`secondary`.~~ **Done.** They are now
+   `SEAT: can review alone` and `SEAT: needs a second reader` — a role, not a
+   rank, since the old words had readers concluding the primary was the better
+   buy when the whole argument is that the lower scorer may be the better seat.
+5. ~~Adapter parity.~~ **Partly done, and it turned up something worse than the
+   item it was on the list for.** `codex.sh` now passes `--ignore-user-config` in
+   ro mode (probed for, since builds differ), matching `claude.sh`'s
+   `--strict-mcp-config`. Without it a benchmark compared one model *without*
+   your MCP servers against another *with* them — a property of the machine,
+   invisible in the report.
+
+   **The unclosed half is the important half.** Probing codex for its own tool
+   list — the standing rule, and the reason to probe rather than read flags —
+   showed that under `-s read-only` it still holds `collaboration.spawn_agent`,
+   `send_message`, `list_agents`, `wait_agent` and `web.run`. That is the same
+   class of hole as claude's `advisor`, which voided a whole benchmark round: a
+   candidate that can consult another model is not a peer of one that cannot.
+   The sandbox does not close it, because `-s read-only` governs model-generated
+   *shell commands*, not the model's tool registry — and `--disable multi_agent`,
+   `--disable multi_agent_v2` and `--disable collaboration_modes` were each
+   probed and each a no-op. It is now recorded loudly in the adapter notes and
+   pinned by tests, because an unrecorded asymmetry is what makes a comparison
+   wrong while it still looks right. **A codex seat should be read as
+   possibly-assisted when compared against claude.**
+6. Docs corrections found by the drift audit: the CLI-reference rows for
+   `claude` and `grok`, and the "filename not contents" claim. The only item on
+   this list nobody has touched.
 
 ## One note on method
 
