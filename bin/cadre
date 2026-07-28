@@ -1192,11 +1192,17 @@ cmd_doctor() {
 
   one reviewer installed. That works, and cadre will run it.
 
-  Worth knowing before you decide it is enough. Tony Stone scored 294 confirmed
-  defects across 15 model versions from 8 providers: 56.8% were caught by
-  exactly ONE model, and coverage of a change's real defects ran 47% at one
-  reviewer, 72% at two, 89% at three. The second chair buys the most, and it
-  buys most when it is a different model family.
+  Worth knowing before you decide it is enough. Cadre's own scaffolding was
+  reviewed by three models one at a time, and EACH of the three found a harness
+  bug the other two missed. Three runs on one repo is not a sample size, but a
+  single reviewer is confidently silent about what it misses, and the only
+  thing that has surfaced that here is a second one from a DIFFERENT family.
+
+  Measure it on your repo rather than take our word: run a second candidate
+  through the same passes and read the per-item rows, not the totals. The
+  largest public measurement points the same way, but it is someone else's
+  preprint on someone else's codebase -- a direction, not your number. See
+  README.md.
 
   A second lineage does not need a subscription, and there is a route that
   needs no API key at all:

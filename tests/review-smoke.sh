@@ -796,7 +796,14 @@ find "$D/agents.d" -type f ! -name good.sh -delete
 OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
 check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""
-check "nudge carries the numbers"   "grep -q '47% at one' <<<\"\$OUT\""
+# ★ Data, and CADRE'S OWN data. The nudge used to lead with a borrowed
+# preprint's coverage percentages, which cadre neither produced nor reproduces --
+# citing them is fine, resting the pitch on them is not. Its own scaffolding
+# result is a real measurement it owns, and it stays concrete rather than
+# becoming a lecture about panels.
+check "nudge carries evidence"      "grep -q 'bug the other two missed' <<<\"\$OUT\""
+check "nudge owns its sample size"  "grep -q 'not a sample size' <<<\"\$OUT\""
+check "borrowed numbers not the pitch" "! grep -q '47% at one' <<<\"\$OUT\" && ! grep -q '56.8' <<<\"\$OUT\""
 check "doctor still exits 0"        "[ $RC -eq 0 ]"
 # Two installed reviewers is a panel; do not nag.
 D=$(case_dir nonudge)

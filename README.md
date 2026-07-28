@@ -32,21 +32,28 @@ reviewer you are still missing.
 What you want from reviewer number four is not a better score. It is a DIFFERENT
 set of failures.
 
-Somebody measured that on a real corpus and published it. Tony Stone's
-[A Single LLM Is an Incomplete Code Reviewer](https://doi.org/10.5281/zenodo.21328807)
-(v2) scored 294 confirmed defects across 15 model versions from 8 providers.
-**56.8% were caught by exactly one model.** Coverage of a change's real defects
-ran 47% at one reviewer, 72% at two, 89% at three, with the steps shrinking fast
-after that, and no large sample model in it exceeded 61% recall. Plan for one
-reviewer finding about half to two thirds of what is actually there, and if you
-only ever add one chair, the second one buys the most.
+Cadre exists to measure that on **your** repo, because the number that decides
+your panel is not a number anyone else can publish for you. What it found on the
+private repo it was built for: a candidate that scored 4 of 6 blocking items,
+worse than every incumbent, still earned a seat — it caught a bug all three
+incumbents missed across six runs, in both of its own, and the only thing
+distinguishing it was lineage. That is one candidate on one repo, not a sample
+size. It is also exactly the result a leaderboard cannot produce.
 
-Read that saturation carefully though, because it counts REVIEWERS and not
-lineages, and six of its eight providers still owned defects no other one found.
-A fourth chair from a family you don't have is not the same purchase as a fourth
-chair. [Staffing the panel](#staffing-the-panel) has the one this repo caught
-that way. And it is a preprint, one team, one codebase, LLM drafted answer keys
-with the conflict disclosed, so take it as directional and not as a benchmark.
+The largest public measurement points the same way. Tony Stone's
+[A Single LLM Is an Incomplete Code Reviewer](https://doi.org/10.5281/zenodo.21328807)
+(v2) scored 294 confirmed defects across 15 model versions from 8 providers, and
+found **56.8% caught by exactly one model**, with coverage running 47% at one
+reviewer, 72% at two and 89% at three, no large-sample model exceeding 61%
+recall.
+
+Treat that as a direction, not as your number, and not as this tool's result. It
+is a preprint: one team, one codebase, LLM-drafted answer keys with the conflict
+disclosed. Its saturation curve also counts REVIEWERS rather than lineages, and
+six of its eight providers still owned defects no other provider found — so a
+fourth chair from a family you don't have is not the same purchase as a fourth
+chair. Cadre does not inherit those numbers and does not reproduce them; it
+gives you the apparatus to find out what your own curve looks like.
 
 ## What Cadre actually does
 

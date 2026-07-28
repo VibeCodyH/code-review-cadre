@@ -10,11 +10,22 @@ what to actually type, and where the key goes.
 
 ## Why bother
 
-Across 294 confirmed defects and 15 model versions, **56.8% were caught by
-exactly one model**. Coverage of a change's real defects ran 47% at one
-reviewer, 72% at two, 89% at three. The second chair buys the most.
+Because a single reviewer is confidently silent about most of what it misses,
+and the only thing that has ever surfaced that here is a second reviewer from a
+different family. On this repo's own diffs, three separate single-model runs each
+found a harness bug the other two did not. That is three runs on one codebase and
+not a sample size, but it is the whole argument in miniature.
 
-The word doing the work there is *different*. Two reviewers from the same model
+The largest public measurement points the same way — Tony Stone's
+[A Single LLM Is an Incomplete Code Reviewer](https://doi.org/10.5281/zenodo.21328807)
+scored 294 confirmed defects across 15 model versions and found **56.8% caught by
+exactly one model**, with coverage running 47% at one reviewer, 72% at two and
+89% at three. Corroboration, not this tool's result: it is a preprint, one team,
+one codebase, LLM-drafted answer keys with the conflict disclosed, and it counts
+*reviewers* rather than *lineages*. Read it as a direction, and get your own
+numbers from your own repo — which is what cadre is for.
+
+The word doing the work is *different*. Two reviewers from the same model
 family buy you one opinion twice. What you want from reviewer number two is not
 a better score, it is a different set of failures, which is why "free model from
 a family you don't have" beats "second subscription to the lab you already pay."
