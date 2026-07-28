@@ -79,13 +79,28 @@ echo "pass $label @ ${sha:0:9} | reviewers: ${reviewers[*]} | $runs run(s)"
 # adapters, not at keys, and user overrides need it.
 mapfile -t SCRUB < <(scrubbed_env)
 
+# ★ Count outcomes. This script used to end on `echo` and therefore always
+# exited 0, which is why run_gauntlet's `|| return 1` had never once fired: a
+# candidate that produced NOTHING reported the same success as one that produced
+# everything, and the driver above it wrote COMPLETED across a sweep where 27 of
+# 30 requested reviews did not exist. Silence and success must not share an exit
+# code.
+ok_runs=0; bad_runs=0; dead_agents=""
+
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
-  agent_installed "$agent" || { echo "  $r: not installed, skipping"; continue; }
+  # Not installed is not "nothing was asked for". Every requested run is a run
+  # that produced nothing, and the caller has to hear that in the exit code.
+  agent_installed "$agent" || {
+    echo "  $r: NOT INSTALLED, $runs requested run(s) produced nothing"
+    bad_runs=$((bad_runs + runs)); dead_agents="$dead_agents  $r: not installed"$'\n'
+    continue
+  }
   m=(); [ -n "$model" ] && m=(-M "$model")
+  budget=""
   for n in $(seq 1 "$runs"); do
     f="$OUT/$(slug "$r")-run$n.md"
-    [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; continue; }
+    [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
     echo "  $r run$n ..."
     start=$(date +%s)
     # ★ .failed only. Deleting .partial here threw away real findings the moment
@@ -108,6 +123,11 @@ for r in "${reviewers[@]}"; do
       # limiting used to drive real retries and then get cadre's own note
       # appended after its _TRUNCATED marker. See lib/run-review.sh.
       [ "$(classify_run "$f.part" "$rc")" = failed ] || break
+      # ★ Budget before rate limit. A spend cap or an empty account is not a
+      # throughput ceiling: no backoff inside this sweep clears it, so retrying
+      # is waste and attempting this agent on the REMAINING passes is a
+      # guaranteed hour of writing 102-byte failures. See quota_exhausted().
+      quota_exhausted "$f.part" && { budget=1; break; }
       rate_limited "$f.part" || break
       if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
         { echo "DID NOT COMPLETE, rate limited, gave up after $attempt attempts."
@@ -137,14 +157,29 @@ for r in "${reviewers[@]}"; do
         mv "$f.part" "$f"
         # Now, and only now, last attempt's partial is genuinely superseded.
         rm -f "$f.partial"
+        ok_runs=$((ok_runs + 1))
         echo "    $(wc -c < "$f") bytes in ${took}s" ;;
       degraded)
         mv "$f.part" "$f.partial"
+        bad_runs=$((bad_runs + 1))
         echo "    DEGRADED after ${took}s, stopped early, kept as $(basename "$f.partial"), not scored" ;;
       *)
         mv "$f.part" "$f.failed"
+        bad_runs=$((bad_runs + 1))
         echo "    FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed"), not counted as a run" ;;
     esac
+
+    # Out of budget: stop this agent HERE. The remaining runs of this pass, and
+    # every later pass in the sweep, would produce the same refusal. Loud, and
+    # on stderr as well, because the driver that hid this last time was piping
+    # stdout to /dev/null.
+    if [ -n "$budget" ]; then
+      bad_runs=$((bad_runs + (runs - n)))
+      dead_agents="$dead_agents  $r: out of budget after run$n -- $(head -c 200 "$f.failed" | tr '\n' ' ')"$'\n'
+      echo "    ⛔ $r is OUT OF BUDGET, not a rate limit. Skipping its remaining run(s)."
+      echo "cadre: $r refused for budget reasons on pass $label, not retrying it" >&2
+      break
+    fi
 
     # Several CLIs have no read-only mode and the brief invites running tests.
     # A reviewer that edits a file changes what every later reviewer sees.
@@ -159,3 +194,20 @@ for r in "${reviewers[@]}"; do
 done
 
 echo "done. Outputs in $OUT"
+echo "  $ok_runs usable, $bad_runs not usable, of $((ok_runs + bad_runs)) requested run(s)"
+
+# ★ Exit 4 only when NOTHING is usable, not on any failure. A candidate that
+# managed 2 of 3 runs still has something to grade and the report already records
+# which run was UNUSABLE, so aborting there would throw away real reviews over a
+# flake. Zero of N is the other case entirely: there is nothing to measure, and
+# the next pass will almost certainly go the same way. 4, because 2 is a usage
+# error and 3 is the credential refusal.
+if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
+  {
+    echo "cadre: NO usable review on pass '$label'. $bad_runs requested run(s), none produced one."
+    [ -n "$dead_agents" ] && printf '%s' "$dead_agents"
+    echo "This is a failed measurement, not a result. Nothing here should be scored."
+  } >&2
+  exit 4
+fi
+exit 0

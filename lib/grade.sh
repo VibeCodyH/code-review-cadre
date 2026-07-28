@@ -198,13 +198,43 @@ run_gauntlet() {
   # name when there is one judge, so existing artifacts keep resolving.
   local jsl; jsl=$(slug "$(IFS=,; printf '%s' "${judges[*]}")")
   local report="$CADRE_HOME/report-$sl-by-$jsl.md"
+  # ★ THIRD instance of one bug: a report named after less than what identifies
+  # it. `45211c9` put the judge in the name, the block above put the whole judge
+  # LIST in it, and the pass scope was still missing -- so `cadre run <spec> N
+  # <label>`, the shape every overnight driver uses to sweep passes one at a
+  # time, wrote all twelve reports to the same path. Each one truncated the last
+  # (the block below opens with `>`), and the surviving artifact described the
+  # final pass while being named as if it covered the gauntlet. Measured: a
+  # twelve-pass sweep left a 933-byte report reading "0/0 items, 1 unusable run".
+  local scoped=""
+  if [ -n "$only" ]; then
+    scoped=1
+    report="$CADRE_HOME/report-$sl-by-$jsl-only-$(slug "$only").md"
+  fi
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
+  # ★ usable_runs is the only counter that answers "did anything get MEASURED",
+  # and nothing tracked it. `graded_passes` counts passes the loop entered, and
+  # blocking_total only grows inside the per-item loop a run reaches after every
+  # usability check -- so a pass whose every run was UNUSABLE added 0 to the
+  # numerator AND 0 to the denominator while still counting as graded. That is
+  # the silent-denominator bug the nskipped guard was written for, still live on
+  # the one path where it costs most: 11 of 12 passes producing nothing scored
+  # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
+  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0
 
   {
-    echo "# Gauntlet: \`$spec\`"
+    if [ -n "$scoped" ]; then
+      echo "# One pass: \`$spec\` on \`$only\`"
+      echo
+      echo "**Scoped with a pass argument**, so everything below is over \`$only\`"
+      echo "alone. Whether that left other registered passes out is stated in the"
+      echo "verdict; run \`cadre grade $spec $runs\` with no pass argument for all of them."
+    else
+      echo "# Gauntlet: \`$spec\`"
+    fi
     echo
     if [ "${#judges[@]}" -gt 1 ]; then
       echo "Judges: \`${judges[0]}\` and \`${judges[1]}\`. $runs run(s) per pass. Rubric: lib/prompts/judge.md."
@@ -225,7 +255,21 @@ run_gauntlet() {
     # a directory with a space read as missing and was silently skipped.
     label=$(trim "$label"); sha=$(trim "$sha"); dir=$(trim "$dir")
     base=$(trim "$base");   key=$(trim "$key")
-    [ -n "$only" ] && [ "$only" != "$label" ] && continue
+    # ★ COUNT what the scope excluded. Scoping to the only registered pass
+    # excluded nothing, and warning "this is not the benchmark" there would be a
+    # false alarm on the smallest legitimate setup there is. The guard below asks
+    # whether anything was actually left out, not whether an argument was passed.
+    if [ -n "$only" ] && [ "$only" != "$label" ]; then
+      nfiltered=$((nfiltered + 1)); continue
+    fi
+
+    # The sweep gave up on an earlier pass (see the abort below). Name every
+    # pass that consequently never ran, rather than letting the report end where
+    # the candidate stopped working and read as if that were the registry.
+    if [ -n "$aborted" ]; then
+      skipped="$skipped- $label: NOT ATTEMPTED, the sweep aborted on '$aborted'"$'\n'
+      nskipped=$((nskipped + 1)); continue
+    fi
 
     local keyfile="$key"
     case "$keyfile" in /*) ;; *) keyfile="$CADRE_HOME/$key" ;; esac
@@ -257,12 +301,25 @@ run_gauntlet() {
 
     if [ "$rescore" != 1 ]; then
       echo "==> $label: running $spec"
+      # ★ Was `|| return 1`, which had never fired because run-pass.sh always
+      # exited 0. Now that it reports 0-of-N, STOP: a candidate producing no
+      # review on this pass will produce none on the next eleven either, and
+      # grinding through them is the fifty silent minutes this whole change is
+      # about. Recorded as a skipped pass so the denominator guard below sees it.
+      local prc=0
       CADRE_PASS_DIR="$target" CADRE_PASS_BASE="$base" \
-        "$CADRE_ROOT/lib/run-pass.sh" "$label" "$sha" "$runs" "$spec" || return 1
+        "$CADRE_ROOT/lib/run-pass.sh" "$label" "$sha" "$runs" "$spec" || prc=$?
+      if [ "$prc" -ne 0 ]; then
+        echo "  $label: run-pass.sh exited $prc, ABORTING the sweep here"
+        skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
+        nskipped=$((nskipped + 1)); aborted="$label"; measurement_failed=1
+        continue
+      fi
     fi
 
     echo "==> $label: grading"
     graded_passes=$((graded_passes + 1))
+    pass_usable=0
     # ref-* = public repo = contaminated. Warn in the report. passes/README.md.
     case "$label" in ref-*) reference_used=1 ;; esac
     { echo "## $label"; echo; } >> "$report"
@@ -368,6 +425,7 @@ run_gauntlet() {
           echo "  The other judge's grade is on disk and was NOT discarded; \`cadre grade --rescore\` re-runs only what is missing." >> "$report"
         continue
       fi
+      pass_usable=$((pass_usable + 1)); usable_runs=$((usable_runs + 1))
 
       local row="" k v sev
       for k in $items; do
@@ -479,10 +537,48 @@ run_gauntlet() {
         done
       done
     done
+    # ★ A pass whose every run was UNUSABLE is a pass that did not happen. It
+    # belongs with the missing keys and the deleted checkouts, because it has
+    # exactly their effect on the arithmetic: nothing in the numerator, nothing
+    # in the denominator, and a `graded_passes` tick that made the report look
+    # like the benchmark ran. Counted as skipped so the guard below downgrades
+    # the verdict instead of dressing a short denominator as a result.
+    if [ "$pass_usable" -eq 0 ]; then
+      echo "  $label: every run was UNUSABLE, so this pass graded NOTHING"
+      echo "**No usable run on this pass, so it contributed no items to the score below.**" >> "$report"
+      skipped="$skipped- $label: ran, but every run was UNUSABLE (nothing graded)"$'\n'
+      nskipped=$((nskipped + 1)); graded_passes=$((graded_passes - 1)); measurement_failed=1
+    fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
 
-  [ "$graded_passes" -gt 0 ] || { echo "no passes graded. Check 'cadre passes'"; return 1; }
+  if [ "$graded_passes" -le 0 ]; then
+    # ★ Two different nothings, and the old message said the wrong one. "Check
+    # 'cadre passes'" sends the reader to the registry, which is right when the
+    # registry is empty and actively misleading when the registry was fine and
+    # the CANDIDATE produced nothing -- the case that actually happened. Exit 4
+    # either way for the second one, so a driver piping stdout to /dev/null still
+    # cannot record COMPLETED.
+    if [ "$nskipped" -gt 0 ]; then
+      {
+        echo "## Verdict: NOTHING MEASURED"
+        echo
+        echo "Not one usable review was graded, so this says nothing about \`$spec\`."
+        echo "It is a failed measurement, and a failed measurement is not a result."
+        echo
+        printf '%s' "$skipped"
+        echo
+        echo "Fix the cause and re-run. Do not quote a number from this file."
+      } >> "$report"
+      echo
+      cat "$report"
+      echo
+      echo "saved: $report"
+      echo "cadre: NOTHING MEASURED for '$spec' -- $nskipped pass(es) produced no usable run" >&2
+      return 4
+    fi
+    echo "no passes graded. Check 'cadre passes'"; return 1
+  fi
 
   # ---- slot recommendation -------------------------------------------------
   #
@@ -535,6 +631,18 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     esac
   fi
 
+  # ★ Same guard, other cause. One pass is not the registry either, and a scoped
+  # run reaching "SEAT: can review alone" off a single key would be the exact
+  # overclaim the guard above exists to stop -- arrived at from the argument
+  # list instead of from a missing checkout.
+  if [ -n "$scoped" ] && [ "$nfiltered" -gt 0 ]; then
+    case "$slot" in
+      SEAT:*|INCONCLUSIVE)
+        reason="Scoped to the one pass '$only', which left $nfiltered other registered pass(es) out, so $blocking_hit/$blocking_total is that pass and not the benchmark. Re-run without a pass argument before slotting anything. On '$only': $reason"
+        slot="SCOPED to one pass, not slottable" ;;
+    esac
+  fi
+
   {
     echo "## Verdict: $slot"
     echo
@@ -572,7 +680,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
       echo
       echo "Add a second and the items they disagree on stop being scored:"
       echo
-      echo "    CADRE_JUDGE='${judges[0]},<other-agent>' cadre grade $spec --rescore"
+      echo "    CADRE_JUDGE='${judges[0]},<other-agent>' cadre grade $spec $runs"
       echo
       echo "Pick one whose failures you expect to differ from ${judges[0]}'s. Two"
       echo "graders of one lineage agree where one was already confident."
@@ -637,4 +745,15 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   cat "$report"
   echo
   echo "saved: $report"
+
+  # ★ The exit code has to say it too. Everything above is in the report, and the
+  # driver that produced the false green was piping stdout to /dev/null -- so a
+  # loud report and a 0 exit is still a green light. Only a failed MEASUREMENT
+  # trips this (a pass that ran and yielded nothing, or a sweep that aborted); a
+  # missing key or a deleted checkout keeps its old exit code, since that is a
+  # registry the operator changed and the INCOMPLETE verdict already names it.
+  if [ -n "$measurement_failed" ]; then
+    echo "cadre: some pass(es) produced no usable review. Exit 4, not a result." >&2
+    return 4
+  fi
 }

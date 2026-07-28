@@ -36,6 +36,21 @@ CADRE_JUDGE="${CADRE_JUDGE:-}"
 
 die() { echo "cadre: $*" >&2; exit 2; }
 
+# ★ <runs> is POSITIONAL, so anything in that slot becomes the run count. This
+# tool's own report printed `cadre grade <spec> --rescore`, which made
+# `seq 1 --rescore` produce nothing: zero runs graded, and a 0/0 verdict on a
+# candidate whose reviews were all sitting on disk waiting to be read. A number
+# taken from an argument position has to be checked as a number.
+need_runs() {
+  case "${1:-}" in
+    ''|*[!0-9]*)
+      die "runs must be a whole number, got '${1:-}'.
+     Usage is positional: cadre grade <agent-spec> [runs] [pass-label].
+     There is no --rescore flag -- 'cadre grade' always re-grades." ;;
+  esac
+  [ "$1" -gt 0 ] || die "runs must be at least 1, got '$1'"
+}
+
 # Filename-safe and INJECTIVE. tr ':/' '--' alone collides: "vendor/model" and
 # "vendor-model" share a slug, and the second spec reports the first's results.
 slug() {
@@ -358,6 +373,37 @@ rate_limited() {
   # shape is not a disaster: it falls through and the run is recorded FAILED,
   # which is the safe direction. It is never scored as a review.
   grep -qiE '(\b(429|529)\b|too many requests|rate[ _-]?limit[a-z]*([ _-](exceeded|reached|hit|error))?|quota (exceeded|exhausted)|exceeded your [a-z ]{0,20}quota|resource[ _-]exhausted|retry[- ]after|slow down|overloaded|capacity constraints|AI_RetryError)' "$f"
+}
+
+# ★ A BUDGET refusal, which is a different animal from a rate limit, and telling
+# them apart is worth a function. Both look like "the provider said no". The
+# difference is whether waiting inside this sweep can clear it:
+#
+#   rate limit  -- a throughput ceiling. Backoff clears it. Retry the same model.
+#   budget      -- an account state. No backoff clears it, so every later attempt
+#                  is guaranteed waste, and the sweep should stop USING THAT
+#                  AGENT and say so at the top of its voice.
+#
+# Measured, both on the same overnight run, from opposite starting points:
+#   claude  "You've hit your monthly spend limit"    matched NOTHING above, so
+#           each pass failed in about a second and the sweep marched through
+#           eleven more of them writing 102-byte .failed files for fifty minutes.
+#   kimi    "429 ... suspended due to insufficient balance"  matched the scan
+#           above, so it burned three backoff retries against an account that
+#           had no balance to serve them.
+# One silent hour and one pointless retry storm, from the same missing
+# distinction. Checked BEFORE rate_limited for that reason.
+#
+# Same guards as rate_limited and for the same reason: a small file, and callers
+# ask only about a run classify_run already called `failed`. A review that merely
+# DISCUSSES billing is neither small nor failed. The failure direction is safe
+# too -- an unrecognised phrasing falls through to the retry path, which is what
+# happens today.
+quota_exhausted() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 2000 ] || return 1
+  grep -qiE '(spend limit|usage limit|monthly limit|plan limit|insufficient (balance|funds|credit|quota)|recharge your account|credit balance is too low|(account|organization|org)[a-z0-9 _<>-]{0,40}(is )?(suspended|deactivated|disabled)|payment required|\b402\b|billing (details|issue|problem)|purchase (more )?credits)' "$f"
 }
 
 # ★ The same question for a SYNTHESIS, which needs a different answer. A

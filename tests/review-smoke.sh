@@ -1632,7 +1632,19 @@ OUT=$(run_gaunt "$D" good,good2 terse)
 R=$(ls "$D/home"/report-*.md | head -1)
 check "outage: the run is UNUSABLE"    "grep -q 'run 1: \*\*UNUSABLE\*\*' '$R'"
 check "outage: it names which judge"   "grep -q 'good2:' '$R'"
-check "outage: nothing was scored"     "grep -q 'blocking items hit: \*\*0 / 0\*\*' '$R' || grep -q 'INCONCLUSIVE' '$R'"
+# ★ A pass whose every run was UNUSABLE now says NOTHING MEASURED, not 0/0. It
+# used to report "INCONCLUSIVE, no blocking items were graded" and point at the
+# registry -- and this assertion accepted that, which is how the shape survived
+# to the overnight sweep where 11 of 12 passes produced nothing and the artifact
+# still read like a result. 0/0 out of a pass that ran is not a score, so the
+# verdict has to be about the measurement failing, and the exit code has to
+# agree: a driver piping stdout to /dev/null sees only that.
+check "outage: NOTHING MEASURED"       "grep -q 'Verdict: NOTHING MEASURED' '$R'"
+check "outage: not a 0/0 score"        "! grep -q 'blocking items hit' '$R'"
+check "outage: names the dead pass"    "grep -q 'p1: ran, but every run was UNUSABLE' '$R'"
+check "outage: exits nonzero"          "
+  D2=\$(mktemp -d -p '$SANDBOX'); gauntlet_case \"\$D2\" terse '$HITBOTH' '{\"unusable\":true}'
+  run_gaunt \"\$D2\" good,good2 terse >/dev/null 2>&1; [ \$? -eq 4 ]"
 check "outage: the good grade is kept" "[ -s \"\$(ls '$D/home/p1'/*by-\$(slug good).grade.json)\" ]"
 check "outage: and says so"            "grep -q 'was NOT discarded' '$R'"
 
@@ -1690,6 +1702,114 @@ check "warned, not refused"            "! grep -q 'Two is the most' <<<\"\$OUT\"
 OUT=$(run_gaunt "$D" good,good terse)
 R=$(ls "$D/home"/report-*.md | head -1)
 check "a repeated judge is deduped"    "grep -q 'ONE judge graded this' '$R'"
+
+echo "== ★ a budget refusal is not a rate limit, and the sweep must not grind on =="
+# The overnight sweep this section exists for: claude answered "You've hit your
+# monthly spend limit" in about a second, and the harness attempted eleven more
+# passes over fifty minutes writing 102-byte .failed files. Then run-pass.sh
+# exited 0 (it always did), run_gauntlet's `|| return 1` therefore never fired,
+# and the driver wrote COMPLETED over a sweep with 3 of 30 reviews. Every link in
+# that chain gets a test.
+QB="$SANDBOX/budget.txt"
+QE="bash -c \"source '$ROOT/lib/common.sh'; quota_exhausted '$QB'\""
+printf "You've hit your monthly spend limit · raise it at claude.ai/settings/usage\n" > "$QB"
+check "budget: spend limit caught"    "$QE"
+check "budget: and it is NOT a rate limit" "! bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QB'\""
+printf '429 Your account org-abc <ak-1> is suspended due to insufficient balance, please recharge your account\n' > "$QB"
+check "budget: empty account caught"  "$QE"
+# ★ This one matches BOTH. It is the kimi failure, and it burned three backoff
+# retries against an account with no balance. Budget has to be asked FIRST.
+check "budget: outranks the 429"      "bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QB'\""
+printf 'Error: 429 too many requests, retry-after 30\n' > "$QB"
+check "budget: a real 429 is not one" "! $QE"
+printf 'blocking: the billing details page leaks a token when payment required.\n' > "$QB"
+check "budget: a finding about billing" "$QE"   # matches, but see below
+# ...which is exactly why callers ask only about a run classify_run already
+# called `failed`. A review is not a failed run, so the words never get asked
+# about. Same guard rate_limited has carried since it shipped, same reason.
+head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"; printf 'spend limit\n' >> "$QB"
+check "budget: too big to be a refusal" "! $QE"
+
+# A candidate that is out of budget: refuses, and counts how often it was asked.
+budget_case() {  # budget_case <dir>
+  local d="$1" sha
+  mkdir -p "$d/home/p1" "$d/home/p2"
+  setup_agents "$d"
+  new_repo "$d/checkout"
+  sha=$(git -C "$d/checkout" rev-parse HEAD)
+  printf '#### K1 blocking - the write is dropped\ntext\n' > "$d/home/k.md"
+  { printf 'p1|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$sha" "$d/home/k.md"
+    printf 'p2|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$sha" "$d/home/k.md"
+  } > "$d/home/passes.conf"
+  printf '#!/bin/sh\nexit 0\n' > "$d/bin/broke"; chmod +x "$d/bin/broke"
+  cat > "$d/agents.d/broke.sh" <<A
+run_broke() {
+  echo call >> "$d/calls"
+  echo "You've hit your monthly spend limit · raise it at claude.ai/settings/usage"
+  return 1
+}
+A
+}
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+check "budget: asked exactly ONCE"    "[ \$(wc -l < '$D/calls') -eq 1 ]"
+check "budget: says out of budget"    "grep -q 'OUT OF BUDGET, not a rate limit' <<<\"\$OUT\""
+check "budget: aborts the sweep"      "grep -q 'ABORTING the sweep here' <<<\"\$OUT\""
+check "budget: names the pass it quit on" "grep -q \"aborted on 'p1'\" <<<\"\$OUT\""
+check "budget: p2 marked NOT ATTEMPTED"   "grep -q 'p2: NOT ATTEMPTED' <<<\"\$OUT\""
+check "budget: verdict NOTHING MEASURED"  "grep -q 'Verdict: NOTHING MEASURED' <<<\"\$OUT\""
+# ★ THE ONE THAT WOULD HAVE CAUGHT IT. Everything above prints to stdout, and
+# the driver that recorded COMPLETED sent stdout to /dev/null. Only the exit code
+# reaches a shell loop that is not reading.
+check "budget: exit 4, not 0"         "[ '$RC' -eq 4 ]"
+
+# A PARTIAL failure must NOT abort. 1 of 2 runs is still a review worth grading,
+# and aborting there would throw away real output over a flake -- the opposite
+# overcorrection, and just as wrong.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+SLB=$(slug broke)
+printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
+printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 p1 2>&1); RC=$?
+check "partial: run1 still scored"    "grep -q 'K1=HIT' <<<\"\$OUT\""
+check "partial: run2 is UNUSABLE"     "grep -q 'run 2: \*\*UNUSABLE\*\*' <<<\"\$OUT\""
+check "partial: did NOT abort"        "! grep -q 'ABORTING' <<<\"\$OUT\""
+check "partial: exit 0"               "[ '$RC' -eq 0 ]"
+
+echo "== ★ a scoped run is one pass, and must not overwrite the gauntlet report =="
+# THIRD instance of one bug: a report named after less than what identifies it.
+# The judge went into the name, then the whole judge list -- and the pass scope
+# was still missing, so a driver sweeping twelve passes one at a time wrote all
+# twelve to the same path and each truncated the last. The artifact that survived
+# the overnight run was 933 bytes describing the final pass.
+check "scoped: its own report file"   "ls '$D/home'/report-*-only-p1-*.md >/dev/null 2>&1"
+R=$(ls "$D/home"/report-*-only-p1-*.md | head -1)
+check "scoped: says it is one pass"   "grep -q 'Scoped with a pass argument' '$R'"
+# ★ Scoping to the ONLY registered pass excluded nothing, so warning "this is
+# not the benchmark" there would be a false alarm on the smallest real setup.
+# The guard asks what was left out, not whether an argument was passed.
+D2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D2" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D2" good,good2 terse)
+R2=$(ls "$D2/home"/report-*.md | head -1)
+check "scoped: one-pass registry seats" "grep -q 'Verdict: SEAT: can review alone' '$R2'"
+check "scoped: no false scope warning"  "! grep -q 'SCOPED to one pass' '$R2'"
+
+echo "== ★ <runs> is positional, so a flag in that slot is a silent zero =="
+# This tool's own report printed `cadre grade <spec> --rescore`. seq 1 --rescore
+# emits nothing, so zero runs were graded and the verdict read 0/0 about a
+# candidate whose reviews were all on disk.
+OUT=$(CADRE_HOME="$D2/home" CADRE_WORK="$D2/work" CADRE_AGENTS_D="$D2/agents.d" \
+      CADRE_JUDGE=good PATH="$D2/bin:$PATH" "$ROOT/bin/cadre" grade terse --rescore 2>&1); RC=$?
+check "runs: a flag is refused"       "grep -q 'runs must be a whole number' <<<\"\$OUT\""
+check "runs: says there is no flag"   "grep -q 'no --rescore flag' <<<\"\$OUT\""
+check "runs: exits nonzero"           "[ '$RC' -ne 0 ]"
+OUT=$(CADRE_HOME="$D2/home" CADRE_WORK="$D2/work" CADRE_AGENTS_D="$D2/agents.d" \
+      CADRE_JUDGE=good PATH="$D2/bin:$PATH" "$ROOT/bin/cadre" grade terse 0 2>&1)
+check "runs: zero is refused too"     "grep -q 'at least 1' <<<\"\$OUT\""
+# The report must not hand over a command it just refused.
+check "runs: report hint is runnable" "! grep -q 'cadre grade .* --rescore' '$R2'"
 
 echo
 echo "$PASS passed, $FAIL failed"

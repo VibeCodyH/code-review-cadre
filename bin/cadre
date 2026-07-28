@@ -307,6 +307,7 @@ cmd_run() {
   local spec="${1:?usage: cadre run <agent-spec> [runs] [pass-label]}"
   local runs="${2:-2}" only="${3:-}"
   init_home; need_judge; need jq
+  need_runs "$runs"
 
   # A freshly initialised passes.conf is the comment-only template, so -s is
   # true and nothing is registered. Fail at the gate, not four steps later.
@@ -336,6 +337,7 @@ cmd_run() {
 cmd_grade() {
   local spec="${1:?usage: cadre grade <agent-spec> [runs]}" runs="${2:-2}"
   init_home; need_judge; need jq
+  need_runs "$runs"
   run_gauntlet "$spec" "$runs" 1 "${3:-}"
 }
 
