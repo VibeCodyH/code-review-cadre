@@ -81,7 +81,7 @@ mapfile -t SCRUB < <(scrubbed_env)
 
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
-  command -v "$agent" >/dev/null 2>&1 || { echo "  $r: not installed, skipping"; continue; }
+  agent_installed "$agent" || { echo "  $r: not installed, skipping"; continue; }
   m=(); [ -n "$model" ] && m=(-M "$model")
   for n in $(seq 1 "$runs"); do
     f="$OUT/$(slug "$r")-run$n.md"

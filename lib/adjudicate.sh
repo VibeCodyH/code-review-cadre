@@ -97,7 +97,13 @@ run_adjudication() {
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$csl-run$n.md"
       # No review is not "no findings". Say which, the same way grading does.
-      [ -s "$rf" ] || { echo "- run $n: no review to adjudicate" >> "$report"; continue; }
+      # ★ It also counts as unusable. Printing the row but leaving the tally at
+      # zero let the totals say "unusable runs: 0" for a two-run request where
+      # only one run existed, so a one-run sample compared as if it were two.
+      [ -s "$rf" ] || {
+        echo "- run $n: **UNUSABLE** (no review to adjudicate)" >> "$report"
+        unusable=$((unusable + 1)); continue
+      }
       # ★ The adjudicator is IN the filename. Keyed on the candidate alone, a second
       # adjudicator finds the first one's file, skips its own call, and reports the
       # FIRST one's verdicts under its own name -- filing model B's judgement under

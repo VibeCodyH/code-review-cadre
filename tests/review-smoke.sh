@@ -1296,6 +1296,74 @@ check "no raw unbound-variable error" "! grep -q 'unbound variable' <<<\"\$OUT\"
 OUT=$(env -i PATH=/usr/bin:/bin "$ROOT/bin/agentcall" --list 2>&1)
 check "agentcall guards HOME too"    "grep -q 'HOME is unset' <<<\"\$OUT\""
 
+echo "== ★ the panel matrix must not invent coverage =="
+# Three ways the matrix credited a cell it had no right to. All three were found
+# by a codex-led audit of this repo and reproduced before they were fixed.
+#   - K numbers are LOCAL to one key: every pass starts at K1, so alpha's K1
+#     (auth bypass) and beta's K1 (dropped write) shared one cell and a hit on
+#     one reported the other as covered.
+#   - one candidate graded by two judges wrote into the same cell, so the
+#     disagreement that judge-specific filenames exist to preserve vanished.
+#   - an INVALID report's surviving HIT rows still closed coverage gaps,
+#     contradicting the README, which excludes the whole pass from scoring.
+D=$(mktemp -d -p "$SANDBOX"); mkdir -p "$D/home"; : > "$D/home/passes.conf"
+printf '# Gauntlet: `stub`\n\n## alpha\n\n- run 1: K1=HIT K2=MISS, v\n\n## beta\n\n- run 1: K1=MISS, v\n' \
+  > "$D/home/report-stub-by-judgeA.md"
+printf '# Gauntlet: `stub`\n\n## alpha\n\n- run 1: K1=MISS K2=MISS, v\n' \
+  > "$D/home/report-stub-by-judgeB.md"
+printf '# Gauntlet: `leaky`\n\n## alpha\n\n- run 1: K1=HIT K2=HIT, v\n\n## Verdict: INVALID, answer-key leak suspected\n' \
+  > "$D/home/report-leaky-by-judgeA.md"
+OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1)
+check "panel keeps the passes apart"   "grep -q '^pass alpha' <<<\"\$OUT\" && grep -q '^pass beta' <<<\"\$OUT\""
+check "beta K1 is not covered by alpha's" "grep -q 'NOTHING in this lineup catches:.*beta/K1' <<<\"\$OUT\""
+check "both judges get a row"          "[ \$(grep -c 'judge: judge' <<<\"\$OUT\") -ge 3 ]"
+check "and they keep disagreeing"      "grep -q 'judgeA).*HIT' <<<\"\$OUT\" && grep -q 'judgeB).*MISS' <<<\"\$OUT\""
+check "the leaked report is excluded"  "grep -q 'EXCLUDED as suspected key leaks.*leaky' <<<\"\$OUT\""
+check "its HITs credit nothing"        "grep -q 'NOTHING in this lineup catches:.*alpha/K2' <<<\"\$OUT\""
+check "and it gets no row"             "! grep -q '^leaky' <<<\"\$OUT\""
+CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel --save >/dev/null 2>&1
+check "roster lists the seat once"     "[ \$(grep -c '^# stub\$' '$D/home/roster') -eq 1 ]"
+# Every report INVALID is not an empty panel; it must say what happened.
+rm -f "$D/home"/report-stub-*.md "$D/home/roster"
+OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1); RC=$?
+check "all-INVALID refuses to rank"    "[ $RC -ne 0 ] && grep -q 'no scorable reports' <<<\"\$OUT\""
+
+echo "== ★ a registered pass that never ran must reach the report =="
+# It was printed to the scrollback and dropped from the denominator, so the
+# saved report could claim it caught every blocking item in every run while
+# half the registered passes were never graded.
+check "grade records the skip"       "grep -q 'skipped=\"\$skipped- \$label' '$ROOT/lib/grade.sh'"
+check "and the report prints it"     "grep -q 'registered pass(es) NOT GRADED' '$ROOT/lib/grade.sh'"
+check "a short denominator cannot slot" "grep -q 'INCOMPLETE, not slottable' '$ROOT/lib/grade.sh'"
+check "leak verdict still outranks it"  "grep -A4 'nskipped\" -gt 0' '$ROOT/lib/grade.sh' | grep -q 'SLOT:\*|INCONCLUSIVE'"
+# An unquoted DEFER is the judge's claim, not the candidate's behaviour, and
+# DEFER on a blocking item is the one non-tunable disqualifier in the tool.
+check "unquoted DEFER does not disqualify" "grep -q 'unquoted_defer=\$((unquoted_defer + 1))' '$ROOT/lib/grade.sh'"
+check "but it is still surfaced"      "grep -q 'NOT counted as disqualifying' '$ROOT/lib/grade.sh'"
+
+echo "== ★ an absent review is an unusable run, not a quiet zero =="
+check "adjudicate counts it" "grep -B2 'no review to adjudicate' '$ROOT/lib/adjudicate.sh' | grep -q UNUSABLE"
+
+echo "== ★ CADRE_WORK inside CADRE_HOME is refused everywhere =="
+# ../../../keys from a reviewer's own working directory resolved straight into
+# the answer keys. run-pass.sh refused it; the live review path did not, so the
+# check moved into common.sh where every entry point pays it.
+OUT=$(CADRE_HOME="$SANDBOX/wh" CADRE_WORK="$SANDBOX/wh/checkouts" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
+check "containment refused"      "[ $RC -eq 2 ]"
+check "it says why"              "grep -q 'where the answer keys' <<<\"\$OUT\""
+OUT=$(CADRE_HOME="$SANDBOX/wh" CADRE_WORK="$SANDBOX/wk" "$ROOT/bin/cadre" doctor 2>&1)
+check "separate trees are fine"  "! grep -q 'where the answer keys' <<<\"\$OUT\""
+
+echo "== ★ a complete short review of rate-limit code is not a refusal =="
+# The README claims the length guard prevents this. In code, being SHORT was
+# what enabled the keyword match, and a concise real review has no adapter
+# marker to rescue it. A refusal never states a severity-tagged finding.
+Q=$(mktemp -p "$SANDBOX"); printf 'blocking: the 429 too many requests path retries forever.\n' > "$Q"
+CL="bash -c \"CADRE_HOME='$SANDBOX/ch' source '$ROOT/lib/common.sh'; classify_run '$Q' 0\""
+check "short real review stays ok" "[ \"\$(eval $CL)\" = ok ]"
+printf 'rate limit reached. 429 too many requests.\n' > "$Q"
+check "an actual refusal still fails" "[ \"\$(eval $CL)\" = failed ]"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

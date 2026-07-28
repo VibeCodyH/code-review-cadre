@@ -335,50 +335,95 @@ cmd_panel() {
   local reports=("$CADRE_HOME"/report-*.md)
   [ -e "${reports[0]}" ] || die "no graded candidates yet. Run: cadre run <agent>"
 
-  local specs=() items=() r spec line
-  declare -A grade
+  local rows=() passes=() invalid=() r line pass base judge spec rowid
+  declare -A grade seen rowspec passitems
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
-    specs+=("$spec")
+    # ★ An INVALID report measured nothing about the candidate. Its surviving
+    # HIT rows cannot close a coverage gap: the leaked run proves the setup was
+    # compromised, not that this candidate is stronger or weaker than the rest.
+    # README says the whole pass is excluded from scoring. This is the place
+    # that was still spending it.
+    if grep -q '^## Verdict: INVALID' "$r"; then invalid+=("$spec"); continue; fi
+    # ★ Two judges grading one candidate are two OBSERVATIONS, not one. The
+    # report filename carries the judge for exactly this reason; keying the
+    # matrix by candidate alone folded both judges into a single cell and
+    # erased the disagreement those filenames were added to preserve.
+    base=$(basename "$r" .md)
+    case "$base" in *-by-*) judge=${base##*-by-} ;; *) judge="" ;; esac
+    rowid="$spec${judge:+  (judge: $judge)}"
+    [ -n "${seen[row:$rowid]:-}" ] || { rows+=("$rowid"); seen[row:$rowid]=1; rowspec[$rowid]=$spec; }
+    # ★ K numbers are LOCAL to one answer key: every pass starts at K1. Keying
+    # items by number alone folded pass alpha's K1 (auth bypass) together with
+    # pass beta's K1 (dropped write), so a hit on one could report the other as
+    # covered. Columns are per pass from here down.
+    pass="(unlabelled)"
     while IFS= read -r line; do
+      if [ "${line#\#\# }" != "$line" ]; then
+        pass=${line#\#\# }
+        case "$pass" in Verdict:*) pass="" ;; esac
+        continue
+      fi
+      [ -n "$pass" ] || continue
       local kv k v
       for kv in $(grep -oE '\bK[0-9]+=(HIT|DEFER|MISS)' <<<"$line"); do
         k=${kv%%=*}; v=${kv#*=}
-        case " ${items[*]} " in *" $k "*) ;; *) items+=("$k") ;; esac
+        [ -n "${seen[pass:$pass]:-}" ] || { passes+=("$pass"); seen[pass:$pass]=1; }
+        case " ${passitems[$pass]:-} " in
+          *" $k "*) ;; *) passitems[$pass]="${passitems[$pass]:-} $k" ;;
+        esac
         # Best grade this candidate ever achieved on the item. A DEFER is
         # recorded even when another run hit, because a DEFER is the finding.
-        case "${grade[$spec,$k]:-}" in
+        case "${grade[$rowid,$pass,$k]:-}" in
           DEFER) ;;
-          HIT) [ "$v" = DEFER ] && grade[$spec,$k]=DEFER ;;
-          *)   grade[$spec,$k]=$v ;;
+          HIT) [ "$v" = DEFER ] && grade[$rowid,$pass,$k]=DEFER ;;
+          *)   grade[$rowid,$pass,$k]=$v ;;
         esac
       done
     done < "$r"
   done
-  [ ${#specs[@]} -gt 0 ] || die "no readable reports in $CADRE_HOME"
-
-  local k s
-  printf '%-28s' 'CANDIDATE'
-  for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do printf '%-8s' "$k"; done
-  echo
-  for s in "${specs[@]}"; do
-    printf '%-28s' "$s"
-    for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
-      printf '%-8s' "${grade[$s,$k]:-.}"
-    done
+  if [ ${#invalid[@]} -gt 0 ]; then
+    echo "EXCLUDED as suspected key leaks, so they score nothing here: ${invalid[*]}"
+    echo "  Those reports are INVALID. Fix the leak and re-run before comparing them."
     echo
-  done
+  fi
+  [ ${#rows[@]} -gt 0 ] || die "no scorable reports in $CADRE_HOME.
+     Reports exist, but every one of them is INVALID or unreadable."
 
-  echo
-  local gaps=() deferrers=()
-  for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
-    local covered=0
-    for s in "${specs[@]}"; do [ "${grade[$s,$k]:-}" = HIT ] && covered=1; done
-    [ "$covered" -eq 0 ] && gaps+=("$k")
+  # Items of one pass, in numeric order. Unquoted on purpose: word splitting is
+  # how the accumulated list becomes arguments.
+  panel_items() { printf '%s\n' ${passitems[$1]:-} | sed 's/^K//' | sort -n | sed 's/^/K/'; }
+  # $1 is a line prefix so `--save` can write the same matrix commented out.
+  panel_matrix() {
+    local pfx="$1" p ki s
+    for p in "${passes[@]}"; do
+      echo "${pfx}pass $p"
+      printf '%s%-44s' "$pfx" 'CANDIDATE'
+      for ki in $(panel_items "$p"); do printf '%-8s' "$ki"; done
+      echo
+      for s in "${rows[@]}"; do
+        printf '%s%-44s' "$pfx" "$s"
+        for ki in $(panel_items "$p"); do printf '%-8s' "${grade[$s,$p,$ki]:-.}"; done
+        echo
+      done
+      echo "$pfx"
+    done
+  }
+  panel_matrix ''
+
+  local gaps=() deferrers=() p ki s
+  for p in "${passes[@]}"; do
+    for ki in $(panel_items "$p"); do
+      local covered=0
+      for s in "${rows[@]}"; do [ "${grade[$s,$p,$ki]:-}" = HIT ] && covered=1; done
+      [ "$covered" -eq 0 ] && gaps+=("$p/$ki")
+    done
   done
-  for s in "${specs[@]}"; do
-    for k in "${items[@]}"; do
-      [ "${grade[$s,$k]:-}" = DEFER ] && { deferrers+=("$s"); break; }
+  for s in "${rows[@]}"; do
+    for p in "${passes[@]}"; do
+      for ki in $(panel_items "$p"); do
+        [ "${grade[$s,$p,$ki]:-}" = DEFER ] && { deferrers+=("$s"); break 2; }
+      done
     done
   done
 
@@ -419,19 +464,11 @@ cmd_panel() {
     echo "#"
     echo "# Coverage at the time this was written:"
     echo "#"
-    printf '#   %-28s' 'CANDIDATE'
-    for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do printf '%-8s' "$k"; done
-    echo
-    for s in "${specs[@]}"; do
-      printf '#   %-28s' "$s"
-      for k in $(printf '%s\n' "${items[@]}" | sed 's/^K//' | sort -n | sed 's/^/K/'); do
-        printf '%-8s' "${grade[$s,$k]:-.}"
-      done
-      echo
-    done
-    [ ${#gaps[@]} -gt 0 ] && { echo "#"; echo "# ★ NOTHING in this lineup catches: ${gaps[*]}"; }
-    echo "#"
-    for s in "${specs[@]}"; do echo "# $s"; done
+    panel_matrix '#   '
+    [ ${#gaps[@]} -gt 0 ] && { echo "# ★ NOTHING in this lineup catches: ${gaps[*]}"; echo "#"; }
+    # One line per candidate, not per grading. A candidate graded by two judges
+    # is two rows in the matrix above and still one seat on the panel.
+    printf '%s\n' "${rowspec[@]}" | sort -u | sed 's/^/# /'
   } > "$roster" || die "could not write $roster"
   echo
   echo "wrote $roster (all commented). Uncomment your lineup, then: cadre review"
