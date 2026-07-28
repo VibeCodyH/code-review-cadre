@@ -1339,6 +1339,26 @@ rm -f "$D/home"/report-stub-*.md "$D/home/roster"
 OUT=$(CADRE_HOME="$D/home" "$ROOT/bin/cadre" panel 2>&1); RC=$?
 check "all-INVALID refuses to rank"    "[ $RC -ne 0 ] && grep -q 'no scorable reports' <<<\"\$OUT\""
 
+echo "== ★ adapter parity: operator config must not reach a review =="
+# claude.sh drops the OPERATOR's MCP servers in ro mode. codex.sh was still
+# loading $CODEX_HOME/config.toml -- mcp_servers and model overrides included --
+# so a benchmark comparing them compared one model without your MCP servers
+# against another with them, which is a property of the machine and not of
+# either model.
+OUT=$(echo hi | CADRE_AGENTS_D="$ROOT/agents.d" "$ROOT/bin/agentcall" --print-command codex -d /tmp -m ro 2>&1)
+check "codex ro drops user config"  "grep -q -- '--ignore-user-config' <<<\"\$OUT\" || ! codex exec --help 2>&1 | grep -q -- '--ignore-user-config'"
+OUT=$(echo hi | CADRE_AGENTS_D="$ROOT/agents.d" "$ROOT/bin/agentcall" --print-command codex -d /tmp -m rw 2>&1)
+check "and rw is left alone"        "! grep -q -- '--ignore-user-config' <<<\"\$OUT\""
+check "claude ro still drops MCP"   "grep -q -- '--strict-mcp-config' '$ROOT/agents.d/claude.sh'"
+# ★ The gap that is NOT closed must stay written down. Probed 2026-07-28: under
+# -s read-only codex still holds collaboration.spawn_agent and web.run, and the
+# obvious feature flags do not remove them. An unrecorded asymmetry is what
+# makes a comparison wrong while it still looks right -- the advisor hole voided
+# a whole round exactly that way.
+check "codex records the open hole" "grep -q 'collaboration.spawn_agent' '$ROOT/agents.d/codex.sh'"
+check "and says the sandbox misses it" "grep -q 'governs model-generated SHELL' '$ROOT/agents.d/codex.sh'"
+check "and names the failed flags"  "grep -q 'all three no-ops here' '$ROOT/agents.d/codex.sh'"
+
 echo "== ★ coverage from a cell the candidate's own runs disagreed on =="
 # The matrix takes the BEST grade across runs, which is right for staffing -- a
 # reviewer that finds the bug half the time still finds it -- but collapsing to
