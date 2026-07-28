@@ -35,6 +35,24 @@ extract_json() {
   '
 }
 
+# ★ The fallback for what the scan above cannot parse: an UNBALANCED brace
+# inside a JSON string. "The judge's format never has them" stopped being true
+# the day `quotes` became required -- a verbatim reviewer sentence about shell
+# or C code carries a lone { or } routinely, the depth count never returns to
+# zero, and a valid grade was recorded UNUSABLE with the judge blamed for it.
+# Same shape cmd_settle already uses: drop fence lines, slice first { to last
+# }, let jq be the arbiter. Tried second, not first, because on a reply that
+# echoes prompt text with braces the balanced scan finds the clean object and
+# this slice would not.
+extract_json_relaxed() {
+  sed -e '/^[[:space:]]*```/d' \
+  | awk 'BEGIN{RS="\0"} {
+      i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
+      for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
+      exit 1
+    }'
+}
+
 grade_one() {
   local keyfile="$1" review="$2" out="$3" raw attempt=1 w
   [ -s "$review" ] || { echo "$UNUSABLE" > "$out"; return; }
@@ -51,12 +69,23 @@ grade_one() {
     sleep "$w"
     attempt=$((attempt + 1))
   done
+  # ★ `.items` must exist, not just "any valid JSON". A provider error like
+  # {"error":"quota exhausted"} parses fine, `.unusable // false` reads false,
+  # and every missing item defaults to MISS -- a judge outage published as a
+  # plausible 0/N candidate score. Requiring the one key the rubric promises
+  # turns that into UNUSABLE with the raw reply kept.
+  local parsed=0
   printf '%s' "$raw" | extract_json > "$out" 2>/dev/null
+  jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
+  if [ "$parsed" -eq 0 ]; then
+    printf '%s' "$raw" | extract_json_relaxed > "$out" 2>/dev/null
+    jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
+  fi
   # ★ Keep what the judge actually said when it does not parse. UNUSABLE with no
   # record is indistinguishable from a broken judge, a bad key, and a real
   # refusal. Measured: a judge CLI that will not start outside a git repo failed
   # on every call and reported UNUSABLE across the board with no reason given.
-  jq -e . "$out" >/dev/null 2>&1 || {
+  [ "$parsed" -eq 1 ] || {
     printf '%s' "$raw" > "$out.judge-raw"
     echo "$UNUSABLE" > "$out"
   }
@@ -74,14 +103,7 @@ leak_check() {
   echo "$n"
 }
 
-# Findings the review states, counted in the two shapes reviewers actually emit:
-#   codex        1. **blocking** - [file:line](...)
-#   grok/claude  ### 1. blocking - ...
-# Deliberately loose. It backs a check that only fires when the count is >= 2,
-# so over-counting a stray line costs nothing and under-counting hides a bug.
-review_findings() {
-  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *\**(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
-}
+# review_findings() lives in lib/common.sh now: classify_run uses it too.
 
 # ★ A judge that credits nothing in the key, lists no extras, and is reading a
 # review that states two or more findings did not read that review. Measured: on
@@ -152,6 +174,7 @@ run_gauntlet() {
   local report="$CADRE_HOME/report-$sl-by-$jsl.md"
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
+  local skipped="" nskipped=0 unquoted_defer=0
 
   {
     echo "# Gauntlet: \`$spec\`"
@@ -171,11 +194,24 @@ run_gauntlet() {
 
     local keyfile="$key"
     case "$keyfile" in /*) ;; *) keyfile="$CADRE_HOME/$key" ;; esac
-    [ -f "$keyfile" ] || { echo "  $label: no key at $keyfile, skipping"; continue; }
+    # ★ A skipped pass goes IN THE REPORT, not just the scrollback. Omitting it
+    # silently shrank the denominator: one deleted checkout of two turned
+    # "caught every blocking item in every run" into a claim about half the
+    # benchmark, and the saved artifact carried no trace of the half that
+    # never ran.
+    if [ ! -f "$keyfile" ]; then
+      echo "  $label: no key at $keyfile, NOT GRADED"
+      skipped="$skipped- $label: key missing at $keyfile"$'\n'; nskipped=$((nskipped + 1))
+      continue
+    fi
 
     local target="$dir"
     case "$target" in /*) ;; *) target="$CADRE_HOME/$dir" ;; esac
-    [ -d "$target" ] || { echo "  $label: no checkout at $target, skipping"; continue; }
+    if [ ! -d "$target" ]; then
+      echo "  $label: no checkout at $target, NOT GRADED"
+      skipped="$skipped- $label: checkout missing at $target"$'\n'; nskipped=$((nskipped + 1))
+      continue
+    fi
 
     # Refuse at RUN time, not just in doctor. A key inside the reviewed tree is
     # the answer sitting in the reviewer's working copy.
@@ -296,7 +332,20 @@ run_gauntlet() {
         if [ "$sev" = blocking ]; then
           blocking_total=$((blocking_total + 1))
           [ "$v" = HIT ]   && blocking_hit=$((blocking_hit + 1))
-          [ "$v" = DEFER ] && defer_on_blocking=$((defer_on_blocking + 1))
+          # ★ A DEFER disqualifies outright, so it must carry the sentence that
+          # earned it. An unquoted DEFER cannot be re-checked by anyone, and
+          # this harness's graders have split one item in three -- letting a
+          # single unverifiable judge call zero a candidate is a grading
+          # artifact wearing a safety rule's clothes. Flagged and NOT counted
+          # as disqualifying; re-grade it.
+          if [ "$v" = DEFER ]; then
+            local dq; dq=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "$gf")
+            if [ -n "$dq" ] && [ "$dq" != null ]; then
+              defer_on_blocking=$((defer_on_blocking + 1))
+            else
+              unquoted_defer=$((unquoted_defer + 1))
+            fi
+          fi
         fi
         row="$row $k=$v"
       done
@@ -349,6 +398,19 @@ run_gauntlet() {
     reason="Caught only $blocking_hit/$blocking_total blocking items and never deferred. Limited rather than dangerous, but not carrying its cost."
   fi
 
+  # ★ A short denominator cannot recommend a seat. If a registered pass never
+  # ran, "hit every blocking item" describes the passes that survived, not the
+  # benchmark that was asked for. Disqualifying verdicts stand: a leak or a
+  # DEFER on a blocking item is evidence already in hand, and a missing pass
+  # does not undo it.
+  if [ "$nskipped" -gt 0 ]; then
+    case "$slot" in
+      SLOT:*|INCONCLUSIVE)
+        reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. Restore the missing keys or checkouts and re-run before slotting anything. On the passes that did run: $reason"
+        slot="INCOMPLETE, not slottable" ;;
+    esac
+  fi
+
   {
     echo "## Verdict: $slot"
     echo
@@ -359,6 +421,22 @@ run_gauntlet() {
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"
     echo "- runs excluded as suspected key leaks: $suspect"
+    if [ "$unquoted_defer" -gt 0 ]; then
+      echo "- DEFER on a blocking item with no quote, so NOT counted as disqualifying: $unquoted_defer"
+      echo "  (the judge said the candidate argued the bug away but did not quote"
+      echo "  where. Read the review yourself before slotting; an unverifiable"
+      echo "  DEFER is the judge's claim, not the candidate's behaviour.)"
+    fi
+    if [ "$nskipped" -gt 0 ]; then
+      echo
+      echo "### ⚠ $nskipped registered pass(es) NOT GRADED"
+      echo
+      printf '%s' "$skipped"
+      echo
+      echo "Every number above is over the passes that ran. The benchmark you"
+      echo "registered is larger. Restore the missing key or checkout and re-run"
+      echo "before comparing this candidate against one scored on the full set."
+    fi
     if [ -n "$extras_all" ]; then
       echo
       echo "### Out-of-key findings (grade these by hand)"

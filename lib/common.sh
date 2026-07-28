@@ -22,6 +22,16 @@ export CADRE_HOME="${CADRE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/cadre}"
 # answer. Scrubbing the environment does nothing about that. docs/METHOD.md §5.
 [ -n "${CADRE_WORK:-}" ] || [ -n "${XDG_CACHE_HOME:-}" ] || _need_home CADRE_WORK XDG_CACHE_HOME
 export CADRE_WORK="${CADRE_WORK:-${XDG_CACHE_HOME:-$HOME/.cache}/cadre/checkouts}"
+# ★ Enforced HERE, once, so both tracks inherit it. run-pass.sh refused a
+# nested checkout; the live path never did, so CADRE_WORK=$CADRE_HOME/checkouts
+# quietly reopened the `cat ../../keys/...` hole on the flagship command.
+case "$(readlink -m "$CADRE_WORK")/" in
+  "$(readlink -m "$CADRE_HOME")"/*)
+    echo "cadre: CADRE_WORK ($CADRE_WORK) is inside CADRE_HOME ($CADRE_HOME).
+     A reviewer's own working directory would spell out where the answer keys
+     are. Point CADRE_WORK at a separate tree." >&2
+    exit 2 ;;
+esac
 CADRE_JUDGE="${CADRE_JUDGE:-}"
 
 die() { echo "cadre: $*" >&2; exit 2; }
@@ -111,7 +121,12 @@ judge_call() {
   local a m mm=()
   a=$(spec_agent "$CADRE_JUDGE"); m=$(spec_model "$CADRE_JUDGE")
   [ -n "$m" ] && mm=(-M "$m")
-  "$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro
+  # Scrubbed like every other model call. The judge is handed the key by
+  # design, but CADRE_WORK in its environment is still a map to trees it has
+  # no business in -- the same rule adjudicate_one already follows.
+  local sc; mapfile -t sc < <(scrubbed_env)
+  "${sc[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
+    "$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro
 }
 
 # Test command for the review brief. Empty result drops that paragraph.
@@ -271,7 +286,12 @@ secrets_preflight() {
               ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
               ! -name '*.dist' ! -name '*.tmpl' \) -print 2>>"$errs" \
          | while IFS= read -r f; do
-             if [ ! -r "$f" ] || grep -qiE '_auth|_password|"auth"|password|machine[[:space:]]' "$f"; then
+             # A value that is an env-var REFERENCE carries no credential:
+             # `_authToken=${NPM_TOKEN}` is the standard committed-safe .npmrc
+             # line, and refusing on it is the "tool looks broken" failure
+             # again. A literal value after the auth key still refuses.
+             if [ ! -r "$f" ] || grep -iE '_auth|_password|"auth"|password|machine[[:space:]]' "$f" \
+                                  | grep -qvE '=[[:space:]]*"?\$\{?[A-Za-z_]'; then
                printf '%s\n' "$f"
              fi
            done | head -40)
@@ -295,6 +315,17 @@ secrets_preflight() {
     echo "if you have decided these are safe to expose."
   } >&2
   exit 3
+}
+
+# Findings the review states, counted in the two shapes reviewers actually emit:
+#   codex        1. **blocking** - [file:line](...)
+#   grok/claude  ### 1. blocking - ...
+# Deliberately loose. Callers only ever compare against small thresholds, so
+# over-counting a stray line costs nothing and under-counting hides a bug.
+# Lives here, not grade.sh: classify_run needs it and run-pass/run-review
+# source only this file.
+review_findings() {
+  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *\**(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
 }
 
 # Does this output look like a rate-limit refusal rather than a review?
@@ -409,7 +440,13 @@ classify_run() {
   # of a synth slot.
   if [ "$ctx" = run ] && tail -3 "$f" | grep -qE '^_TRUNCATED'; then echo degraded; return 0; fi
   if [ "$ctx" = run ]; then
-    if rate_limited "$f"; then echo failed; return 0; fi
+    # ★ ...and a refusal never states a severity-tagged finding. A COMPLETE
+    # short review of rate-limiter code says "429" while listing findings, has
+    # no adapter marker to rescue it, and was binned failed -- the README's
+    # length-guard claim was only true above 2KB. A refusal that happens to
+    # open with "critical:" slips through here and lands on the judge instead,
+    # which is the cheaper direction: a destroyed real review is unrecoverable.
+    if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
   fi
@@ -437,10 +474,14 @@ retry_wait() {
 # leaving the variable in the environment routed around it. Nothing downstream
 # of the scrub needs it: the runner resolves the work dir before dispatch and
 # hands each agent its own -d.
+# NOT scrubbed: CADRE_TIMEOUT (agentcall reads it from its own environment to
+# size the timeout) and CADRE_PASS_BASE (adapters need it, it is only a git rev).
 CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE
                  CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
                  CADRE_PASS_DIR CADRE_AGENTS_D CADRE_WORK
-                 CADRE_PRERUN CADRE_PRERUN_TIMEOUT)
+                 CADRE_PRERUN CADRE_PRERUN_TIMEOUT
+                 CADRE_ADJUDICATOR CADRE_LEDGER CADRE_ROSTER
+                 CADRE_SYNTH CADRE_SYNTH_MAX)
 scrubbed_env() {
   local a=(env) v
   for v in "${CADRE_SCRUB_ENV[@]}"; do a+=(-u "$v"); done

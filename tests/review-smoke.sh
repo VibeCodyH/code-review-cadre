@@ -319,6 +319,7 @@ echo "== ★ a judge that did not read the review must not be scored =="
 # -- the only record of a reviewer finding a real defect the key never asked
 # about -- was silently zeroed. Over the 45 runs graded before this existed it
 # fires exactly once, and never on a run that credited a key item.
+CADRE_ROOT="$ROOT" CADRE_HOME="$SANDBOX/home" . "$ROOT/lib/common.sh"
 CADRE_ROOT="$ROOT" . "$ROOT/lib/grade.sh"
 J=$(mktemp -d -p "$SANDBOX")
 # The two shapes reviewers actually emit, one per file.
