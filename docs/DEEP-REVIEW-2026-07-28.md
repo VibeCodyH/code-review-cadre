@@ -152,6 +152,41 @@ read as "not installed" and quietly shrank the run. An absent review in the open
 track printed its row without incrementing `unusable`, so the totals said
 "unusable runs: 0" for a two-run request with one review.
 
+## Scope, expanded at the same time
+
+`cadre review` was diff-only, which came up because a session asked it to review
+something that was not a change and was told the tool did not do that. It does
+now: `cadre review --full <target>` takes a repo, a subdirectory, a directory
+that is not a repo at all, or a single file.
+
+Worth recording *why* it is not simply the diff path with the diff turned off.
+Target mode shows reviewers strictly **more** than a diff review does — the
+whole tree rather than what changed — so it is built around that rather than
+around reusing the existing plumbing:
+
+- Nothing is fetched or cloned. Only the named files are copied, so history
+  cannot leak because it is never transferred in any form. This is a stronger
+  guarantee than the diff path's synthetic two-commit repo, not a weaker one.
+- `.gitignore` is honoured even when the target is not a repo, and applied to
+  the **worktree** rather than only the index. `git add` skips an ignored file,
+  which keeps it out of the diff and leaves it sitting in the directory every
+  reviewer runs in — and `secrets_preflight` skips ignored files too, so an
+  ignored `.env` would have passed the credential check and still been readable.
+- There is a size ceiling, refused before any reviewer exists, and the error
+  names the biggest directories because the real mistake is almost always a
+  `node_modules` or a `vendor` nobody meant to include. Every reviewer reads all
+  of it, so a target is a bill as much as a review.
+- `files.txt` records what the reviewers saw. The checkout is a temp directory
+  that gets deleted, so otherwise nothing afterwards would say what
+  `--full ./docs` actually covered.
+- A separate brief. A reviewer told to review a change reports on volume: handed
+  a whole tree under the diff brief, it treats every file as new work and scales
+  its findings to the file count.
+
+`--scope`, `--ask` and `--brief` were designed alongside this and deliberately
+not built yet. `--full` alone answers the actual complaint, and a committed
+one-flag version is worth more than an unfinished five-flag one.
+
 ## What I did not fix
 
 Ranked by what I would do next.
