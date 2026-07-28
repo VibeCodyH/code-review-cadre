@@ -87,6 +87,31 @@ export CADRE_JUDGE=opencode:cerebras/gpt-oss-120b
 cadre run coderabbit 2
 ```
 
+**Use two of them.** `CADRE_JUDGE` takes a comma-separated pair, and both grade
+every run:
+
+```bash
+export CADRE_JUDGE='opencode:cerebras/gpt-oss-120b,opencode:ollama/qwen3-judge'
+```
+
+An item they agree on is the grade. An item they **split** on is `UNRESOLVED`:
+it scores nothing, and the report states a range instead of a number. This is
+not belt-and-braces. Measured here, two graders over the same nine reviews split
+on **one item in three**, and three readers scored one candidate 2/6, 4/6 and
+6/6 ordered by nothing but leniency — so a single judge's reading is a
+hypothesis about a candidate, not a measurement of it.
+
+There is deliberately no tie-break, because a tie-break makes one grader
+authoritative for exactly the items where graders are least reliable. And a
+split is a finding about your **key**, not about either judge: it says the key's
+credit boundary does not decide that item. The report prints both readings side
+by side so you can tell which fix it needs — judges quoting different sentences
+means the boundary is loose, quoting the same sentence two ways means the
+wording is ambiguous. Tighten the key, then re-grade.
+
+Judges are free, so the second one usually costs nothing but wall time. One
+judge still works; the report just says out loud that it is one reading.
+
 ### Free tiers worth pointing Cadre at
 
 Rate limits as of July 2026. They move, so check the provider before you plan

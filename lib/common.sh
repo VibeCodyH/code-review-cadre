@@ -117,6 +117,24 @@ spec_family() {
 # Run $CADRE_JUDGE on stdin. It takes the same agent:provider/model spec a
 # candidate does, so the judge model is choosable: the judge is a model too, and
 # a free one is enough for it. agentcall itself takes -M, not the spec form.
+# ★ CADRE_JUDGE may name TWO judges, comma separated, and two is the supported
+# way to grade. One judge's reading of a review is a hypothesis about the
+# candidate, not a measurement: two graders on this harness split on about ONE
+# ITEM IN THREE. The rule that follows from that is not "break the tie" -- it is
+# that an item they disagree on scores nothing and the disagreement is evidence
+# the KEY is underspecified. docs/METHOD.md §3.
+judge_specs() {
+  local raw="${CADRE_JUDGE:-}" j out=() seen=" "
+  raw=${raw//,/$'\n'}
+  while IFS= read -r j; do
+    j=$(trim "$j"); [ -n "$j" ] || continue
+    case "$seen" in *" $j "*) continue ;; esac
+    seen="$seen$j "; out+=("$j")
+  done <<< "$raw"
+  [ ${#out[@]} -gt 0 ] && printf '%s\n' "${out[@]}"
+  return 0
+}
+
 judge_call() {
   local a m mm=()
   a=$(spec_agent "$CADRE_JUDGE"); m=$(spec_model "$CADRE_JUDGE")

@@ -125,6 +125,17 @@ judge_incoherent() {
   [ "$(review_findings "$rf")" -ge 2 ]
 }
 
+# Which band a hit count falls in. Named so the range logic can ask the question
+# at both ends and compare, rather than duplicating the thresholds.
+slot_band() {
+  local hit="$1" total="$2"
+  if   [ "$total" -eq 0 ];            then echo inconclusive
+  elif [ "$hit" -eq "$total" ];       then echo primary
+  elif [ $((hit * 2)) -ge "$total" ]; then echo secondary
+  else                                     echo "do not slot"
+  fi
+}
+
 # Severity comes from the key's item heading, so a new pass needs no code change.
 key_severity() {
   local keyfile="$1" item="$2"
@@ -170,16 +181,32 @@ run_gauntlet() {
   # graders over the same reviews and compare per item -- destroys its own control
   # group as it runs. Slug the FULL spec, not spec_agent: `opencode:ollama/qwen3-judge`
   # and `opencode:ollama/qwen3:14b` are both `opencode` and would collide.
-  local jsl; jsl=$(slug "$CADRE_JUDGE")
+  local judges=(); mapfile -t judges < <(judge_specs)
+  # ★ The slug of the WHOLE judge list, not of the first judge. A report
+  # reconciles every judge that graded, so a report named after one of them lets
+  # a (A,B) grading overwrite an (A,C) grading -- the same collision that
+  # putting the judge in the filename was added to prevent, reintroduced one
+  # level up the moment a second judge became possible. Identical to the old
+  # name when there is one judge, so existing artifacts keep resolving.
+  local jsl; jsl=$(slug "$(IFS=,; printf '%s' "${judges[*]}")")
   local report="$CADRE_HOME/report-$sl-by-$jsl.md"
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
+  local blocking_unresolved=0 total_unresolved=0 split_notes=""
 
   {
     echo "# Gauntlet: \`$spec\`"
     echo
-    echo "Judge: \`$CADRE_JUDGE\`. $runs run(s) per pass. Rubric: lib/prompts/judge.md."
+    if [ "${#judges[@]}" -gt 1 ]; then
+      echo "Judges: \`${judges[0]}\` and \`${judges[1]}\`. $runs run(s) per pass. Rubric: lib/prompts/judge.md."
+      echo
+      echo "Both graded every run. An item they agree on is the grade. An item they"
+      echo "split on is **UNRESOLVED**: it scores nothing, and the split is evidence"
+      echo "the KEY is underspecified rather than a tie to be broken."
+    else
+      echo "Judge: \`${judges[0]}\`. $runs run(s) per pass. Rubric: lib/prompts/judge.md."
+    fi
     echo
   } > "$report"
 
@@ -259,7 +286,15 @@ run_gauntlet() {
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
         continue
       fi
-      local gf="$CADRE_HOME/$label/$sl-run$n.by-$jsl.grade.json"
+      local leaked; leaked=$(leak_check "$keyfile" "$rf")
+      if [ "$leaked" -ge 2 ]; then
+        suspect=$((suspect + 1))
+        echo "- run $n: **★ SUSPECT, quotes $leaked key items verbatim**, this reviewer" >> "$report"
+        echo "  probably read the answer key rather than finding the defects. NOT scored." >> "$report"
+        continue
+      fi
+
+      # ---- grade this run with EVERY judge ------------------------------------
       # `cadre grade` means RE-grade. A stale grade file would make a corrected
       # key produce identical numbers, the one thing a rescore rules out.
       #
@@ -272,75 +307,99 @@ run_gauntlet() {
       # is the same delete-before-write shape that `45211c9` fixed one layer up,
       # and losing a graded artifact is the most expensive failure here: the
       # review can be re-graded, but a baseline nobody kept cannot be recovered.
-      if [ "$rescore" = 1 ] || [ ! -s "$gf" ]; then
-        grade_one "$keyfile" "$rf" "$gf.new"
-        if [ -s "$gf.new" ]; then
-          mv -f "$gf.new" "$gf"
-          if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.judge-raw"
-          else rm -f "$gf.judge-raw"; fi
+      local gfs=() bad="" savedj="$CADRE_JUDGE"
+      local j js gf
+      for j in "${judges[@]}"; do
+        CADRE_JUDGE="$j"
+        js=$(slug "$j")
+        gf="$CADRE_HOME/$label/$sl-run$n.by-$js.grade.json"
+        if [ "$rescore" = 1 ] || [ ! -s "$gf" ]; then
+          grade_one "$keyfile" "$rf" "$gf.new"
+          if [ -s "$gf.new" ]; then
+            mv -f "$gf.new" "$gf"
+            if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.judge-raw"
+            else rm -f "$gf.judge-raw"; fi
+          else
+            rm -f "$gf.new" "$gf.new.judge-raw"
+          fi
+        fi
+        if [ ! -s "$gf" ] || [ "$(jq -r '.unusable // false' "$gf")" = true ]; then
+          local why2="empty, truncated, or an error, NOT a clean pass"
+          if [ -s "$gf.judge-raw" ]; then
+            why2="its reply did not parse, see $(basename "$gf").judge-raw"
+            # ★ An EXHAUSTED judge is not a broken judge, and saying "did not parse"
+            # about a quota message is the mislabeling this tool exists to catch.
+            # grade_one already retried and gave up, so the raw is the provider's
+            # refusal, not JSON that came out wrong. Measured: copilot replied "You
+            # have exceeded your monthly quota" on all nine runs of a second-grader
+            # comparison and the report blamed its JSON -- which sent the reader
+            # looking for a wrapper bug in an adapter that was working fine.
+            rate_limited "$gf.judge-raw" &&
+              why2="★ RATE-LIMITED or OUT OF QUOTA after ${CADRE_RETRIES:-3} attempts, so this is a judge outage and NOT a fact about the candidate"
+          fi
+          bad="$bad$j: $why2; "
+        elif judge_incoherent "$gf" "$rf"; then
+          # Not scored rather than scored wrong: see judge_incoherent. The item
+          # verdicts on such a run may happen to be right, but they were not
+          # reliably arrived at, and a re-grade is one command.
+          bad="$bad$j: credited no key item and listed no extras against a review stating $(review_findings "$rf") findings, so it did not read this review; "
         else
-          rm -f "$gf.new" "$gf.new.judge-raw"
+          gfs+=("$gf")
         fi
-      fi
+      done
+      CADRE_JUDGE="$savedj"
 
-      local leaked; leaked=$(leak_check "$keyfile" "$rf")
-      if [ "$leaked" -ge 2 ]; then
-        suspect=$((suspect + 1))
-        echo "- run $n: **★ SUSPECT, quotes $leaked key items verbatim**, this reviewer" >> "$report"
-        echo "  probably read the answer key rather than finding the defects. NOT scored." >> "$report"
-        continue
-      fi
-
-      if [ "$(jq -r '.unusable // false' "$gf")" = true ]; then
+      # ★ EVERY judge has to have produced a usable grade. Reconciling one
+      # judge's reading against a missing one is a single-judge score wearing a
+      # two-judge label, and an outage is not a measurement. The usable grade
+      # stays on disk, so a re-grade after the quota resets costs one call.
+      if [ -n "$bad" ]; then
         unusable=$((unusable + 1))
-        local why2="empty, truncated, or an error, NOT a clean pass"
-        if [ -s "$gf.judge-raw" ]; then
-          why2="the judge's reply did not parse, see $(basename "$gf").judge-raw"
-          # ★ An EXHAUSTED judge is not a broken judge, and saying "did not parse"
-          # about a quota message is the mislabeling this tool exists to catch.
-          # grade_one already retried and gave up, so the raw is the provider's
-          # refusal, not JSON that came out wrong. Measured: copilot replied "You
-          # have exceeded your monthly quota" on all nine runs of a second-grader
-          # comparison and the report blamed its JSON -- which sent the reader
-          # looking for a wrapper bug in an adapter that was working fine.
-          rate_limited "$gf.judge-raw" &&
-            why2="★ the judge is RATE-LIMITED or OUT OF QUOTA after ${CADRE_RETRIES:-3} attempts, so this is a
-  judge outage and NOT a fact about the candidate. Do not read the totals below
-  as a score. See $(basename "$gf").judge-raw"
-        fi
-        echo "- run $n: **UNUSABLE** ($why2)" >> "$report"
-        continue
-      fi
-
-      # Not scored rather than scored wrong: see judge_incoherent. The item
-      # verdicts on such a run may happen to be right, but they were not
-      # reliably arrived at, and a re-grade is one command.
-      if judge_incoherent "$gf" "$rf"; then
-        unusable=$((unusable + 1))
-        echo "- run $n: **UNUSABLE** (the judge credited no key item and listed no" >> "$report"
-        echo "  extras against a review stating $(review_findings "$rf") findings, so it did not read this" >> "$report"
-        echo "  review. Re-grade with \`cadre grade --rescore\`.)" >> "$report"
+        echo "- run $n: **UNUSABLE** (${bad%; })" >> "$report"
+        [ "${#gfs[@]}" -gt 0 ] &&
+          echo "  The other judge's grade is on disk and was NOT discarded; \`cadre grade --rescore\` re-runs only what is missing." >> "$report"
         continue
       fi
 
       local row="" k v sev
       for k in $items; do
-        v=$(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gf")
         sev=$(key_severity "$keyfile" "$k")
+        # ★ THE GATE. Every judge's verdict on this item; they agree or it is
+        # UNRESOLVED. There is deliberately no tie-break: a tie-break makes one
+        # grader authoritative for exactly the items where graders are known to
+        # be unreliable, which is backwards. An UNRESOLVED item scores neither
+        # way and is reported as a range, and the split is a finding about the
+        # KEY -- the fix is tightening its credit boundary, not swapping judges.
+        local vs=() gg
+        for gg in "${gfs[@]}"; do
+          vs+=("$(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gg")")
+        done
+        v="${vs[0]}"
+        local x
+        for x in "${vs[@]}"; do [ "$x" = "$v" ] || v=UNRESOLVED; done
+
         total_items=$((total_items + 1))
-        [ "$v" = HIT ] && total_hit=$((total_hit + 1))
+        [ "$v" = HIT ]        && total_hit=$((total_hit + 1))
+        [ "$v" = UNRESOLVED ] && total_unresolved=$((total_unresolved + 1))
         if [ "$sev" = blocking ]; then
           blocking_total=$((blocking_total + 1))
-          [ "$v" = HIT ]   && blocking_hit=$((blocking_hit + 1))
+          [ "$v" = HIT ]        && blocking_hit=$((blocking_hit + 1))
+          [ "$v" = UNRESOLVED ] && blocking_unresolved=$((blocking_unresolved + 1))
           # ★ A DEFER disqualifies outright, so it must carry the sentence that
           # earned it. An unquoted DEFER cannot be re-checked by anyone, and
           # this harness's graders have split one item in three -- letting a
           # single unverifiable judge call zero a candidate is a grading
           # artifact wearing a safety rule's clothes. Flagged and NOT counted
-          # as disqualifying; re-grade it.
+          # as disqualifying; re-grade it. With two judges this needs BOTH to
+          # have said DEFER (that is what reaching here means) and at least one
+          # of them to have quoted where.
           if [ "$v" = DEFER ]; then
-            local dq; dq=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "$gf")
-            if [ -n "$dq" ] && [ "$dq" != null ]; then
+            local dq="" q1
+            for gg in "${gfs[@]}"; do
+              q1=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "$gg")
+              [ -n "$q1" ] && [ "$q1" != null ] && dq="$q1"
+            done
+            if [ -n "$dq" ]; then
               defer_on_blocking=$((defer_on_blocking + 1))
             else
               unquoted_defer=$((unquoted_defer + 1))
@@ -349,11 +408,23 @@ run_gauntlet() {
         fi
         row="$row $k=$v"
       done
-      local verdict ex
-      verdict=$(jq -r '.verdict // "none"' "$gf")
-      ex=$(jq -r '(.extras // []) | join("; ")' "$gf")
-      [ -n "$ex" ] && extras_all="$extras_all- $label run $n: $ex"$'\n'
+
+      # The verdict line and extras come from every judge, because "the judge
+      # found nothing out of key" is a per-judge fact and merging them would
+      # invent a consensus that was never reached.
+      local verdict="" ex="" i
+      for i in "${!gfs[@]}"; do
+        local vv xx
+        vv=$(jq -r '.verdict // "none"' "${gfs[$i]}")
+        xx=$(jq -r '(.extras // []) | join("; ")' "${gfs[$i]}")
+        verdict="${verdict:+$verdict | }$vv"
+        [ -n "$xx" ] && {
+          ex="${ex:+$ex; }$xx"
+          extras_all="$extras_all- $label run $n (${judges[$i]}): $xx"$'\n'
+        }
+      done
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
+
       # ★ Print the sentence that earned each HIT. Without it a grade is a verdict
       # nobody can re-check: two graders split on one item in three here and the
       # artifacts could not say whether they credited different sentences or read
@@ -361,14 +432,43 @@ run_gauntlet() {
       # exactly the loop that stopped being self-correcting. An unquoted HIT is
       # still counted (the grade is the judge's to make) but it is marked, because
       # it is the shape a credit-by-adjacency takes.
+      #
+      # ★ On a split, print BOTH readings side by side. That is the whole payload
+      # of this gate: seeing that two judges quoted DIFFERENT sentences tells you
+      # the key's boundary is loose, and seeing them quote the SAME sentence two
+      # ways tells you the wording is ambiguous. Those need different fixes, and
+      # neither is "pick a judge".
       for k in $items; do
-        case "$(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gf")" in HIT|DEFER) ;; *) continue ;; esac
-        local q; q=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "$gf")
-        if [ -n "$q" ] && [ "$q" != null ]; then
-          echo "  - $k ↳ \"$q\"" >> "$report"
-        else
-          echo "  - $k ⚠ credited with NO quote, so this grade cannot be re-checked" >> "$report"
+        local kv2=""
+        for gg in "${gfs[@]}"; do
+          kv2="$kv2 $(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gg")"
+        done
+        local uniq2; uniq2=$(printf '%s\n' $kv2 | sort -u | grep -c .)
+        if [ "$uniq2" -gt 1 ]; then
+          echo "  - $k **UNRESOLVED**, the judges read this item differently, so it scores nothing:" >> "$report"
+          for i in "${!gfs[@]}"; do
+            local jv jq2
+            jv=$(jq -r --arg k "$k" '.items[$k] // "MISS"' "${gfs[$i]}")
+            jq2=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "${gfs[$i]}")
+            if [ -n "$jq2" ] && [ "$jq2" != null ]; then
+              echo "    - ${judges[$i]}: $jv ↳ \"$jq2\"" >> "$report"
+            else
+              echo "    - ${judges[$i]}: $jv (no quote)" >> "$report"
+            fi
+          done
+          split_notes="$split_notes- $label run $n $k ($(printf '%s' "$kv2" | sed 's/^ //; s/ / vs /g'))"$'\n'
+          continue
         fi
+        case "${kv2# }" in HIT*|DEFER*) ;; *) continue ;; esac
+        for i in "${!gfs[@]}"; do
+          local q; q=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "${gfs[$i]}")
+          local who=""; [ "${#gfs[@]}" -gt 1 ] && who=" (${judges[$i]})"
+          if [ -n "$q" ] && [ "$q" != null ]; then
+            echo "  - $k$who ↳ \"$q\"" >> "$report"
+          else
+            echo "  - $k$who ⚠ credited with NO quote, so this grade cannot be re-checked" >> "$report"
+          fi
+        done
       done
     done
     echo >> "$report"
@@ -377,6 +477,13 @@ run_gauntlet() {
   [ "$graded_passes" -gt 0 ] || { echo "no passes graded. Check 'cadre passes'"; return 1; }
 
   # ---- slot recommendation -------------------------------------------------
+  #
+  # ★ With an UNRESOLVED item there is no single hit count, so there is no single
+  # slot. The rule is to work out the slot at BOTH ends of the range and only
+  # state one when they agree: if resolving every contested item one way would
+  # seat this candidate and the other way would not, the honest answer is that
+  # the key cannot yet tell. That is the whole point of not breaking the tie.
+  local bhigh=$((blocking_hit + blocking_unresolved))
   local slot reason
   if [ "$suspect" -gt 0 ]; then
     slot="INVALID, answer-key leak suspected"
@@ -387,12 +494,21 @@ run_gauntlet() {
   elif [ "$blocking_total" -eq 0 ]; then
     slot="INCONCLUSIVE"
     reason="No blocking items were graded. Check the passes registry and the severity words in your keys."
+  elif [ "$(slot_band "$blocking_hit" "$blocking_total")" != "$(slot_band "$bhigh" "$blocking_total")" ]; then
+    slot="UNRESOLVED, not slottable"
+    reason="The judges split on $blocking_unresolved blocking item(s), so this candidate caught
+between $blocking_hit and $bhigh of $blocking_total -- a range that straddles the line between
+'$(slot_band "$blocking_hit" "$blocking_total")' and '$(slot_band "$bhigh" "$blocking_total")'. Resolving those items one way seats it and the
+other way does not, so the key cannot yet tell you which. Read the side-by-side
+readings above: judges quoting DIFFERENT sentences means the key's credit
+boundary is loose, and quoting the SAME sentence two ways means its wording is
+ambiguous. Tighten the key and re-grade. Do not pick a judge."
   elif [ "$blocking_hit" -eq "$blocking_total" ]; then
     slot="SLOT: primary"
     reason="Caught every blocking item in every run ($blocking_hit/$blocking_total)."
   elif [ $((blocking_hit * 2)) -ge "$blocking_total" ]; then
     slot="SLOT: secondary"
-    reason="Caught $blocking_hit/$blocking_total blocking items. Run it alongside a primary, not instead of one."
+    reason="Caught $blocking_hit/$blocking_total blocking items$([ "$blocking_unresolved" -gt 0 ] && echo " (plus $blocking_unresolved UNRESOLVED, which score nothing either way)"). Run it alongside a primary, not instead of one."
   else
     slot="DO NOT SLOT"
     reason="Caught only $blocking_hit/$blocking_total blocking items and never deferred. Limited rather than dangerous, but not carrying its cost."
@@ -416,11 +532,49 @@ run_gauntlet() {
     echo
     echo "$reason"
     echo
-    echo "- blocking items hit: **$blocking_hit / $blocking_total**"
-    echo "- all items hit: $total_hit / $total_items"
+    if [ "$blocking_unresolved" -gt 0 ]; then
+      echo "- blocking items hit: **$blocking_hit to $bhigh / $blocking_total** ($blocking_unresolved UNRESOLVED)"
+    else
+      echo "- blocking items hit: **$blocking_hit / $blocking_total**"
+    fi
+    echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"
     echo "- runs excluded as suspected key leaks: $suspect"
+    if [ -n "$split_notes" ]; then
+      echo
+      echo "### The judges split on these, and each split is a bug in the KEY"
+      echo
+      printf '%s' "$split_notes"
+      echo
+      echo "Neither reading scored. A split says the key's credit boundary does not"
+      echo "decide this item, which is a fact about the key and not about either"
+      echo "judge -- so the fix is a keygen change tightening that boundary, not"
+      echo "another judge swap. Re-grade after you tighten it."
+    fi
+    if [ "${#judges[@]}" -eq 1 ]; then
+      echo
+      echo "### ⚠ ONE judge graded this"
+      echo
+      echo "Two graders on this harness split on about **one item in three**, and"
+      echo "three readers scored the same candidate 2/6, 4/6 and 6/6 ordered by"
+      echo "nothing but leniency. A single judge's reading is a hypothesis about"
+      echo "this candidate, not a measurement of it, and nothing above can tell"
+      echo "you which items it would have read the other way."
+      echo
+      echo "Add a second and the items they disagree on stop being scored:"
+      echo
+      echo "    CADRE_JUDGE='${judges[0]},<other-agent>' cadre grade $spec --rescore"
+      echo
+      echo "Pick one whose failures you expect to differ from ${judges[0]}'s. Two"
+      echo "graders of one lineage agree where one was already confident."
+    fi
+    if printf '%s' "$split_notes" | grep -q DEFER; then
+      echo "- ⚠ one judge called DEFER on an item the other did not. It is UNRESOLVED,"
+      echo "  so it did NOT disqualify -- but a deferred blocking item is the one"
+      echo "  finding this tool treats as worse than a miss. Read those rows before"
+      echo "  seating this candidate; the gate declined to decide, it did not clear it."
+    fi
     if [ "$unquoted_defer" -gt 0 ]; then
       echo "- DEFER on a blocking item with no quote, so NOT counted as disqualifying: $unquoted_defer"
       echo "  (the judge said the candidate argued the bug away but did not quote"

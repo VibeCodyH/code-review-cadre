@@ -88,7 +88,12 @@ Environment:
   CADRE_WORK    where checkouts live. MUST be outside CADRE_HOME, or an agent
                 reaches the answer keys by relative path from its own cwd.
   CADRE_JUDGE   agent that grades reviews against the key. Takes the same
-                agent:provider/model spec a candidate does
+                agent:provider/model spec a candidate does. Give it TWO, comma
+                separated, and both grade every run: an item they agree on is
+                the grade, an item they split on is UNRESOLVED and scores
+                nothing. Two graders here split on about one item in three, so
+                one judge's reading is a hypothesis, not a measurement. Max 2 --
+                beyond that "they agree" becomes a vote.
   CADRE_ADJUDICATOR  agent for `cadre adjudicate`. Required, and deliberately
                 NOT defaulted from CADRE_JUDGE: it reads the CHECKOUT to rule on
                 whether a finding is real, which the judge never does. Do not
@@ -132,8 +137,30 @@ need_judge() {
   # judge. CADRE_JUDGE may carry a model: check the agent half.
   # ★ agent_installed, not command -v on the name: CADRE_JUDGE=cursor died as
   # "not installed" with `agent` sitting on the user's PATH. See common.sh.
-  local ja; ja=$(spec_agent "$CADRE_JUDGE")
-  agent_installed "$ja" || die "CADRE_JUDGE is '$CADRE_JUDGE' but '$ja' is not installed"
+  local js=(); mapfile -t js < <(judge_specs)
+  local j ja
+  for j in "${js[@]}"; do
+    ja=$(spec_agent "$j")
+    agent_installed "$ja" || die "CADRE_JUDGE names '$j' but '$ja' is not installed"
+  done
+  [ "${#js[@]}" -le 2 ] || die "CADRE_JUDGE names ${#js[@]} judges. Two is the most this scores.
+     Beyond two, 'they agree' stops being a rule and becomes a vote, and a
+     majority over three noisy graders reads as consensus while hiding that one
+     of them dissented. Pick the two whose failures you expect to differ."
+  # ★ Same rule as the review roster, for the same reason. Two graders of one
+  # lineage are one grader in two seats: they agree where a single grader was
+  # already confident and split where it was already unsure, so their agreement
+  # is not independent evidence and the gate it feeds is decorative. A warning,
+  # never a refusal -- comparing two efforts of one model is a real experiment.
+  if [ "${#js[@]}" -gt 1 ]; then
+    local fams=() dup
+    for j in "${js[@]}"; do fams+=("$(spec_family "$j")"); done
+    dup=$(printf '%s\n' "${fams[@]}" | sort | uniq -d)
+    [ -n "$dup" ] && echo "⚠ ${js[*]} are both $dup models. Two graders of one lineage agree
+  where one grader was already confident and split where it was not, so their
+  agreement is not independent evidence about the candidate."
+  fi
+  return 0
 }
 
 cmd_passes() {
@@ -289,11 +316,18 @@ cmd_run() {
     grep -q "^[[:space:]]*$only|" "$PASSES" || die "no pass named '$only' (see: cadre passes)"
     npasses=1
   fi
-  echo "judge: $CADRE_JUDGE   candidate: $spec"
-  if [ "$(spec_agent "$spec")" = "$(spec_agent "$CADRE_JUDGE")" ]; then
-    echo "⚠ the judge and the candidate are the same CLI, it will be grading itself."
-  fi
-  echo "up to $((npasses * runs)) review calls + $((npasses * runs)) judge calls."
+  local jspecs=(); mapfile -t jspecs < <(judge_specs)
+  echo "judge(s): ${jspecs[*]}   candidate: $spec"
+  # ★ Per judge, not against $CADRE_JUDGE as a whole. With two judges the whole
+  # string is "a,b", spec_agent returns "a,b", and the comparison silently
+  # stopped firing -- so the one case this warns about, a candidate grading
+  # itself, went unmentioned exactly when a second judge made it easy to hit.
+  local j
+  for j in "${jspecs[@]}"; do
+    [ "$(spec_agent "$spec")" = "$(spec_agent "$j")" ] &&
+      echo "⚠ the candidate and judge '$j' are the same CLI, it will be grading itself."
+  done
+  echo "up to $((npasses * runs)) review calls + $((npasses * ${#jspecs[@]} * runs)) judge calls."
   echo "(a ceiling, not a plan: outputs and grades that already exist are reused)"
   echo
   run_gauntlet "$spec" "$runs" 0 "$only"

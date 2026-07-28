@@ -422,12 +422,16 @@ check "and still carries the candidate"  "grep -q '\$csl-run\$n.by-' '$ROOT/lib/
 # did not merely collide with the first one's grades -- it DELETED them, destroying
 # the control group of the one experiment that can validate the keyed track. The
 # report file had it too, so the second judge silently overwrote the first's report.
-check "grade path carries the judge"   "grep -q 'by-\$jsl.grade.json' '$ROOT/lib/grade.sh'"
+check "grade path carries the judge"   "grep -q 'by-\$js.grade.json' '$ROOT/lib/grade.sh'"
 check "report carries the judge"       "grep -q 'report-\$sl-by-\$jsl.md' '$ROOT/lib/grade.sh'"
 check "and still carries the candidate" "grep -q '\$sl-run\$n.by-' '$ROOT/lib/grade.sh'"
 # Slug the FULL spec: `opencode:ollama/qwen3-judge` and `opencode:ollama/qwen3:14b`
 # are both `opencode`, so two local judges would collide under one name.
-check "judge slug is the full spec"    "grep -q 'jsl=\$(slug \"\$CADRE_JUDGE\")' '$ROOT/lib/grade.sh'"
+# ★ And the full LIST, not the first judge: a report reconciles every judge that
+# graded, so naming it after one lets a (A,B) grading overwrite an (A,C) one --
+# the same collision the judge-in-the-filename fix exists to prevent, one level
+# up, reachable the moment a second judge became possible.
+check "judge slug is the full spec"    "grep -q 'jsl=\$(slug \"\$(IFS=,; printf' '$ROOT/lib/grade.sh'"
 
 # ★ An EXHAUSTED judge reported as "its reply did not parse" is a false statement
 # about WHY, and it costs real time: measured, copilot returned a quota notice on
@@ -1495,6 +1499,131 @@ check "full: nested CADRE_HOME refused" "grep -q 'sits inside it' <<<\"\$OUT\""
 OUT=$(CADRE_HOME="$D/tree" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
       PATH="$D/bin:$PATH" "$ROOT/bin/cadre" review --full --roster good "$D/tree" 2>&1)
 check "full: equality refused too"      "grep -q 'sits inside it' <<<\"\$OUT\""
+
+echo "== ★ the dual-grader gate: agreement is the grade, a split scores NOTHING =="
+# The rule was decided 2026-07-27 and lived only in the prompts and the notes:
+# two graders agree -> that is the grade; they split -> UNRESOLVED, scores
+# nothing, report a range; and a split is evidence the KEY is underspecified, not
+# a tie to break. Two graders here split on about ONE ITEM IN THREE, and three
+# readers scored one candidate 2/6, 4/6 and 6/6 ordered by nothing but leniency.
+# Fixtures, not live judges: pre-written grade files are reused when rescore=0,
+# so these exercise the reconciliation itself with no model in the loop.
+gauntlet_case() {  # gauntlet_case <dir> <spec> <judgeA-verdicts> <judgeB-verdicts>
+  local d="$1" spec="$2" va="$3" vb="$4" sl ja jb sha
+  mkdir -p "$d/home/p1"
+  setup_agents "$d"
+  new_repo "$d/checkout"
+  sha=$(git -C "$d/checkout" rev-parse HEAD)
+  printf '#### K1 blocking - the write is dropped\ntext\n\n#### K2 blocking - the token leaks\ntext\n' \
+    > "$d/home/k.md"
+  printf 'p1|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$sha" "$d/home/k.md" > "$d/home/passes.conf"
+  sl=$(slug "$spec")
+  printf 'blocking - the write is dropped\nblocking - the token leaks\n' > "$d/home/p1/$sl-run1.md"
+  ja=$(slug good); jb=$(slug good2)
+  printf '%s\n' "$va" > "$d/home/p1/$sl-run1.by-$ja.grade.json"
+  printf '%s\n' "$vb" > "$d/home/p1/$sl-run1.by-$jb.grade.json"
+}
+run_gaunt() {  # run_gaunt <dir> <judge-spec> <candidate>
+  local d="$1" j="$2" c="$3"
+  CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" "$ROOT/bin/cadre" run "$c" 1 p1 2>&1
+}
+HITBOTH='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"the write is dropped","K2":"the token leaks"},"verdict":"found","extras":[]}'
+SPLITK2='{"items":{"K1":"HIT","K2":"MISS"},"quotes":{"K1":"the write is dropped"},"verdict":"found","extras":[]}'
+
+# Both judges agree on both items: that IS the grade, no range, primary.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "gate: agreement scores"        "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+check "gate: and seats the candidate" "grep -q 'Verdict: SLOT: primary' '$R'"
+# Not the word anywhere -- the header explains the rule and should say it. No
+# ITEM may be unresolved, and no range may be reported.
+check "gate: no item is UNRESOLVED"   "! grep -q '=UNRESOLVED' '$R' && ! grep -q ' to .* / ' '$R'"
+check "gate: report names both judges" "grep -q 'Judges: .*good.*good2' '$R'"
+check "gate: both quotes are shown"   "[ \$(grep -c 'K1 (good' '$R') -ge 1 ]"
+
+# One item split: it scores NEITHER way, and the range straddles primary vs
+# secondary, so there is no slot to recommend.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$SPLITK2"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "split: reported as a RANGE"     "grep -q 'blocking items hit: \*\*1 to 2 / 2\*\* (1 UNRESOLVED)' '$R'"
+check "split: the item is UNRESOLVED"  "grep -q 'K2=UNRESOLVED' '$R'"
+check "split: refuses to slot"         "grep -q 'Verdict: UNRESOLVED, not slottable' '$R'"
+check "split: names the two bands"     "grep -q \"straddles the line\" '$R'"
+check "split: blames the KEY"          "grep -q 'bug in the KEY' '$R' && grep -q 'another judge swap' '$R'"
+check "split: prints BOTH readings"    "grep -q 'good: HIT' '$R' && grep -q 'good2: MISS' '$R'"
+check "split: K1 still scored"         "grep -q 'K1=HIT' '$R'"
+# ★ The agreed item still counts. A gate that threw away the whole run on one
+# split would make the second judge a downgrade rather than a measurement.
+check "split: agreed item in the total" "grep -qE 'all items hit: 1 / 2' '$R'"
+
+# ★ A run needs EVERY judge. One judge's reading reconciled against a missing one
+# is a single-judge score wearing a two-judge label.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" '{"unusable":true}'
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "outage: the run is UNUSABLE"    "grep -q 'run 1: \*\*UNUSABLE\*\*' '$R'"
+check "outage: it names which judge"   "grep -q 'good2:' '$R'"
+check "outage: nothing was scored"     "grep -q 'blocking items hit: \*\*0 / 0\*\*' '$R' || grep -q 'INCONCLUSIVE' '$R'"
+check "outage: the good grade is kept" "[ -s \"\$(ls '$D/home/p1'/*by-\$(slug good).grade.json)\" ]"
+check "outage: and says so"            "grep -q 'was NOT discarded' '$R'"
+
+# A single judge still works, and says out loud that it is not a measurement.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "solo: still grades"             "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+check "solo: warns it is one reading"  "grep -q 'ONE judge graded this' '$R'"
+check "solo: quotes the real split rate" "grep -q 'one item in three' '$R'"
+check "solo: hands over the command"   "grep -q \"CADRE_JUDGE='good,<other-agent>'\" '$R'"
+# ★ Two judges must not overwrite a (A,B) report with an (A,C) one: the report
+# reconciles every judge that graded, so its name carries the whole list.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+cp "$D/home/p1/$(slug terse)-run1.by-$(slug good2).grade.json" \
+   "$D/home/p1/$(slug terse)-run1.by-$(slug trunc).grade.json"
+run_gaunt "$D" good,good2 terse >/dev/null 2>&1
+run_gaunt "$D" good,trunc  terse >/dev/null 2>&1
+check "pairs: two reports, not one"    "[ \$(ls '$D/home'/report-*.md | grep -c .) -eq 2 ]"
+
+# ★ A split DEFER is the most consequential split there is: a deferred blocking
+# item is the one finding this tool treats as worse than a miss, so "the gate
+# declined to decide" must not read as "the candidate is clear".
+DEFERK2='{"items":{"K1":"HIT","K2":"DEFER"},"quotes":{"K1":"the write is dropped","K2":"argued it was fine"},"verdict":"found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$DEFERK2" "$SPLITK2"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "split DEFER: not disqualifying" "! grep -q 'Verdict: DO NOT SLOT' '$R'"
+check "split DEFER: but called out"    "grep -q 'did NOT disqualify' '$R'"
+check "split DEFER: says it is undecided" "grep -q 'declined to decide, it did not clear it' '$R'"
+# Both judges agreeing on DEFER still disqualifies outright. That rule is the
+# one thing in this tool with no tuning knob and the gate must not soften it.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$DEFERK2" "$DEFERK2"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "agreed DEFER disqualifies"      "grep -q 'Verdict: DO NOT SLOT' '$R'"
+
+# ★ Per judge, not against the whole CADRE_JUDGE string: with two judges
+# spec_agent returns "a,b" and the self-grading warning silently stopped firing.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" good "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 good)
+check "self-grading warned per judge"  "grep -q \"judge 'good' are the same CLI\" <<<\"\$OUT\""
+check "and the call budget doubles"    "grep -q '2 judge calls' <<<\"\$OUT\""
+
+echo "== ★ more than two judges is a vote, and this does not vote =="
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2,trunc terse)
+check "three judges refused"           "grep -q 'Two is the most this scores' <<<\"\$OUT\""
+check "and it says why"                "grep -q 'becomes a vote' <<<\"\$OUT\""
+# Two graders of one lineage are one grader in two seats: warn, never refuse.
+OUT=$(run_gaunt "$D" 'opencode:openai/gpt-5,opencode:openai/gpt-5-mini' terse)
+check "same-lineage judges warned"     "grep -q 'are both .* models' <<<\"\$OUT\""
+check "warned, not refused"            "! grep -q 'Two is the most' <<<\"\$OUT\""
+# A duplicate is not a second opinion; it collapses to one judge.
+OUT=$(run_gaunt "$D" good,good terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "a repeated judge is deduped"    "grep -q 'ONE judge graded this' '$R'"
 
 echo
 echo "$PASS passed, $FAIL failed"

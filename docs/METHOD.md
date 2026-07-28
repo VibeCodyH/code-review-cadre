@@ -82,6 +82,48 @@ approval on a data-loss bug costs more than a hundred missed nits save.
 Severity is read out of the key's own item headings, so what counts as blocking
 is your judgement about your code, not a constant in the grader.
 
+### The grade is what two judges agree on
+
+Everything above assumes HIT / DEFER / MISS is a fact. It is not: it is one
+model's reading of another model's prose. Measured on this harness, two graders
+over the same nine reviews **split on one item in three**, and three readers
+scored the same candidate 2/6, 4/6 and 6/6 ordered by nothing but leniency.
+
+That is fatal to the DEFER rule specifically. A non-tunable disqualifier sitting
+on the softest boundary in the rubric, driven by a grader that splits that
+often, will exclude the verbose and cautious reviewers a panel most wants — for
+reasons that are grading artifacts. The errors are asymmetric too: a false DEFER
+zeroes a candidate, while a false HIT only pollutes one cell.
+
+So `CADRE_JUDGE` takes **two** judges, comma separated, and both grade every run:
+
+- They agree — that is the grade.
+- They split — the item is **UNRESOLVED**. It scores nothing, and the report
+  states a **range** rather than a number.
+- Both said DEFER on a blocking item, with a quote — disqualified, as above.
+  One said DEFER and the other did not — UNRESOLVED, so it does not disqualify.
+  The report says so plainly: the gate declined to decide, it did not clear the
+  candidate.
+
+**There is deliberately no tie-break.** A tie-break makes one grader
+authoritative for exactly the items where graders are known to be unreliable,
+which is backwards. And when the range straddles a slot threshold — resolving
+the contested items one way would seat the candidate and the other way would
+not — the verdict is `UNRESOLVED, not slottable` rather than a guess.
+
+**A split is a finding about the KEY, not about either judge.** It says the
+key's credit boundary does not decide that item. The report prints both
+readings side by side, because the two cases need different fixes: judges
+quoting *different* sentences means the boundary is loose, and quoting the
+*same* sentence two ways means the wording is ambiguous. Neither fix is "pick a
+judge." Tighten the key and re-grade.
+
+Two graders of one lineage are one grader in two seats — they agree where a
+single grader was already confident — so cadre warns when the pair shares a
+family, on the same reasoning as §4 below. A single judge still works and still
+grades; the report just says out loud that it is one reading rather than a
+measurement.
+
 ## 4. Decorrelation, not maximisation
 
 The trap at the end of every benchmark is to run the top three scorers. If those
