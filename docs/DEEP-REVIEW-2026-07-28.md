@@ -199,23 +199,32 @@ one-flag version is worth more than an unfinished five-flag one.
 
 Ranked by what I would do next.
 
-1. **Build the dual-grader gate.** Two judges agree, that's the grade. They
-   split, the item is UNRESOLVED, scores nothing, and the report states a range.
-   A split is evidence the **key** is underspecified, not that the judge is bad.
-   This is the recorded decision, it is the single largest remaining gap, and
-   the panel fix in this branch is a prerequisite rather than a substitute — the
-   matrix can now *show* a disagreement, but nothing yet acts on one.
-2. **Reframe the panel matrix as a hypothesis generator in the docs**, and stop
-   the external preprint numbers from carrying product weight.
-3. **Rename `primary`/`secondary`.** They import the leaderboard the thesis
+1. ~~Build the dual-grader gate.~~ **Done.** `CADRE_JUDGE` takes a pair, both
+   grade every run, agreement is the grade, and a split is UNRESOLVED: it scores
+   nothing and the report states a range. No tie-break, because a tie-break makes
+   one grader authoritative for exactly the items where graders are least
+   reliable. When the range straddles a slot threshold the verdict is
+   `UNRESOLVED, not slottable` rather than a guess. A split DEFER no longer
+   disqualifies but is called out, since "the gate declined to decide" must not
+   read as "the candidate is clear."
+2. ~~Stop the external preprint numbers carrying product weight.~~ **Done.**
+   Every use now leads with evidence cadre owns and demotes the preprint to
+   corroboration with its limits attached.
+3. **Reframe the panel matrix as a hypothesis generator in the docs.** The
+   remaining half of item 2: the docs confess the small n honestly and then still
+   sell roster optimisation from that n. At two runs against a handful of items,
+   "different failure set" is hard to distinguish from independent variance, and
+   `cadre panel` computes no correlation and no uncertainty. It generates
+   hypotheses worth testing, which is genuinely useful; it does not estimate
+   decorrelation, and it should stop implying it does.
+4. **Rename `primary`/`secondary`.** They import the leaderboard the thesis
    rejects.
-4. Docs corrections found by the drift audit: the CLI-reference rows for
-   `claude` and `grok`, and the "filename not contents" claim.
-5. Adapter parity, which is a real leak surface and the only place a second
-   model can quietly gain capability: `claude.sh --safe-mode`,
-   `codex.sh --ignore-user-config`, `cursor.sh` sandbox pinning, and the
-   grok/qwen rc fallback. The standing rule holds — probe the agent, never
-   trust the capability flag.
+5. Docs corrections found by the drift audit (the CLI-reference rows for
+   `claude` and `grok`, the "filename not contents" claim), and adapter parity:
+   `claude.sh --safe-mode`, `codex.sh --ignore-user-config`, `cursor.sh` sandbox
+   pinning, the grok/qwen rc fallback. Parity is a real leak surface and the only
+   place a second model can quietly gain capability. The standing rule holds —
+   probe the agent, never trust the capability flag.
 
 ## One note on method
 
