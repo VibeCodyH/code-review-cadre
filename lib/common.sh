@@ -403,7 +403,13 @@ quota_exhausted() {
   local f="$1"
   [ -s "$f" ] || return 1
   [ "$(wc -c < "$f")" -le 2000 ] || return 1
-  grep -qiE '(spend limit|usage limit|monthly limit|plan limit|insufficient (balance|funds|credit|quota)|recharge your account|credit balance is too low|(account|organization|org)[a-z0-9 _<>-]{0,40}(is )?(suspended|deactivated|disabled)|payment required|\b402\b|billing (details|issue|problem)|purchase (more )?credits)' "$f"
+  # ★ The discriminator is the PERIOD WORD, not the word "quota". A bare "quota
+  # exceeded" must stay a RATE limit: agents.d/kiro.sh records "Kiro rate limit
+  # reached: Request quota exceeded", which is a throughput refusal a backoff
+  # really does clear. Attach a month/day/plan to it and it is a budget instead.
+  # This distinction is the entire reason the two functions are separate, so the
+  # patterns below never match "quota" on its own.
+  grep -qiE '(spend limit|usage limit|monthly limit|plan limit|insufficient (balance|funds|credit|quota)|recharge your account|credit balance is too low|(account|organization|org)[a-z0-9 _<>-]{0,40}(is )?(suspended|deactivated|disabled)|payment required|\b402\b|billing (details|issue|problem)|purchase (more )?credits|exceeded your (monthly|daily|weekly|annual|yearly|plan)[a-z ]{0,20}quota|(monthly|daily|weekly|annual|yearly) (quota|allowance)|quota (exceeded|exhausted)[^.]{0,40}(month|billing period|plan))' "$f"
 }
 
 # ★ The same question for a SYNTHESIS, which needs a different answer. A

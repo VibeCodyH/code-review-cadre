@@ -1728,6 +1728,25 @@ check "budget: empty account caught"  "$QE"
 check "budget: outranks the 429"      "bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QB'\""
 printf 'Error: 429 too many requests, retry-after 30\n' > "$QB"
 check "budget: a real 429 is not one" "! $QE"
+# ★ A PERIODIC quota, caught on a live probe of copilot while the sweep this
+# section was written for was running. It matched rate_limited() -- both via
+# `quota (exceeded|exhausted)` and `exceeded your [a-z ]{0,20}quota` -- and so
+# earned three backoff retries against a MONTHLY cap, the same kimi failure
+# quota_exhausted exists to end, on a second provider. Worse, lib/grade.sh
+# already recorded this exact sentence from an earlier session: the matcher was
+# written without grepping the repo for the refusals it had already measured.
+printf 'You have exceeded your monthly quota (Request ID: AF6C:DC7FE:A333A6)\n' > "$QB"
+check "budget: monthly quota caught"  "$QE"
+printf 'Request quota exceeded for this billing period.\n' > "$QB"
+check "budget: billing period caught" "$QE"
+# ★★ THE ONE THAT KEEPS THE TWO FUNCTIONS SEPARATE. agents.d/kiro.sh records
+# "Kiro rate limit reached: Request quota exceeded" -- a THROUGHPUT refusal that a
+# backoff really does clear. The discriminator is the PERIOD word, not the word
+# "quota", so a bare "quota exceeded" must stay on the retry path. Widening the
+# budget matcher to catch copilot must not steal this one.
+printf 'Kiro rate limit reached: Request quota exceeded\n' > "$QB"
+check "budget: bare quota stays a 429" "! $QE"
+check "budget: and still retries"      "bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QB'\""
 printf 'blocking: the billing details page leaks a token when payment required.\n' > "$QB"
 check "budget: a finding about billing" "$QE"   # matches, but see below
 # ...which is exactly why callers ask only about a run classify_run already
