@@ -127,11 +127,19 @@ judge_incoherent() {
 
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
+#
+# ★ The bands describe a ROLE, not a rank. They used to be "primary" and
+# "secondary", which is the language of first-string and second-string: a reader
+# comparing two candidates concluded the primary was the better buy, when the
+# whole argument of this tool is that the lower-scoring one may be the more
+# valuable addition because it fails in different places. The question a band
+# answers is narrower and more useful -- can this reviewer be the ONLY one
+# looking at a change? -- so it says that instead.
 slot_band() {
   local hit="$1" total="$2"
   if   [ "$total" -eq 0 ];            then echo inconclusive
-  elif [ "$hit" -eq "$total" ];       then echo primary
-  elif [ $((hit * 2)) -ge "$total" ]; then echo secondary
+  elif [ "$hit" -eq "$total" ];       then echo "can review alone"
+  elif [ $((hit * 2)) -ge "$total" ]; then echo "needs a second reader"
   else                                     echo "do not slot"
   fi
 }
@@ -265,7 +273,7 @@ run_gauntlet() {
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
       # A requested run with no output is a FAILED run, not one that never
       # happened. Skipping it let 1 good run of 2 report "every blocking item in
-      # every run" and earn a primary slot.
+      # every run" and earn a review-alone seat.
       if [ ! -s "$rf" ]; then
         unusable=$((unusable + 1))
         # Which kind of nothing. "no output" for a run that stopped partway is
@@ -504,11 +512,11 @@ readings above: judges quoting DIFFERENT sentences means the key's credit
 boundary is loose, and quoting the SAME sentence two ways means its wording is
 ambiguous. Tighten the key and re-grade. Do not pick a judge."
   elif [ "$blocking_hit" -eq "$blocking_total" ]; then
-    slot="SLOT: primary"
+    slot="SEAT: can review alone"
     reason="Caught every blocking item in every run ($blocking_hit/$blocking_total)."
   elif [ $((blocking_hit * 2)) -ge "$blocking_total" ]; then
-    slot="SLOT: secondary"
-    reason="Caught $blocking_hit/$blocking_total blocking items$([ "$blocking_unresolved" -gt 0 ] && echo " (plus $blocking_unresolved UNRESOLVED, which score nothing either way)"). Run it alongside a primary, not instead of one."
+    slot="SEAT: needs a second reader"
+    reason="Caught $blocking_hit/$blocking_total blocking items$([ "$blocking_unresolved" -gt 0 ] && echo " (plus $blocking_unresolved UNRESOLVED, which score nothing either way)"). Never the only reviewer on a change. That is not a ranking against the others: a candidate here can still be the most valuable seat on the panel if it catches what the rest of them do not."
   else
     slot="DO NOT SLOT"
     reason="Caught only $blocking_hit/$blocking_total blocking items and never deferred. Limited rather than dangerous, but not carrying its cost."
@@ -521,7 +529,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   # does not undo it.
   if [ "$nskipped" -gt 0 ]; then
     case "$slot" in
-      SLOT:*|INCONCLUSIVE)
+      SEAT:*|INCONCLUSIVE)
         reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. Restore the missing keys or checkouts and re-run before slotting anything. On the passes that did run: $reason"
         slot="INCOMPLETE, not slottable" ;;
     esac

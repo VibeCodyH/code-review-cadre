@@ -151,7 +151,7 @@ That is the result a rank cannot express, so:
   underlying model families.)
 
 The flip side (and it is a real cost): a decorrelated candidate is usually noisier.
-The one above was slotted **secondary** for a reason (never run alone), and a
+The one above was seated **needs a second reader** for a reason, and a
 clean pass from it is not a signal, because it produced one on a commit it had
 itself called blocking on the previous run. Same checkout, same prompt.
 

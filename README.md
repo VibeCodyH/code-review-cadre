@@ -256,7 +256,8 @@ loss bug costs more than a hundred missed nits save.
 
 ## Staffing the panel
 
-`cadre run` grades one candidate and gives it a slot: primary, secondary, or do
+`cadre run` grades one candidate and gives it a seat: can review alone, needs a
+second reader, or do
 not slot. `cadre panel` staffs the team, reading every candidate you've graded
 and printing the coverage matrix at the top of this page.
 
@@ -292,7 +293,7 @@ review plus a combined `report.md`. `--base <rev>` picks a different base,
 `--roster a,b,c` skips the file, `--synth <agent-spec>` merges the reviews into
 one document that tags each finding with **which** reviewers raised it.
 
-That attribution is the point. "3 of 3 flagged this" and "only the secondary
+That attribution is the point. "3 of 3 flagged this" and "only the second reader
 flagged this" are different facts, and the second one is why you staffed a
 panel instead of buying the highest scorer.
 

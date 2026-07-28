@@ -1371,7 +1371,7 @@ echo "== ★ a registered pass that never ran must reach the report =="
 check "grade records the skip"       "grep -q 'skipped=\"\$skipped- \$label' '$ROOT/lib/grade.sh'"
 check "and the report prints it"     "grep -q 'registered pass(es) NOT GRADED' '$ROOT/lib/grade.sh'"
 check "a short denominator cannot slot" "grep -q 'INCOMPLETE, not slottable' '$ROOT/lib/grade.sh'"
-check "leak verdict still outranks it"  "grep -A4 'nskipped\" -gt 0' '$ROOT/lib/grade.sh' | grep -q 'SLOT:\*|INCONCLUSIVE'"
+check "leak verdict still outranks it"  "grep -A4 'nskipped\" -gt 0' '$ROOT/lib/grade.sh' | grep -q 'SEAT:\*|INCONCLUSIVE'"
 # An unquoted DEFER is the judge's claim, not the candidate's behaviour, and
 # DEFER on a blocking item is the one non-tunable disqualifier in the tool.
 check "unquoted DEFER does not disqualify" "grep -q 'unquoted_defer=\$((unquoted_defer + 1))' '$ROOT/lib/grade.sh'"
@@ -1563,20 +1563,20 @@ run_gaunt() {  # run_gaunt <dir> <judge-spec> <candidate>
 HITBOTH='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"the write is dropped","K2":"the token leaks"},"verdict":"found","extras":[]}'
 SPLITK2='{"items":{"K1":"HIT","K2":"MISS"},"quotes":{"K1":"the write is dropped"},"verdict":"found","extras":[]}'
 
-# Both judges agree on both items: that IS the grade, no range, primary.
+# Both judges agree on both items: that IS the grade, no range, seated alone.
 D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
 OUT=$(run_gaunt "$D" good,good2 terse)
 R=$(ls "$D/home"/report-*.md | head -1)
 check "gate: agreement scores"        "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
-check "gate: and seats the candidate" "grep -q 'Verdict: SLOT: primary' '$R'"
+check "gate: and seats the candidate" "grep -q 'Verdict: SEAT: can review alone' '$R'"
 # Not the word anywhere -- the header explains the rule and should say it. No
 # ITEM may be unresolved, and no range may be reported.
 check "gate: no item is UNRESOLVED"   "! grep -q '=UNRESOLVED' '$R' && ! grep -q ' to .* / ' '$R'"
 check "gate: report names both judges" "grep -q 'Judges: .*good.*good2' '$R'"
 check "gate: both quotes are shown"   "[ \$(grep -c 'K1 (good' '$R') -ge 1 ]"
 
-# One item split: it scores NEITHER way, and the range straddles primary vs
-# secondary, so there is no slot to recommend.
+# One item split: it scores NEITHER way, and the range straddles "can review
+# alone" and "needs a second reader", so there is no seat to recommend.
 D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$SPLITK2"
 OUT=$(run_gaunt "$D" good,good2 terse)
 R=$(ls "$D/home"/report-*.md | head -1)

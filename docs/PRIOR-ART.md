@@ -33,7 +33,8 @@ opinion about it.
 
 2. **The output is a roster, not a rank.** withmartian: *"Doesn't recommend
    models. No multi-model panel selection or comparison framework."* `cadre run`
-   ends in a slot recommendation (primary, secondary, or do-not-slot) and
+   ends in a seat recommendation (can review alone, needs a second reader, or
+   do-not-slot) and
    deliberately does not maintain a leaderboard.
 
 3. **DEFER is a distinct, disqualifying grade.** withmartian: *"Can't separate
