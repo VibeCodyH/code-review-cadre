@@ -444,15 +444,26 @@ quota_exhausted() {
 # with a short reset belongs on the retry path, where backoff already handles it.
 # Only a named USAGE WINDOW counts here.
 #
-# Checked AFTER quota_exhausted, so an observed budget string keeps its observed
-# handling. A refusal naming both a spend cap and a reset time would land in
-# quota_exhausted; no such string has ever been seen, and inventing handling for
-# unobserved phrasings is the mistake that produced all three of these gaps.
+# ★ Checked BEFORE quota_exhausted, and that order is load-bearing rather than
+# arbitrary. quota_exhausted's pattern list contains `usage limit`, which is a
+# WINDOW phrasing sitting in the budget matcher -- and which was added
+# speculatively in 96b9697 rather than from any observed string. Ask the budget
+# first and "You've hit your usage limit · resets 3pm" gets the budget treatment
+# this function exists to disprove: agent dropped for the whole sweep, exit 4,
+# "fix the cause". Asking here first makes the stated reset the authoritative
+# discriminator instead of an accident of call order.
+#
+# Safe against every refusal in the corpus, checked one by one: the spend cap
+# says "raise it at", the suspended account says "recharge your account", the
+# periodic quotas say "billing period" -- not one of them states a reset, so not
+# one of them reaches this function's second test. A future "monthly usage limit
+# · resets Aug 1" would land here instead of in quota_exhausted, which is
+# correct: it resets, so waiting clears it.
 provider_window_closed() {
   local f="$1"
   [ -s "$f" ] || return 1
   [ "$(wc -c < "$f")" -le 2000 ] || return 1
-  grep -qiE '(session|weekly|daily|hourly|[0-9]+[ -]?hour) limit' "$f" || return 1
+  grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
 

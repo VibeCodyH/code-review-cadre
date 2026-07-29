@@ -123,16 +123,19 @@ for r in "${reviewers[@]}"; do
       # limiting used to drive real retries and then get cadre's own note
       # appended after its _TRUNCATED marker. See lib/run-review.sh.
       [ "$(classify_run "$f.part" "$rc")" = failed ] || break
-      # ★ Budget before rate limit. A spend cap or an empty account is not a
+      # ★ Three refusals, asked most-specific first, and every step of that order
+      # was paid for by a sweep.
+      #
+      # A usage WINDOW leads. Backoff cannot outwait a reset hours away, so it is
+      # not a rate limit -- but the reset is real, so it is not a budget either,
+      # and quota_exhausted's `usage limit` pattern would otherwise claim it and
+      # drop the agent for the whole sweep. See provider_window_closed().
+      provider_window_closed "$f.part" && { window=1; break; }
+      # Then BUDGET before rate limit. A spend cap or an empty account is not a
       # throughput ceiling: no backoff inside this sweep clears it, so retrying
       # is waste and attempting this agent on the REMAINING passes is a
       # guaranteed hour of writing 102-byte failures. See quota_exhausted().
       quota_exhausted "$f.part" && { budget=1; break; }
-      # ★ And a usage WINDOW before the rate limit, for the mirror-image reason:
-      # backoff cannot outwait a reset hours away, but the reset is real, so this
-      # is neither a defect to fix nor an account to top up. See
-      # provider_window_closed().
-      provider_window_closed "$f.part" && { window=1; break; }
       rate_limited "$f.part" || break
       if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
         { echo "DID NOT COMPLETE, rate limited, gave up after $attempt attempts."

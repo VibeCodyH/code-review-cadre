@@ -1785,6 +1785,22 @@ check "window: a 60s reset is not one" "! $WC"
 check "window: it still retries"       "$RL"
 printf 'Kiro rate limit reached: Request quota exceeded\n' > "$QB"
 check "window: kiro stays a rate limit" "! $WC"
+# ★★ THE SHADOWING TEST. quota_exhausted's pattern list contains `usage limit`,
+# which is a WINDOW phrasing sitting in the BUDGET matcher, added speculatively in
+# 96b9697 rather than from any observed string. Both functions claim this one, so
+# the ORDER decides, and the wrong order gives it the treatment this whole section
+# disproves: agent dropped for the sweep, exit 4, "fix the cause". Pinned here so
+# the order stays deliberate instead of incidental.
+printf "You've hit your usage limit · resets 3pm (America/New_York)\n" > "$QB"
+check "window: claims 'usage limit'"   "$WC"
+check "window: budget also claims it"  "$QE"
+check "window: ...so window is asked FIRST" \
+  "grep -n 'provider_window_closed\|quota_exhausted' '$ROOT/lib/run-pass.sh' | grep -m1 -q 'provider_window_closed'"
+# And with no reset stated it stays a budget, which is the case that pattern was
+# speculatively added for -- narrowing the shadowing must not delete it.
+printf "You've hit your usage limit, upgrade your plan to continue\n" > "$QB"
+check "window: bare usage limit is not" "! $WC"
+check "window: bare one stays a budget" "$QE"
 # Same length guard, same reason: a review OF a session-limiter says all of this.
 head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"
 printf "hit your session limit, resets at midnight\n" >> "$QB"
