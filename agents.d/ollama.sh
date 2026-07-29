@@ -84,11 +84,20 @@ run_ollama() {
     return 0
   fi
 
-  # jq builds the body: a review or a key carries quotes, newlines and braces,
-  # and hand-rolled JSON here corrupts the prompt rather than failing loudly.
+  # ★ think:false and a num_predict cap, both measured, both load-bearing.
+  # A grade is ~125 tokens. Left thinking, gemma4 emitted 3,772 on one call and
+  # 13,794 on the next -- past the timeout, so curl returned NOTHING and the run
+  # was filed UNUSABLE with no raw kept. It read as an intermittent judge
+  # outage; it was a reasoning trace that would not terminate. With thinking off
+  # the same prompt returns 125 tokens, three for three, byte-identical, which
+  # is the determinism temperature 0 was supposed to buy. num_predict is the
+  # backstop for a model that ignores the flag: truncated JSON fails to parse
+  # and is reported, where a timeout is silence.
   payload=$(jq -n --arg m "$name" --arg p "$prompt" --argjson c "$ctx" \
-    '{model:$m, prompt:$p, stream:false, keep_alive:"30m",
-      options:{temperature:0, num_ctx:$c}}') || die "ollama: could not build request"
+                  --argjson n "${CADRE_OLLAMA_NUM_PREDICT:-2048}" \
+    '{model:$m, prompt:$p, stream:false, think:false, keep_alive:"30m",
+      options:{temperature:0, num_ctx:$c, num_predict:$n}}') \
+    || die "ollama: could not build request"
 
   out=$(printf '%s' "$payload" \
     | curl -sS --max-time "$TIMEOUT" -H 'Content-Type: application/json' \
