@@ -223,7 +223,7 @@ run_gauntlet() {
   # the silent-denominator bug the nskipped guard was written for, still live on
   # the one path where it costs most: 11 of 12 passes producing nothing scored
   # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
-  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0
+  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed=""
   # ★ Two failures that must not share an exit code, because the caller's correct
   # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
   # time and the reason to stop a sweep. A review that exists but could not be
@@ -320,8 +320,19 @@ run_gauntlet() {
         "$CADRE_ROOT/lib/run-pass.sh" "$label" "$sha" "$runs" "$spec" || prc=$?
       if [ "$prc" -ne 0 ]; then
         echo "  $label: run-pass.sh exited $prc, ABORTING the sweep here"
-        skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
-        nskipped=$((nskipped + 1)); aborted="$label"; measurement_failed=1
+        nskipped=$((nskipped + 1)); aborted="$label"
+        # ★ 6 aborts the sweep like 4 does, but it is not a failed measurement
+        # and must not be reported as one: the cause is a provider usage window
+        # that clears on its own, so the next move is to wait and resume, not to
+        # go looking for a defect. Kept out of $measurement_failed for exactly
+        # that reason -- see provider_window_closed() in lib/common.sh.
+        if [ "$prc" -eq 6 ]; then
+          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume after its reset)"$'\n'
+          window_closed=1
+        else
+          skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
+          measurement_failed=1
+        fi
         continue
       fi
     fi
@@ -594,6 +605,18 @@ It is a failed measurement, and a failed measurement is not a result."
 here -- but nothing expensive was lost, and \`cadre grade $spec $runs\` re-runs
 the judge over what is already on disk. Do not re-review."
       fi
+      # ★ A third nothing, and the only one where the operator's correct move is
+      # to do nothing at all for a while. Checked last so a real failure
+      # elsewhere in the sweep still gets its own verdict.
+      local tail1="Fix the cause and re-run. Do not quote a number from this file."
+      if [ -n "$window_closed" ] && [ -z "$measurement_failed" ] && [ -z "$grading_failed" ]; then
+        head1="NOT MEASURED -- PROVIDER WINDOW CLOSED"; rc1=6
+        body1="A provider usage window closed mid-sweep, so this pass never got to run.
+That is a clock, not a defect: nothing is wrong with the tool, the key or the
+candidate, and every review already on disk is intact and still counted."
+        tail1="Resume after the reset time above. There is nothing here to fix, and no
+number to quote."
+      fi
       {
         echo "## Verdict: $head1"
         echo
@@ -601,7 +624,7 @@ the judge over what is already on disk. Do not re-review."
         echo
         printf '%s' "$skipped"
         echo
-        echo "Fix the cause and re-run. Do not quote a number from this file."
+        echo "$tail1"
       } >> "$report"
       echo
       cat "$report"
@@ -799,5 +822,15 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   if [ -n "$grading_failed" ]; then
     echo "cadre: pass(es) produced reviews that could NOT be graded. Exit 5: re-grade, do not re-review." >&2
     return 5
+  fi
+  # ★ 6 last, and it is the weakest of the three on purpose: a sweep that scored
+  # some passes and then lost its window has a real partial result above, so this
+  # says "incomplete, resume later", not "discard this". A driver's correct
+  # response is to wait out the reset and re-invoke -- the reviews already on
+  # disk are reused, which is what made resuming the 2026-07-28 sweep cost four
+  # reviews instead of thirty.
+  if [ -n "$window_closed" ]; then
+    echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the reset, then re-run to resume." >&2
+    return 6
   fi
 }

@@ -93,7 +93,7 @@ the citation, drop the load-bearing use.
 
 ## Mechanisms: what was broken, and what got fixed
 
-Committed on this branch, all with reproductions and tests (448 passing, up
+Committed on this branch, all with reproductions and tests (474 passing, up
 from 295).
 
 **The panel matrix invented coverage three separate ways.** This mattered more
@@ -198,6 +198,66 @@ where the review existed and only the second judge failed. Following that exit
 code, a grader blip at hour two of a seven-hour sweep would have thrown away the
 remaining five hours of review production to save a minute of judge calls. Now 4
 means stop and 5 means re-grade, do not re-review.
+
+### The re-run found a third one the same day
+
+The sweep this section was written for was re-launched, and it stopped again at
+**26 of 30 reviews**. The cause, verbatim from the `.failed` artifact:
+
+    You've hit your session limit · resets 7:10pm (America/New_York)
+
+It reset at 19:10, four minutes after the abort. The new machinery worked exactly
+as intended — the driver counted artifacts, printed `26 / 30`, and named the
+passes that were short, where the day before it had written COMPLETED over 3 of
+30. But the *verdict* it wrote was wrong in a way that matters:
+
+    ## Verdict: NOTHING MEASURED
+    It is a failed measurement, and a failed measurement is not a result.
+    Fix the cause and re-run.
+
+There was nothing to fix. The cause was a wall clock that had already cleared
+itself before an operator could read the sentence. Neither `rate_limited()` nor
+`quota_exhausted()` matched the string, so the run also failed with **zero
+retries** — and the *same corpus* held `You've hit your weekly limit · resets
+5am`, unmatched for the same reason.
+
+Filing a usage window under either existing bucket prescribes a wrong action, not
+merely an imprecise label. As a rate limit it earns three retries over ~7 minutes,
+which a reset hours away outlasts — and then every remaining pass retries and
+fails, the exact burn `quota_exhausted()` was written to end. As a budget it drops
+the agent for the whole sweep and reports a failed measurement, discarding a
+candidate that would have worked fine twenty minutes later. So it gets the third
+action and the third code:
+
+| code | means | a driver should |
+|---|---|---|
+| 2 | usage error | fix the invocation |
+| 3 | credential refusal | fix the key |
+| 4 | no usable review | **stop**, find the defect |
+| 5 | reviews exist, none gradeable | **keep going**, queue a re-grade |
+| 6 | provider usage window closed | **wait for the reset, then re-invoke** |
+
+6 is the weakest of the three failures on purpose: everything already on disk is
+reused on the next invocation, which is why resuming cost four reviews instead of
+thirty.
+
+Two rules came out of it, both about method rather than code:
+
+**Enumerate the refusals before writing the matcher.** All three gaps —
+copilot's monthly quota, the session limit, the weekly limit — were written from
+imagined provider phrasings while the real strings sat in
+`~/.local/state/cadre/*/*.failed`. One `sort | uniq -c` over that directory found
+the second gap before it ever cost a sweep, and turned up two more things worth
+knowing: `Argument list too long` had been killing kimi and grok runs at ARG_MAX
+on ~180KB prompts, which can only have *understated* those candidates on the
+largest-diff passes, and a `maxSessionTurns` ceiling was failing runs
+indistinguishably from a model that gave up.
+
+**The discriminator was not the period word.** That was the rule the previous fix
+established, and this corpus breaks it: `monthly spend limit` is a longer period
+than `weekly limit` and the opposite kind of refusal. What separates them is that
+one says *when it lifts* and the other says *where to pay*. A limit that states a
+reset is waitable; a limit that states a billing URL is not.
 
 ## Scope, expanded at the same time
 

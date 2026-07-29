@@ -1755,6 +1755,41 @@ check "budget: a finding about billing" "$QE"   # matches, but see below
 head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"; printf 'spend limit\n' >> "$QB"
 check "budget: too big to be a refusal" "! $QE"
 
+# ★★ A USAGE WINDOW: the third refusal, and the two above prescribed the wrong
+# action for it. Found by enumerating what this tool has ACTUALLY been handed
+# (`cat ~/.local/state/cadre/*/*.failed | sort | uniq -c`) after a sweep died at
+# 26 of 30 reviews -- four minutes before the window it was waiting on reopened.
+# Both strings below are verbatim from that corpus, and NEITHER matched either
+# existing classifier, so the run failed in two seconds with zero retries.
+WC="bash -c \"source '$ROOT/lib/common.sh'; provider_window_closed '$QB'\""
+RL="bash -c \"source '$ROOT/lib/common.sh'; rate_limited '$QB'\""
+printf "You've hit your session limit · resets 7:10pm (America/New_York)\n" > "$QB"
+check "window: session limit caught"   "$WC"
+check "window: was NOT a rate limit"   "! $RL"
+check "window: was NOT a budget"       "! $QE"
+printf "You've hit your weekly limit · resets 5am (America/New_York)\n" > "$QB"
+check "window: weekly limit caught"    "$WC"
+check "window: weekly is not a budget" "! $QE"
+# ★ THE ONE THAT KEEPS THIS FUNCTION HONEST, and the discriminator is not the
+# period word this time -- "monthly spend limit" is a longer period than
+# "weekly limit" and yet the opposite kind of refusal. It states WHERE TO PAY, not
+# WHEN IT LIFTS, because only money lifts it. A stated reset is the whole test.
+printf "You've hit your monthly spend limit · raise it at claude.ai/settings/usage\n" > "$QB"
+check "window: a spend cap is NOT one" "! $WC"
+check "window: it stays a budget"      "$QE"
+# ★ And a THROUGHPUT ceiling with a short reset must stay on the retry path,
+# where 60/120/240 backoff already clears it. Aborting a sweep over a
+# one-minute wait would be the same overcorrection in the other direction.
+printf 'Error: 429 rate limit exceeded, resets in 60s\n' > "$QB"
+check "window: a 60s reset is not one" "! $WC"
+check "window: it still retries"       "$RL"
+printf 'Kiro rate limit reached: Request quota exceeded\n' > "$QB"
+check "window: kiro stays a rate limit" "! $WC"
+# Same length guard, same reason: a review OF a session-limiter says all of this.
+head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"
+printf "hit your session limit, resets at midnight\n" >> "$QB"
+check "window: too big to be a refusal" "! $WC"
+
 # A candidate that is out of budget: refuses, and counts how often it was asked.
 budget_case() {  # budget_case <dir>
   local d="$1" sha
@@ -1792,6 +1827,38 @@ check "budget: no review was produced"   "grep -q 'p1: no usable review, run-pas
 # the driver that recorded COMPLETED sent stdout to /dev/null. Only the exit code
 # reaches a shell loop that is not reading.
 check "budget: exit 4, not 0"         "[ '$RC' -eq 4 ]"
+
+# ★ The same sweep-level machinery for a closed WINDOW, which must reach a driver
+# as a DIFFERENT code. 4 tells a driver the cause is a defect to go fix; 6 tells
+# it to wait out the reset and re-invoke, at which point every review already on
+# disk is reused. On 2026-07-28 that difference was 4 reviews versus 30.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+cat > "$D/agents.d/broke.sh" <<A
+run_broke() {
+  echo call >> "$D/calls"
+  echo "You've hit your session limit · resets 7:10pm (America/New_York)"
+  return 1
+}
+A
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+check "window: asked exactly ONCE"    "[ \$(wc -l < '$D/calls') -eq 1 ]"
+check "window: says window CLOSED"    "grep -q 'usage window is CLOSED' <<<\"\$OUT\""
+check "window: not called a budget"   "! grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
+check "window: aborts the sweep"      "grep -q 'ABORTING the sweep here' <<<\"\$OUT\""
+check "window: p2 marked NOT ATTEMPTED" "grep -q 'p2: NOT ATTEMPTED' <<<\"\$OUT\""
+# ★ The verdict must not read "failed measurement / fix the cause": there is
+# nothing to fix, and by the time an operator read that message on 2026-07-28 the
+# cause had already cleared itself.
+check "window: verdict names the window" "grep -q 'Verdict: NOT MEASURED -- PROVIDER WINDOW CLOSED' <<<\"\$OUT\""
+check "window: NOT 'NOTHING MEASURED'"   "! grep -q 'Verdict: NOTHING MEASURED' <<<\"\$OUT\""
+check "window: does not say fix it"      "! grep -q 'Fix the cause and re-run' <<<\"\$OUT\""
+check "window: says resume after reset"  "grep -q 'Resume after the reset time above' <<<\"\$OUT\""
+# The reset time is the one fact a driver needs to schedule its own resumption,
+# so it is quoted verbatim rather than parsed into a sleep in lib/.
+check "window: quotes the reset time"    "grep -q 'resets 7:10pm' <<<\"\$OUT\""
+# ★ THE ONE THAT REACHES A DRIVER THAT IS NOT READING STDOUT.
+check "window: exit 6, not 4"            "[ '$RC' -eq 6 ]"
 
 # A PARTIAL failure must NOT abort. 1 of 2 runs is still a review worth grading,
 # and aborting there would throw away real output over a flake -- the opposite

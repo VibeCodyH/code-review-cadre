@@ -85,7 +85,7 @@ mapfile -t SCRUB < <(scrubbed_env)
 # everything, and the driver above it wrote COMPLETED across a sweep where 27 of
 # 30 requested reviews did not exist. Silence and success must not share an exit
 # code.
-ok_runs=0; bad_runs=0; dead_agents=""
+ok_runs=0; bad_runs=0; dead_agents=""; windows=""
 
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
@@ -97,7 +97,7 @@ for r in "${reviewers[@]}"; do
     continue
   }
   m=(); [ -n "$model" ] && m=(-M "$model")
-  budget=""
+  budget=""; window=""
   for n in $(seq 1 "$runs"); do
     f="$OUT/$(slug "$r")-run$n.md"
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
@@ -128,6 +128,11 @@ for r in "${reviewers[@]}"; do
       # is waste and attempting this agent on the REMAINING passes is a
       # guaranteed hour of writing 102-byte failures. See quota_exhausted().
       quota_exhausted "$f.part" && { budget=1; break; }
+      # ★ And a usage WINDOW before the rate limit, for the mirror-image reason:
+      # backoff cannot outwait a reset hours away, but the reset is real, so this
+      # is neither a defect to fix nor an account to top up. See
+      # provider_window_closed().
+      provider_window_closed "$f.part" && { window=1; break; }
       rate_limited "$f.part" || break
       if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
         { echo "DID NOT COMPLETE, rate limited, gave up after $attempt attempts."
@@ -181,6 +186,19 @@ for r in "${reviewers[@]}"; do
       break
     fi
 
+    # Usage window closed: same stop, different meaning, and the reset time is
+    # quoted verbatim because it is the one fact the operator or driver needs to
+    # schedule the resumption. NOT parsed into a sleep here: a 12-hour clock, a
+    # timezone name and a midnight crossing are three ways to hang a sweep for
+    # hours instead of failing it, so the decision belongs to the caller.
+    if [ -n "$window" ]; then
+      bad_runs=$((bad_runs + (runs - n)))
+      windows="$windows  $r: usage window closed after run$n -- $(head -c 200 "$f.failed" 2>/dev/null | tr '\n' ' ')"$'\n'
+      echo "    ⏸ $r's usage window is CLOSED, not a rate limit and not a budget."
+      echo "cadre: $r hit a provider usage window on pass $label. Waiting clears it; see the reset time above." >&2
+      break
+    fi
+
     # Several CLIs have no read-only mode and the brief invites running tests.
     # A reviewer that edits a file changes what every later reviewer sees.
     # Safe to restore: this checkout is a disposable clone.
@@ -203,6 +221,20 @@ echo "  $ok_runs usable, $bad_runs not usable, of $((ok_runs + bad_runs)) reques
 # the next pass will almost certainly go the same way. 4, because 2 is a usage
 # error and 3 is the credential refusal.
 if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
+  # ★ 6 before 4. Both mean "this pass measured nothing", and they prescribe
+  # opposite next moves: 4 says the cause is a defect to fix, 6 says the cause is
+  # a clock that will clear itself. Reporting a closed window as a failed
+  # measurement is how a sweep four minutes short of resuming got a report
+  # reading "Fix the cause and re-run" with nothing to fix.
+  if [ -n "$windows" ]; then
+    {
+      echo "cadre: pass '$label' measured NOTHING because a provider usage window closed."
+      printf '%s' "$windows"
+      echo "Nothing is wrong with the tool, the key, or the candidate, and nothing"
+      echo "already on disk was lost. Resume after the reset time quoted above."
+    } >&2
+    exit 6
+  fi
   {
     echo "cadre: NO usable review on pass '$label'. $bad_runs requested run(s), none produced one."
     [ -n "$dead_agents" ] && printf '%s' "$dead_agents"

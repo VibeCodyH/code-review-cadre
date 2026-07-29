@@ -412,6 +412,50 @@ quota_exhausted() {
   grep -qiE '(spend limit|usage limit|monthly limit|plan limit|insufficient (balance|funds|credit|quota)|recharge your account|credit balance is too low|(account|organization|org)[a-z0-9 _<>-]{0,40}(is )?(suspended|deactivated|disabled)|payment required|\b402\b|billing (details|issue|problem)|purchase (more )?credits|exceeded your (monthly|daily|weekly|annual|yearly|plan)[a-z ]{0,20}quota|(monthly|daily|weekly|annual|yearly) (quota|allowance)|quota (exceeded|exhausted)[^.]{0,40}(month|billing period|plan))' "$f"
 }
 
+# ★ A THIRD refusal, and the reason it needs its own function is that the two
+# above prescribe the wrong ACTION for it. Measured 2026-07-28, on the candidate
+# this whole benchmark is about:
+#
+#   You've hit your session limit · resets 7:10pm (America/New_York)
+#   You've hit your weekly limit  · resets 5am (America/New_York)
+#
+# Neither matched rate_limited NOR quota_exhausted, so a run failed in two
+# seconds with zero retries and the sweep stopped 26 reviews into 30 -- four
+# minutes before the window it was waiting on reopened.
+#
+# Filing it under either existing bucket is wrong, not just imprecise:
+#   as a rate limit -- three retries over ~7 minutes (60/120/240). A reset hours
+#                     away outlasts that, and then every remaining pass retries
+#                     and fails: the kimi burn quota_exhausted exists to end.
+#   as a budget     -- skips the agent for the whole sweep and reports a FAILED
+#                      MEASUREMENT. Waiting really does clear a usage window, so
+#                      that discards a candidate that would work fine in 20
+#                      minutes, and calls a wall clock a defect.
+# So the action is its own: stop, keep everything, resume after the stated time.
+# Exit 6 carries it. See lib/run-pass.sh.
+#
+# ★ The discriminator is a STATED RESET, not the period word -- which is what
+# separates this from quota_exhausted, whose own claude case is
+# "monthly spend limit · raise it at claude.ai/settings/usage": no reset time,
+# because only money lifts that one. A limit that tells you when it lifts is
+# waitable; a limit that tells you where to pay is not.
+#
+# Deliberately NOT matching "rate limit ... resets in 60s": a throughput ceiling
+# with a short reset belongs on the retry path, where backoff already handles it.
+# Only a named USAGE WINDOW counts here.
+#
+# Checked AFTER quota_exhausted, so an observed budget string keeps its observed
+# handling. A refusal naming both a spend cap and a reset time would land in
+# quota_exhausted; no such string has ever been seen, and inventing handling for
+# unobserved phrasings is the mistake that produced all three of these gaps.
+provider_window_closed() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 2000 ] || return 1
+  grep -qiE '(session|weekly|daily|hourly|[0-9]+[ -]?hour) limit' "$f" || return 1
+  grep -qiE 'reset' "$f"
+}
+
 # ★ The same question for a SYNTHESIS, which needs a different answer. A
 # reviewer that trips the keyword scan can be rescued by its adapter's marker; a
 # synthesis carries no marker, so the scan is the last word and it is wrong more
