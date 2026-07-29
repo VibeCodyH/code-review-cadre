@@ -93,7 +93,7 @@ the citation, drop the load-bearing use.
 
 ## Mechanisms: what was broken, and what got fixed
 
-Committed on this branch, all with reproductions and tests (474 passing, up
+Committed on this branch, all with reproductions and tests (485 passing, up
 from 295).
 
 **The panel matrix invented coverage three separate ways.** This mattered more

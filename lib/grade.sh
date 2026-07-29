@@ -680,9 +680,17 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   # DEFER on a blocking item is evidence already in hand, and a missing pass
   # does not undo it.
   if [ "$nskipped" -gt 0 ]; then
+    # ★ Right verdict, wrong instruction, which is the same defect the
+    # NOTHING-MEASURED wording had: "restore the missing keys or checkouts" sends
+    # the operator looking for a broken registry when the sweep was stopped by a
+    # provider clock and there is nothing to restore. The verdict below is
+    # unchanged either way -- a short denominator still cannot recommend a seat.
+    local fixit="Restore the missing keys or checkouts and re-run before slotting anything."
+    [ -n "$window_closed" ] &&
+      fixit="A provider usage window closed mid-sweep, so the missing passes are a clock and not a defect: wait for the reset named above, then re-run to resume. Every review already on disk is reused."
     case "$slot" in
       SEAT:*|INCONCLUSIVE)
-        reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. Restore the missing keys or checkouts and re-run before slotting anything. On the passes that did run: $reason"
+        reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. $fixit On the passes that did run: $reason"
         slot="INCOMPLETE, not slottable" ;;
     esac
   fi

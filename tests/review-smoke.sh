@@ -1405,7 +1405,11 @@ echo "== ★ a registered pass that never ran must reach the report =="
 check "grade records the skip"       "grep -q 'skipped=\"\$skipped- \$label' '$ROOT/lib/grade.sh'"
 check "and the report prints it"     "grep -q 'registered pass(es) NOT GRADED' '$ROOT/lib/grade.sh'"
 check "a short denominator cannot slot" "grep -q 'INCOMPLETE, not slottable' '$ROOT/lib/grade.sh'"
-check "leak verdict still outranks it"  "grep -A4 'nskipped\" -gt 0' '$ROOT/lib/grade.sh' | grep -q 'SEAT:\*|INCONCLUSIVE'"
+# -A12, not -A4: this asserts the SHAPE of the source rather than behaviour, so a
+# comment added inside the block breaks it while the guard still works. Widened
+# once already for exactly that reason. The claim is narrow -- the rewrite matches
+# only SEAT:*|INCONCLUSIVE, so a leak or a DEFER keeps its disqualifying verdict.
+check "leak verdict still outranks it"  "grep -A12 'nskipped\" -gt 0' '$ROOT/lib/grade.sh' | grep -q 'SEAT:\*|INCONCLUSIVE'"
 # An unquoted DEFER is the judge's claim, not the candidate's behaviour, and
 # DEFER on a blocking item is the one non-tunable disqualifier in the tool.
 check "unquoted DEFER does not disqualify" "grep -q 'unquoted_defer=\$((unquoted_defer + 1))' '$ROOT/lib/grade.sh'"
@@ -1875,6 +1879,35 @@ check "window: says resume after reset"  "grep -q 'Resume after the reset time a
 check "window: quotes the reset time"    "grep -q 'resets 7:10pm' <<<\"\$OUT\""
 # ★ THE ONE THAT REACHES A DRIVER THAT IS NOT READING STDOUT.
 check "window: exit 6, not 4"            "[ '$RC' -eq 6 ]"
+
+# ★★ THE PATH THE REAL INCIDENT TOOK, and the one above does NOT cover it. Above,
+# the window closes on the FIRST pass, so graded_passes is 0 and the run lands in
+# the nothing-was-graded block. On 2026-07-28 eight passes had already graded when
+# the window closed, so the code falls straight past that block into the SLOT
+# RECOMMENDATION -- and a seat computed from the passes that survived would be a
+# report named after more than it measured, twice in one day.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+cat > "$D/agents.d/broke.sh" <<A
+run_broke() {
+  echo "You've hit your session limit · resets 7:10pm (America/New_York)"
+  return 1
+}
+A
+# p1 graded and PERFECT, so the slot logic would happily reach "SEAT:" off it.
+SLB=$(slug broke)
+printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
+printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 1 2>&1); RC=$?
+check "partial window: p1 still scored"  "grep -q 'K1=HIT' <<<\"\$OUT\""
+check "partial window: NO seat off it"   "! grep -q 'Verdict: SEAT' <<<\"\$OUT\""
+check "partial window: says INCOMPLETE"  "grep -q 'Verdict: INCOMPLETE, not slottable' <<<\"\$OUT\""
+# ★ Right verdict, wrong instruction is the same defect as the wrong verdict:
+# "restore the missing keys or checkouts" sends the operator hunting a broken
+# registry when a clock stopped the sweep and there is nothing to restore.
+check "partial window: not 'restore keys'" "! grep -q 'Restore the missing keys' <<<\"\$OUT\""
+check "partial window: says wait + resume" "grep -q 'wait for the reset named above' <<<\"\$OUT\""
+check "partial window: exit 6"           "[ '$RC' -eq 6 ]"
 
 # A PARTIAL failure must NOT abort. 1 of 2 runs is still a review worth grading,
 # and aborting there would throw away real output over a flake -- the opposite
