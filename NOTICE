@@ -6,12 +6,15 @@ LICENSING HISTORY
 
 This project is MIT licensed. See LICENSE.
 
-It has been MIT throughout except for a two-day window: published publicly
-under MIT on 2026-07-26, made private and relicensed as proprietary on
-2026-07-27, then returned to MIT and made public again on 2026-07-28. That is
-recorded here rather than quietly dropped. Nothing was withdrawn from anyone —
-the MIT grant on the published snapshot always stood, and the current LICENSE
-now covers the whole tree on the same terms.
+It has not always been. Published publicly under MIT on 2026-07-26 through
+commit `71d040a`; made private on 2026-07-27 and relicensed, with everything
+committed after that snapshot — the answer-key path, the graded-pass format,
+the miner's filter diagnostics — proprietary rather than MIT; then returned to
+MIT and made public again on 2026-07-28.
+
+That is recorded here rather than quietly dropped. Nothing was ever withdrawn
+from anyone: the MIT grant on the published snapshot always stood, and the
+current LICENSE now extends the same terms to everything committed since.
 
 THIRD-PARTY CODE
 ----------------
