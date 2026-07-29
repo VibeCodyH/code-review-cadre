@@ -151,15 +151,28 @@ judge_specs() {
 }
 
 judge_call() {
-  local a m mm=()
+  local a m mm=() d rc
   a=$(spec_agent "$CADRE_JUDGE"); m=$(spec_model "$CADRE_JUDGE")
   [ -n "$m" ] && mm=(-M "$m")
+  # ★ The judge gets an EMPTY directory, never /tmp. A judge on an agent CLI is
+  # a tool user, `-m ro` only stops writes, and /tmp on a real machine holds
+  # editor scratch, other agents' session dirs, and -- measured 2026-07-28 -- a
+  # 644 copy of this harness's own answer key. A grader rooted there greps for
+  # the commit and finds the answers. docs/METHOD.md §3.
+  # The tool surface itself is the deeper problem; `agents.d/ollama.sh` is the
+  # seat with no tools at all, and is what a judge should use.
+  d=$(mktemp -d "${TMPDIR:-/tmp}/cadre-judge.XXXXXXXX") || die "judge: no temp dir"
   # Scrubbed like every other model call. The judge is handed the key by
   # design, but CADRE_WORK in its environment is still a map to trees it has
   # no business in -- the same rule adjudicate_one already follows.
   local sc; mapfile -t sc < <(scrubbed_env)
   "${sc[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
-    "$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro
+    "$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d "$d" -m ro
+  rc=$?
+  # rmdir, not rm -rf: -m ro means nothing should have been written, and if
+  # something was, failing to delete it is the signal worth keeping.
+  rmdir "$d" 2>/dev/null || true
+  return $rc
 }
 
 # Test command for the review brief. Empty result drops that paragraph.
