@@ -1,37 +1,16 @@
-Code Review Cadre
+MIT License
 
-Copyright (c) 2026 Cody Harris. All rights reserved.
+Copyright (c) 2026 Cody Harris
 
-This software is proprietary. It is not open source, and no rights are granted
-except the limited evaluation permission below.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Without prior written permission from the copyright holder, you may not copy,
-modify, merge, publish, distribute, sublicense, sell, or create derivative
-works from this software or any part of it.
-
-See NOTICE for the licensing history of this project, including the portion
-that was previously published under the MIT License and remains available on
-those terms.
-
-
-LIMITED EVALUATION PERMISSION
-
-If the copyright holder has given you access to this repository as a named
-evaluator, you may, for the purpose of evaluating the software and reporting
-back on it:
-
-  1. Clone the repository and run it against your own code.
-  2. Modify your own working copy as needed to make it run in your
-     environment.
-  3. Share your findings, including quoted excerpts of the source, with the
-     copyright holder.
-
-You may not redistribute the software or any modified version of it, publish
-it, or use it to provide a service to any third party. This permission ends
-when the copyright holder withdraws it.
-
-
-NO WARRANTY
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -40,7 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-This software runs third-party AI coding tools against your source code. Some
-of those tools upload the code they are given to servers operated by their
-vendors. You are responsible for deciding what you point it at.

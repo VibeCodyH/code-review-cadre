@@ -146,8 +146,8 @@ finding, so the keyword match now requires zero findings.
 
 **`cadre review` collapsed every failure to exit 1.** A credential refusal (3)
 was indistinguishable from "the reviewers ran and failed" (1) to anything
-wrapping cadre — including Cody's own WOWnet auto-review pipeline — and a retry
-is the wrong response to a refusal. Found by tightening a test rather than by
+wrapping cadre — including the PR-review pipeline this was built alongside — and
+a retry is the wrong response to a refusal. Found by tightening a test rather than by
 reading the code, which is the third time in this review that mattered: the
 loose version asserted "output contains `.env`" and would have passed whether or
 not the preflight ran at all.
