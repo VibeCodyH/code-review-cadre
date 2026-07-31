@@ -58,14 +58,26 @@ PANELS="$OUT_D/panels.tsv"
     for spec in $roster; do
       sl=$(slug "$spec")
       st=failed; art=""
-      # ★ Suffix precedence is safe here, and two reviewers of the commit that
-      # added `.inconclusive` both flagged it as a bug, so: this loop reads
-      # $CADRE_HOME/reviews only, and run-review.sh does NOT resume -- fresh
-      # out-dir per panel, exactly one mv per slot. Two terminal artifacts for one
-      # slot is unreachable in this input. `run-pass.sh` DOES resume and can leave
-      # `.partial` beside a newer `.inconclusive`, but its consumer is grade.sh,
-      # which handles the pair explicitly. Do not "fix" the order here without
-      # first giving run-review.sh a resume path.
+      # ★ Suffix precedence is safe here, and THREE reviewers of the commit that
+      # added `.inconclusive` flagged it as a bug, so the reason is written down
+      # with the line that guarantees it rather than as an assurance.
+      #
+      # This loop reads $CADRE_HOME/reviews only. A panel dir there is always
+      # fresh, and the guarantee is `bin/cadre`'s bare `mkdir "$out" 2>/dev/null
+      # || die "$out already exists. Pick another --label."` -- not `mkdir -p`, and
+      # it refuses rather than reusing. An auto label also counts up
+      # `review-<sha>-1`, `-2` past anything present. So one slot cannot hold two
+      # terminal artifacts in this input, and the labels in the wild that look like
+      # reuse (`pi-1`, `pi-2`, `lead-3state-a/b`) are separate panels.
+      #
+      # ⚠ The tolerance is one layer down: run-review.sh's own `mkdir -p "$OUT"`
+      # would happily reuse a dir if the script were invoked directly, and unlike
+      # run-pass.sh it never clears stale artifacts per slot. `run-pass.sh` DOES
+      # resume and can leave `.partial` beside a newer `.inconclusive` -- its
+      # consumer is grade.sh, which handles that pair explicitly. So: if
+      # run-review.sh ever gets a resume path, or bin/cadre stops refusing an
+      # existing label, THIS ORDER BECOMES A BUG and `.inconclusive` must win over
+      # a stale `.partial`.
       if   [ -s "$d/$sl.md" ];              then st=ok;           art="$d/$sl.md"
       elif [ -s "$d/$sl.md.partial" ];      then st=degraded;     art="$d/$sl.md.partial"
       elif [ -s "$d/$sl.md.inconclusive" ]; then st=inconclusive; art="$d/$sl.md.inconclusive"

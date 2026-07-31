@@ -947,8 +947,19 @@ check "and only 2 completed"           "grep -q 'of whom 2\$' '$P'"
 # ★ ctx=synth is exempt. A synthesis of a clean panel names no findings and
 # gives no verdict of its own -- it reports each reviewer's -- so applying the
 # rule there would bin good merges.
-check "the synthesis itself survived"  "[ -s '$R/synthesis.md' ]"
-check "and was not binned"             "[ ! -e '$R/synthesis.md.inconclusive' ]"
+# ★★ These two assertions were VACUOUS in the first version of this test and a
+# mutation run is what showed it: the synth was `echoer`, whose output is the
+# echoed prompt, and the prompt itself carries finding-shaped lines -- so they
+# passed with the `ctx = run` guard deleted. A test for an exemption has to use
+# input the rule would otherwise CATCH. `waffle` is that input, by construction:
+# it is the stub built above to have no findings and no verdict. Delete the
+# `ctx = run` guard in classify_run and the next two checks must fail.
+DS=$(case_dir synth_exempt); SS="$DS/src"
+git -C "$SS" checkout -qb feature; echo x >> "$SS/app.js"; git -C "$SS" commit -qam f
+run_cadre "$DS" review --roster good,terse --synth waffle --base main "$SS" >/dev/null
+RS="$DS/state/reviews/$(ls "$DS/state/reviews" | head -1)"
+check "a no-verdict synth survives"    "[ -s '$RS/synthesis.md' ]"
+check "and is not binned as unusable"  "[ ! -e '$RS/synthesis.md.failed' ]"
 # The per-run record has to carry the state too: it is the benchmark row a
 # roster decision gets made on.
 check "slots.tsv records the state"    "grep -qP '\tinconclusive\t' '$R/slots.tsv'"
@@ -2148,6 +2159,52 @@ check "partial: run1 still scored"    "grep -q 'K1=HIT' <<<\"\$OUT\""
 check "partial: run2 is UNUSABLE"     "grep -q 'run 2: \*\*UNUSABLE\*\*' <<<\"\$OUT\""
 check "partial: did NOT abort"        "! grep -q 'ABORTING' <<<\"\$OUT\""
 check "partial: exit 0"               "[ '$RC' -eq 0 ]"
+
+echo "== ★ inconclusive on the BENCHMARK path =="
+# ★ Every other test of the fourth state drives `cadre review`. These two drive
+# `cadre run`, which is the half a roster decision is actually made on, and the
+# `inconclusive)` arm in run-pass.sh plus the reason line in grade.sh had no
+# coverage at all until a review pointed that out.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+SLB=$(slug broke)
+# Exits 0 with fluent prose, no findings, no verdict: the measured shape.
+cat > "$D/agents.d/broke.sh" <<A
+run_broke() {
+  echo "I have looked over the changes you provided and they seem reasonable."
+  echo "Several files are touched and the behaviour is extended throughout."
+  return 0
+}
+A
+# ★ run1 is pre-seeded as a real graded review so the pass has something usable
+# and grading actually proceeds. With every run inconclusive there are zero usable
+# reviews and the sweep bails before it writes any per-run reason line -- correct
+# behaviour, and it makes run2 the only place to assert the reason. Same reason
+# the partial test above seeds run1.
+printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
+printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 p1 2>&1); RC=$?
+check "run: filed .md.inconclusive"   "ls '$D/home/p1'/$SLB-run2.md.inconclusive >/dev/null 2>&1"
+check "run: NOT a scorable review"    "! ls '$D/home/p1'/$SLB-run2.md >/dev/null 2>&1"
+check "run: NOT filed as failed"      "! ls '$D/home/p1'/$SLB-run2.md.failed >/dev/null 2>&1"
+check "run: says INCONCLUSIVE"        "grep -q 'INCONCLUSIVE after' <<<\"\$OUT\""
+check "run: says not scored"          "grep -q 'not scored' <<<\"\$OUT\""
+check "run: run1 still scored"        "grep -q 'K1=HIT' <<<\"\$OUT\""
+check "run: did NOT abort"            "! grep -q 'ABORTING' <<<\"\$OUT\""
+# ★ The reason line must name the ROSTER problem, not the adapter. "the adapter
+# failed" sends the reader to agents.d for a model that will not hold the brief.
+check "grade: UNUSABLE names no review" "grep -q 'ran but returned no review' <<<\"\$OUT\""
+check "grade: does NOT blame adapter"   "! grep -q 'the adapter failed' <<<\"\$OUT\""
+# ★ .partial is deliberately kept across attempts while .inconclusive is cleared,
+# so an earlier attempt's partial -- which HAS findings in it -- can still be on
+# disk. Reporting only "no review" buries it, the same way the .failed path was
+# already careful not to.
+printf 'blocking - a real finding from the earlier attempt\n_TRUNCATED, stopped early.\n' \
+  > "$D/home/p1/$SLB-run2.md.partial"
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" grade broke 2 p1 2>&1)
+check "grade: names surviving partial" "grep -q 'an earlier attempt stopped early' <<<\"\$OUT\""
+check "grade: still says no review"    "grep -q 'ran but returned no review' <<<\"\$OUT\""
 
 echo "== ★ a scoped run is one pass, and must not overwrite the gauntlet report =="
 # THIRD instance of one bug: a report named after less than what identifies it.
