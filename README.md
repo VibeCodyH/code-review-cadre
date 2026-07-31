@@ -395,10 +395,10 @@ The rest of the handling follows from that:
 `--jobs N` runs reviewers concurrently. It defaults to 1 because roster members
 on the same provider share a rate limit; cadre warns when it spots two.
 
-### A reviewer can half-finish, so there are three states
+### A reviewer can half-finish or never start, so there are four states
 
 ```
-4 reviewers: 2 ok, 1 degraded, 1 failed
+4 reviewers: 2 ok, 1 degraded, 0 inconclusive, 1 failed
 ```
 
 A model that runs out of tokens partway through hands you real findings about
@@ -428,6 +428,25 @@ Only the adapter can tell these apart — nothing downstream can distinguish an
 empty answer from an empty failure — so the contract lives there, in
 [docs/ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md).
 
+The fourth state is the one that has nothing to do with the adapter. A model can
+exit 0, write 40KB, and never review anything — it summarises the diff, asks a
+clarifying question, or echoes the patch back. `ok` used to mean "has content, no
+marker, exit 0", which is not the same as "is a review", so those runs went into
+the synthesis as complete reviewers: they inflated every finding's denominator
+and their silence cleared every file they never mentioned. Cadre calls that
+**inconclusive**, and the test is narrow on purpose — **no findings _and_ no
+bottom line.** A review that states findings, or ends with a verdict, is `ok`
+however thin it looks, because `findings=0` plus "ship it" is a real review and a
+length floor threw exactly those away once. An inconclusive run is excluded from
+the synthesis, never scored, and kept apart from `failed` in the report and in
+`slots.tsv` — "the CLI broke" sends you to the adapter, "this model will not hold
+the review contract" sends you to the roster, and they are not the same problem.
+
+Measured, on the 26 review directories this repo was developed against: three
+runs were scored `ok` while being a summary signed off with an emoji, a request
+for clarification, and a parroted diff. Thirteen genuine zero-finding reviews all
+stated a verdict and are untouched.
+
 **How much of this you actually get depends on your adapters.** `degraded` is
 reachable only when an adapter emits the `_TRUNCATED` marker, and today that is
 `grok` — it reads a `stopReason` from structured output, so it knows it stopped.
@@ -444,6 +463,10 @@ Two deliberate exceptions. A degraded run is **not scored** in a benchmark: a
 number is a per-model claim and a run cut short is not a fair sample of the
 model. And a degraded *synthesis* is treated as a failure, because the reviews
 it was merging are already complete on disk and worth more than a partial merge.
+The inconclusive check is also skipped for a synthesis, for a third reason: a
+merge of a clean panel legitimately names no findings and gives no verdict of its
+own — it reports each reviewer's — so applying the rule there would bin good
+merges.
 
 ### Re-running without re-reading: `cadre settle`
 
@@ -639,25 +662,31 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
 - No secret scanning. The credential check works off known credential filenames,
   and reads contents only for four config files. A key in a source file passes.
 - No sandbox. See above, and mean it.
-- **It cannot tell a bad review from a non-review.** `ok / degraded / failed` is
-  decided mechanically — exit status, emptiness, the markers an adapter emits. A
-  reviewer that returns fluent prose which never reviews anything, asks a
-  clarifying question, or narrates a tool transcript, counts as `ok` and lands in
-  the agreement denominators. Caught in the wild: a panel where one reviewer's
-  39KB of output was mostly transcript, the synthesizer correctly noted it "did
-  not perform a substantive review", and the tags still counted it.
+- **It cannot tell a bad review from a thin one.** Narrowed, not closed. The
+  version of this that counted a *non-review* as `ok` is fixed: a run that states
+  no findings and no bottom line is now `inconclusive` and stays out of the
+  denominators (see the four states above). What remains open is judging
+  **substance** — a review that names findings and ends with a verdict counts in
+  full, however worthless its reasoning, because the states are still decided
+  mechanically and nothing here reads for quality.
 
-  This one stays open on purpose. The obvious fix — score each review and discount
-  the ones that don't look like reviews — has to decide who deserves to be heard
-  *before* it knows what they said. Measured here: a later panel produced a 92KB
-  review that was mostly narrated tool transcript, the exact shape such a filter
-  drops. It ended in the only finding that run produced, and a real one: cadre's
-  own escape-stripping was written with a GNU-only sed escape, so on macOS it had
-  been silently matching nothing and refiling the exact failure it exists to
-  catch. Fixed in the same commit. The noisy reviewer was the productive one, and
-  a filter that had dropped it would have dropped the finding with it. Judging
-  *substance* needs a model, and a model deciding which reviewers to discount is a
-  different tool with a different failure mode.
+  That part stays open on purpose, and the reason is the same as before. The
+  obvious fix — score each review and discount the ones that don't look like
+  reviews — has to decide who deserves to be heard *before* it knows what they
+  said. Measured here: a panel produced a 92KB review that was mostly narrated
+  tool transcript, the exact shape such a filter drops. It ended in the only
+  finding that run produced, and a real one: cadre's own escape-stripping was
+  written with a GNU-only sed escape, so on macOS it had been silently matching
+  nothing and refiling the exact failure it exists to catch. Fixed in the same
+  commit. The noisy reviewer was the productive one, and a filter that had
+  dropped it would have dropped the finding with it.
+
+  That artifact is also the calibration for where the line now sits. It is a
+  zero-finding, mostly-transcript review — and it survives, because it ends
+  `Verdict: should-fix`. `inconclusive` asks only whether the reviewer stated a
+  bottom line, which is a structural question with a mechanical answer. Judging
+  whether that bottom line was *earned* needs a model, and a model deciding which
+  reviewers to discount is a different tool with a different failure mode.
   Read the reviews, not just the synthesis.
 
 ## Adding a reviewer

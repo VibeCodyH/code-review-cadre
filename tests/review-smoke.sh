@@ -22,14 +22,21 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc synthrate synthtiny; do
+           synthquote synthtrunc synthrate synthtiny waffle parrot; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
+  # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
+  # to end with one, and classify_run now files a run that states no findings AND
+  # no verdict as `inconclusive` rather than `ok`. A stub without it models a
+  # model that never reviewed, which is a real case with its own tests below --
+  # so a stub standing in for a COMPLETE review has to say what a complete
+  # review says. Last line, because the check is edge-anchored.
   cat > "$1/agents.d/good.sh" <<'A'
 run_good() {
   echo "REVIEW by good"
   ( cd "$dir" && echo "--ls-files--" && git ls-files \
       && echo "--diff--" && git diff --name-only "$CADRE_PASS_BASE...HEAD" )
+  echo "Verdict: ship it"
 }
 A
   sed 's/good/good2/g' "$1/agents.d/good.sh" > "$1/agents.d/good2.sh"
@@ -69,6 +76,50 @@ A
   # "findings=0" is a valid review and a length floor used to throw those away.
   cat > "$1/agents.d/terse.sh" <<'A'
 run_terse() { printf '\033[0m\nfindings=0\n\033[0m\n'; }
+A
+  # ★ Ran fine, said nothing. Exits 0, non-empty, no adapter marker, fluent --
+  # and never reviewed. Measured shape: an opencode-routed slot that summarised
+  # the diff and signed off with an emoji, and another that asked for
+  # clarification. Under the old three states this scored `ok`, went into
+  # synthesis as a complete review, and inflated every finding's denominator
+  # while its silence cleared every file it never mentioned.
+  # ★ Over 20 lines on purpose, with the tell at the END. The real artifacts were
+  # 37-50KB, and the report EXCERPTS this state with head -20 rather than
+  # printing it whole; a 3-line stub would have been quoted in full and the
+  # excerpting test would have passed for the wrong reason.
+  cat > "$1/agents.d/waffle.sh" <<'A'
+run_waffle() {
+  echo "I have looked over the changes you provided."
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22; do
+    echo "The patch also touches area $i and adds new behaviour there."
+  done
+  echo "This makes the system more resilient and user-friendly. 🚀"
+}
+A
+  # ★ The same state reached the other way, and the reason has_verdict is
+  # EDGE-anchored. This one PARROTS the diff back, and the diff is of cadre, so
+  # the body is thick with cadre's own vocabulary -- "ship it", "no defects
+  # found", "verdict". An unanchored scan for those words passed all three
+  # measured non-reviews for exactly this reason. Nothing here is a bottom line;
+  # it is quoted source. Also the shape an UNMARKED truncation takes, so no
+  # `_TRUNCATED` was ever coming from the adapter.
+  # ★ The quoted vocabulary sits in the MIDDLE, with more than eight lines after
+  # it, because that is the only arrangement that actually exercises the
+  # anchoring. The measured artifacts were tens of KB, so their quotes were
+  # nowhere near either edge; a short stub would put them inside tail -8 and the
+  # test would pass on a plain grep.
+  cat > "$1/agents.d/parrot.sh" <<'A'
+run_parrot() {
+  echo "Here is the change you asked about:"
+  echo '+  echo "End with a one-line overall verdict: blocking, should-fix, or ship it."'
+  echo '+check "no defects found path" "grep -q ship-it out.txt"'
+  echo '+    body="$body===== REVIEWER: $sp ====="'
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    echo "+  context line $i, still quoted diff and not a conclusion"
+  done
+}
 A
   # ★ A SHORT partial review that happens to TALK about rate limiting, then the
   # truncation marker. rate_limited() is a keyword match over files under 2KB,
@@ -177,7 +228,7 @@ check "partial findings kept, not binned" "grep -q 'partial finding' '$R'/trunc-
 check "DEGRADED row in the report"        "grep -q 'DEGRADED' '$R/report.md'"
 check "report says silence is not clean"  "grep -q 'silence is not' '$R/report.md'"
 check "partial review body in report"     "grep -q 'partial finding' '$R/report.md'"
-check "counts name all three states"      "grep -qE '1 ok, 1 degraded, 2 failed' <<<\"\$OUT\""
+check "counts name all four states"       "grep -qE '1 ok, 1 degraded, 0 inconclusive, 2 failed' <<<\"\$OUT\""
 # ★ Marker name decides, not content. This stub prints a raw dump AFTER its
 # marker; a "text before the marker" heuristic would file it as a partial.
 check "DID NOT COMPLETE + raw -> FAILED"  "ls '$R'/dead-*.md.failed >/dev/null 2>&1"
@@ -262,6 +313,7 @@ cat > "$D/agents.d/good.sh" <<'A'
 run_good() {
   echo "REVIEW by good"
   ( cd "$dir" && echo "--history--" && git log -p --all 2>/dev/null | head -200 )
+  echo "Verdict: ship it"
 }
 A
 OUT=$(run_cadre "$D" review --roster good --base main "$S")
@@ -846,7 +898,106 @@ check "chrome-only is not a review"    "! ls '$R'/chrome-*.md >/dev/null 2>&1"
 # ★ The other half. A length floor would catch the banner AND this, and the
 # repo already threw away valid "findings=0" reviews that way once.
 check "a terse review still counts"    "ls '$R'/terse-*.md >/dev/null 2>&1"
-check "counts split them correctly"    "grep -q '1 ok, 0 degraded, 1 failed' <<<\"\$OUT\""
+check "counts split them correctly"    "grep -q '1 ok, 0 degraded, 0 inconclusive, 1 failed' <<<\"\$OUT\""
+
+echo "== ★ a clean exit with no review is INCONCLUSIVE, not ok =="
+# ★ The fourth state, and the one with the worst consequence when it is missing.
+# `ok` meant "has content, no marker, exit 0", which is not "is a review". Three
+# artifacts on this machine's 26 review dirs were scored `ok` while being a
+# summary, a request for clarification, and a parroted diff -- so cmd_synthesize
+# counted three complete reviewers who had reviewed nothing, and their silence
+# cleared every file. Narrow test: no findings AND no bottom line. Either one
+# alone keeps the run `ok`.
+D=$(case_dir inconclusive); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster waffle,parrot,good,terse --synth echoer --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "waffle -> .md.inconclusive"     "ls '$R'/waffle-*.md.inconclusive >/dev/null 2>&1"
+check "and NOT a clean review"         "! ls '$R'/waffle-*.md >/dev/null 2>&1"
+# ★ Kept apart from failed on purpose. Both are excluded and neither is scored,
+# but the report has to send the reader to the ROSTER, not to the adapter.
+check "and NOT filed as failed"        "! ls '$R'/waffle-*.md.failed >/dev/null 2>&1"
+# ★ The edge-anchoring, which is the whole reason has_verdict is not a plain
+# grep: parrot's body quotes cadre's own "ship it" / "no defects found" text.
+check "quoted verdict is not a verdict" "ls '$R'/parrot-*.md.inconclusive >/dev/null 2>&1"
+# Neither half of the rule fires alone.
+check "terse findings=0 stays ok"      "ls '$R'/terse-*.md >/dev/null 2>&1"
+check "a real review stays ok"         "ls '$R'/good-*.md >/dev/null 2>&1"
+check "counts name it separately"      "grep -q '2 ok, 0 degraded, 2 inconclusive, 0 failed' <<<\"\$OUT\""
+check "report says INCONCLUSIVE"       "grep -q 'INCONCLUSIVE' '$R/report.md'"
+check "report says not a review"       "grep -q 'is not a review' '$R/report.md'"
+# ★ The reader's tempting misread, spelled out where the counts are: these
+# artifacts are LONG. Length is not coverage.
+check "warns length is not coverage"   "grep -q 'Length is not coverage' '$R/report.md'"
+check "and that it clears nothing"     "grep -q 'clears nothing' '$R/report.md'"
+# ★ Excerpted like a failure, NOT printed whole like a partial. A partial is a
+# review; this is chrome, and pasting it whole buries the reviews that are real.
+check "body is excerpted, not inlined" "! grep -q 'more resilient and user-friendly' '$R/report.md'"
+# ★ THE POINT. cmd_synthesize picks up .md and .md.partial and drops the rest
+# into dead[], which is already told to keep those members out of every
+# agreement tag -- so the false green closes with no prompt change at all.
+# echoer echoes the prompt back, so synthesis.md IS what the synthesizer was
+# told -- the same idiom the partial-delimiter tests below use.
+P="$R/synthesis.md"
+check "excluded from the synthesis"    "! grep -qE '^===== REVIEWER: (waffle|parrot) =====' '$P'"
+check "declared unusable instead"      "grep -q 'NO USABLE REVIEW' '$P'"
+check "both named as unusable"         "grep -E 'NO USABLE REVIEW' '$P' | grep -q waffle && grep -E 'NO USABLE REVIEW' '$P' | grep -q parrot"
+check "panel size still stated"        "grep -q 'panel was 4 reviewers' '$P'"
+check "and only 2 completed"           "grep -q 'of whom 2\$' '$P'"
+# ★ ctx=synth is exempt. A synthesis of a clean panel names no findings and
+# gives no verdict of its own -- it reports each reviewer's -- so applying the
+# rule there would bin good merges.
+check "the synthesis itself survived"  "[ -s '$R/synthesis.md' ]"
+check "and was not binned"             "[ ! -e '$R/synthesis.md.inconclusive' ]"
+# The per-run record has to carry the state too: it is the benchmark row a
+# roster decision gets made on.
+check "slots.tsv records the state"    "grep -qP '\tinconclusive\t' '$R/slots.tsv'"
+
+echo "== ★ coderabbit's bracket severities are findings =="
+# ★ Measured across three real panels: coderabbit reviews declaring findings=3,
+# findings=13 and findings=3 all counted ZERO here, because review_findings only
+# allowed asterisks before the severity and coderabbit emits `- [major] file`.
+# judge_incoherent() needs >= 2 to fire, so that check -- the one that catches a
+# judge crediting nothing against a review full of findings -- was switched off
+# for an entire reviewer family.
+CRF=$(mktemp)
+printf 'findings=3\n- [major] a.ts\n  do the thing\n- [major] b.ts\n  and the other\n- [minor] c.ts\n  style\n' > "$CRF"
+check "bracket severities counted"     "[ \$(review_findings '$CRF') -ge 2 ]"
+# The shapes that already worked must keep working: loosening this regex is only
+# safe in one direction.
+CRO=$(mktemp)
+printf '1. **blocking** - [a.ts:4](x)\n### 2. should-fix - b.ts\n' > "$CRO"
+check "and the old shapes still count" "[ \$(review_findings '$CRO') -ge 2 ]"
+rm -f "$CRO"
+# findings=N is coderabbit's bottom line: it takes no prompt, so it never gets
+# asked for the prose verdict every other reviewer ends with.
+check "findings=N is a verdict"        "has_verdict '$CRF'"
+CRZ=$(mktemp); printf 'findings=0\n' > "$CRZ"
+check "so a clean coderabbit run is ok" "has_verdict '$CRZ'"
+# ★ Chrome on the SAME line as the bottom line, both edges. The escape-stripping
+# in has_verdict is not decoration: without it these anchored patterns never see
+# past the escape bytes, and a valid review is filed as a non-review. opencode
+# emits exactly this shape, and the last time this function read raw bytes the
+# bug was platform-specific and silent.
+CRE=$(mktemp); printf '\033[0mfindings=0\033[0m\n' > "$CRE"
+check "escaped findings= still counts"  "has_verdict '$CRE'"
+CRV=$(mktemp); printf 'a\nb\n\033[0m**Verdict: ship it**\033[0m\n' > "$CRV"
+check "escaped prose verdict counts"    "has_verdict '$CRV'"
+# ★ A reviewer that LEADS with its verdict instead of ending with one. The brief
+# asks for it last and every measured clean review complies, but binning this
+# would be destroying a real review, which is the expensive direction.
+CRL=$(mktemp)
+printf 'Verdict: ship it\n\nNothing to flag. The diff only touches comments.\nNo behaviour changes.\n' > "$CRL"
+check "a LEADING verdict counts too"    "has_verdict '$CRL'"
+# ...and the reason only the line-anchored pattern is allowed at the head: this
+# opens by quoting a diff that contains the words, and must NOT count.
+CRQ=$(mktemp)
+{ echo 'Here is the change you asked about:'
+  echo '+  echo "End with a one-line overall verdict: blocking, or ship it."'
+  echo '+check "no defects found" "grep -q x y"'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "+  context line $i"; done; } > "$CRQ"
+check "quoted diff at the head is not"  "! has_verdict '$CRQ'"
+rm -f "$CRF" "$CRZ" "$CRE" "$CRV" "$CRL" "$CRQ"
 
 echo "== ★ chrome-stripping must not eat the review itself =="
 # Found by a codex-led panel on cadre's own diff: `/^> build /d` was written to
@@ -918,7 +1069,7 @@ check "complete reviews stay plain"    "grep -qE '^===== REVIEWER: good =====' '
 check "partial text still delivered"   "grep -q 'partial finding' '$P'"
 check "unraised = neither side"          "grep -q 'counts in NEITHER' '$P'"
 check "and never a Disagreement"         "grep -q 'under Disagreements' '$P'"
-check "dead reviewer still declared"   "grep -q 'FAILED, NO REVIEW: dead' '$P'"
+check "dead reviewer still declared"   "grep -q 'NO USABLE REVIEW: dead' '$P'"
 check "panel size stated for dead"     "grep -q 'panel was 4 reviewers' '$P'"
 check "dead kept OUT of the tags"      "grep -q 'out of every agreement tag' '$P'"
 check "raised-by-partial counts BOTH"  "grep -q 'numerator and the' '$P'"
@@ -1110,7 +1261,7 @@ check "and leaves secs empty"       "grep -qP '\t\treconstructed\$' '$D/dataset/
 # would average like a real measurement and drag every mean toward the floor.
 check "never a fabricated zero"     "! grep -qP '\t0\treconstructed\$' '$D/dataset/slots.tsv'"
 check "panels.tsv carries a diff_id" "grep -qP 'ds1\t[0-9a-f]{8}\.\.[0-9a-f]{8}' '$D/dataset/panels.tsv'"
-check "and counts the seats"        "grep -qP 'ds1\t\S+\t2\t1\t0\t1\t' '$D/dataset/panels.tsv'"
+check "and counts the seats"        "grep -qP 'ds1\t\S+\t2\t1\t0\t0\t1\t' '$D/dataset/panels.tsv'"
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

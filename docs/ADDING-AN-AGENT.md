@@ -32,7 +32,8 @@ Edit the stub. It has two functions:
 
 An adapter that returns "" when its CLI dies reads downstream as *a reviewer that
 looked and found no defects*. That is the worst thing an adapter can do, so the
-output contract has three cases and **only the adapter can tell them apart** —
+output contract has three cases you emit and **only the adapter can tell them
+apart** —
 nothing further down the pipe can see the difference between an empty answer and
 an empty failure.
 
@@ -41,6 +42,19 @@ an empty failure.
 | a complete review | the review, nothing else | `ok` |
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
+
+There is a fourth state, `inconclusive`, and **it is not yours to emit.** Cadre
+decides it by reading the artifact: a run that exited cleanly and stated neither a
+finding nor a bottom line never reviewed anything, whatever else it printed. You
+cannot signal it and you do not need to — if your adapter knows the run went
+wrong, say `DID NOT RUN` and get `failed`, which is stronger information. What
+`inconclusive` catches is the case no adapter can see: the CLI worked perfectly
+and the *model* declined the job. One of the three measured examples was an
+unmarked truncation, so no `_TRUNCATED` was ever coming.
+
+The one thing this asks of you: **do not append your own trailing summary to a
+review.** The check is edge-anchored, so a "review complete, 0 issues" footer your
+wrapper adds would satisfy it on behalf of a model that said nothing.
 
 **Take the prompt on stdin or from a file if your CLI offers either.** Linux
 caps a single argv entry near 128KB no matter what `ARG_MAX` says, and the exec

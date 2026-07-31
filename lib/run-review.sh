@@ -522,6 +522,14 @@ run_one() {
       mv "$f.part" "$f.partial"
       echo degraded > "$st"
       echo "  $spec: DEGRADED after ${took}s, stopped early, partial review kept as $(basename "$f.partial")" >> "$log" ;;
+    # ★ Its own suffix, so cmd_synthesize excludes it by construction: that
+    # function picks up .md and .md.partial and drops everything else into
+    # dead[], which is already told to keep those members out of every
+    # agreement tag. The false green closes there, with no prompt change.
+    inconclusive)
+      mv "$f.part" "$f.inconclusive"
+      echo inconclusive > "$st"
+      echo "  $spec: INCONCLUSIVE after ${took}s (rc=$rc), returned text but no review, kept as $(basename "$f.inconclusive")" >> "$log" ;;
     *)
       mv "$f.part" "$f.failed"
       echo failed > "$st"
@@ -559,7 +567,7 @@ REPORT="$OUT/report.md"
   echo
 } > "$REPORT"
 
-ok_count=0 degraded_count=0 fail_count=0
+ok_count=0 degraded_count=0 inconc_count=0 fail_count=0
 for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
   case "$(cat "$OUT/.status-$sl" 2>/dev/null)" in
@@ -569,6 +577,11 @@ for spec in "${reviewers[@]}"; do
       degraded_count=$((degraded_count + 1))
       echo "- \`$spec\` — **DEGRADED**, stopped early. Its findings are real; its" >> "$REPORT"
       echo "  silence is not. See \`$sl.md.partial\`." >> "$REPORT" ;;
+    inconclusive)
+      inconc_count=$((inconc_count + 1))
+      echo "- \`$spec\` — **INCONCLUSIVE**. It ran and returned text, but the text" >> "$REPORT"
+      echo "  is not a review: no findings and no verdict. Not counted as a" >> "$REPORT"
+      echo "  reviewer. See \`$sl.md.inconclusive\`." >> "$REPORT" ;;
     *)
       fail_count=$((fail_count + 1))
       echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT" ;;
@@ -582,6 +595,18 @@ done
   echo "> A **DEGRADED** reviewer ran out of tokens or time partway through. Read" >> "$REPORT"
   echo "> what it found, but do not count the files it never mentioned as cleared," >> "$REPORT"
   echo "> and do not read it as disagreeing with anything it never reached." >> "$REPORT"
+}
+
+# ★ The same warning for the other silent failure, and it needs its own words:
+# a degraded reviewer looked at SOME of the diff, an inconclusive one looked at
+# none of it. The tempting read here is worse than for a partial, because the
+# artifact is often long and fluent.
+[ "$inconc_count" -gt 0 ] && {
+  echo >> "$REPORT"
+  echo "> An **INCONCLUSIVE** reviewer exited cleanly and produced text that is" >> "$REPORT"
+  echo "> not a review — a summary of the diff, a request for clarification, or" >> "$REPORT"
+  echo "> the diff echoed back. Length is not coverage: treat it as a reviewer" >> "$REPORT"
+  echo "> that did not run. It is excluded from the synthesis and clears nothing." >> "$REPORT"
 }
 
 # CodeRabbit ships its own review contract and takes no prompt, so its row is
@@ -602,6 +627,12 @@ for spec in "${reviewers[@]}"; do
   elif [ -s "$OUT/$sl.md.partial" ]; then
     echo "_DEGRADED. Stopped early, so this covers only part of the diff._"$'\n' >> "$REPORT"
     cat "$OUT/$sl.md.partial" >> "$REPORT"
+  # ★ Excerpted like a failure, NOT printed in full like a partial. A partial is
+  # a review and every line of it is worth reading; this is 40KB of chrome or a
+  # parroted diff, and pasting it whole buries the reviews that are real.
+  elif [ -s "$OUT/$sl.md.inconclusive" ]; then
+    echo "_INCONCLUSIVE. Ran, but returned no findings and no verdict. Not a review._"$'\n' >> "$REPORT"
+    head -20 "$OUT/$sl.md.inconclusive" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
   else echo "_FAILED. Not a clean review._"$'\n' >> "$REPORT"
        head -20 "$OUT/$sl.md.failed" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
   fi
@@ -627,6 +658,7 @@ done
     secs=$(sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl" 2>/dev/null | head -1)
     art="$OUT/$sl.md"
     [ -s "$art" ] || art="$OUT/$sl.md.partial"
+    [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
     [ -s "$art" ] || art="$OUT/$sl.md.failed"
     bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -637,7 +669,7 @@ done
 
 rm -f "$OUT"/.log-* "$OUT"/.status-*
 echo
-echo "$ok_count ok, $degraded_count degraded, $fail_count failed. Report: $REPORT"
+echo "$ok_count ok, $degraded_count degraded, $inconc_count inconclusive, $fail_count failed. Report: $REPORT"
 # Degraded counts toward having something to synthesize: partial findings are
 # still findings. Only a panel with nothing at all is a dead run.
 [ $((ok_count + degraded_count)) -gt 0 ] || {

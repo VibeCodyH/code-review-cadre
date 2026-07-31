@@ -884,8 +884,16 @@ cmd_synthesize() {
   # of it never returned. The header line the prompt asks for is what carries
   # that; these members are NOT in the tags, because a reviewer that never ran
   # has no opinion to count either way.
+  #
+  # ★ dead[] is anything that is neither .md nor .md.partial, which is what
+  # makes an INCONCLUSIVE run safe by construction: it lands here, and this
+  # block already keeps it out of every denominator. That is the whole fix for
+  # the false green -- no third delimiter, no new counting rule. The delimiter
+  # says NO REVIEW rather than FAILED because a run that exited 0 and wrote 40KB
+  # did not fail, and the prompt asks the synthesizer to describe these members
+  # in the verdict spread.
   if [ ${#dead[@]} -gt 0 ]; then
-    body="$body===== FAILED, NO REVIEW: ${dead[*]} =====
+    body="$body===== NO USABLE REVIEW: ${dead[*]} =====
 These roster members produced no usable review. Say so in the verdict spread and
 in the header line. Keep them out of every agreement tag: they neither agree nor
 disagree with anything. This panel was ${#specs[@]} reviewers, of whom $completed

@@ -363,15 +363,75 @@ secrets_preflight() {
   exit 3
 }
 
-# Findings the review states, counted in the two shapes reviewers actually emit:
+# Findings the review states, counted in the three shapes reviewers actually
+# emit:
 #   codex        1. **blocking** - [file:line](...)
 #   grok/claude  ### 1. blocking - ...
+#   coderabbit   - [major] path/to/file.ts
 # Deliberately loose. Callers only ever compare against small thresholds, so
 # over-counting a stray line costs nothing and under-counting hides a bug.
 # Lives here, not grade.sh: classify_run needs it and run-pass/run-review
 # source only this file.
+#
+# ★ The bracket shape is coderabbit's and it was missing, which disarmed
+# judge_incoherent() for an entire reviewer family. Measured across three real
+# panels: coderabbit reviews declaring findings=3, findings=13 and findings=3
+# all counted 0 here, because the severity arrives as `[major]` and the prefix
+# only allowed asterisks. judge_incoherent() needs >= 2 to fire, so a judge
+# could return "no defects found" with extras [] against a thirteen-finding
+# review and score clean -- the exact failure that check was built for, silently
+# switched off for the one reviewer that ships its own output format.
+# Under-counting is still possible (coderabbit also emits [minor]/[warning],
+# which are not review vocabulary and stay out on purpose); the threshold
+# callers use only needs two.
 review_findings() {
-  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *\**(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *[*_[(]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+}
+
+# Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
+# reviewer answered the question it was asked. Two legal forms, both already in
+# cadre's own artifacts:
+#   prose        review-live.md:29 asks every reviewer to end with a one-line
+#                overall verdict: blocking, should-fix, or ship it.
+#   declaration  coderabbit takes no prompt and opens with `findings=N`.
+#
+# ★ EDGE-anchored, and that is the whole trick. A verdict is the LAST thing a
+# review says and coderabbit's count is the FIRST, so both live at an edge --
+# while the middle of a review of THIS repo is full of the same words, because
+# cadre's own source and tests contain "ship it", "no defects found" and
+# "verdict". Measured: an unanchored scan passed all three of the non-reviews
+# below, every one of them a file that had merely quoted cadre's diff. Same
+# collision the _TRUNCATED check hit for the same reason, and the same fix.
+#
+# Loose on purpose, in the safe direction. A phrasing this misses leaves the run
+# `ok`, which is exactly what happens today; a phrasing it wrongly matches would
+# be the first thing to hide a non-review again.
+# ★ Chrome is stripped off both edges first, for the same reason the emptiness
+# check above strips it: a verdict wrapped in a CLI's colour escapes is still a
+# verdict, and the anchored patterns below would not see past the escape bytes.
+# opencode puts a reset on the same line as the model's text, which is exactly
+# how `findings=0` would have stopped counting as a bottom line and taken a valid
+# coderabbit-shaped review down with it. A LITERAL escape byte, never `\x1b` --
+# that is a GNU sed extension, BSD sed reads it as a literal `x1b`, and this
+# whole strip would silently no-op on macOS. That bug has already been paid for
+# once in this function.
+has_verdict() {
+  local esc; esc=$(printf '\033')
+  local strip="s/${esc}\[[0-9;?]*[a-zA-Z]//g"
+  # The top: coderabbit's declaration (it takes no prompt, so it is never asked
+  # for the prose verdict), and a reviewer that LEADS with its verdict instead of
+  # ending with one. The brief says end with it and all 13 measured clean reviews
+  # do, but a review that opens "Verdict: ship it" and then explains itself would
+  # otherwise be binned, and that is the expensive direction.
+  # ★ Only the LINE-ANCHORED verdict pattern is safe to ask up here. The loose
+  # phrases below match anywhere in a line, and a review that opens by quoting a
+  # diff -- `+  echo "... or ship it."` -- is a real measured shape, so letting
+  # those run against the head would undo the anchoring this function exists for.
+  # `+` is deliberately not in the leading-markup class for that reason.
+  if head -3 "$1" | sed "$strip" \
+       | grep -qiE '(^ *findings=[0-9]+|^ *[*_#>]* *(overall +)?verdict\b)'; then return 0; fi
+  # Everyone else's, at the bottom. review-live.md asks for one line, last.
+  tail -8 "$1" | sed "$strip" | grep -qiE '(ship[ -]it|no defects found|nothing (worth )?(flagging|filing)|no (blocking|defects)[a-z ]*(found|here)?|^ *[*_#>]* *(overall +)?verdict\b)'
 }
 
 # Does this output look like a rate-limit refusal rather than a review?
@@ -498,7 +558,21 @@ provider_refused() {
   [ "$(wc -c < "$f")" -lt 500 ]
 }
 
-# Classify one agent run: ok | degraded | failed. THE one copy of this rule.
+# Classify one agent run: ok | degraded | inconclusive | failed. THE one copy of
+# this rule.
+#
+# ★ FOUR states, and each one answers a different question about the same file:
+#   ok            a review, complete.
+#   degraded      a review, cut short. Findings real, silence is not clearance.
+#   inconclusive  ran fine, produced text, never reviewed. See the bottom of
+#                 this function -- it is the newest and the least obvious.
+#   failed        no usable output at all.
+# `inconclusive` and `failed` behave the same downstream (excluded from
+# synthesis, never scored, retried) and are still kept apart, because the report
+# and slots.tsv have to tell an operator WHICH of the two happened: "the CLI
+# broke" sends you to the adapter, "the model would not hold the contract" sends
+# you to the roster, and calling the second one FAILED sends you hunting for a
+# crash that never happened.
 #
 # ★ Three states, not two. A reviewer that ran but stopped early holds real
 # findings AND coverage it never reached, and both halves matter: the findings
@@ -589,6 +663,43 @@ classify_run() {
     echo failed; return 0
   fi
   if [ "$rc" -ne 0 ]; then echo failed; return 0; fi
+  # ★ LAST, so it can only ever reclassify something that would otherwise be
+  # `ok`. Nothing above it changes; a run that any earlier check already binned
+  # never reaches here.
+  #
+  # `ok` used to mean "has content, no adapter marker, exit 0" -- which is not
+  # the same thing as "is a review". A model that returns fluent prose without
+  # ever reviewing lands here, and the consequence is the worst one in the
+  # system: cmd_synthesize counts a complete review in EVERY finding's
+  # denominator, and its silence about a file reads as ordinary non-mention, so
+  # a non-review clears the whole diff. That is the grok-partial bug again with
+  # a different cause.
+  #
+  # Measured, not hypothesised. Three artifacts across the 26 review dirs on
+  # this machine, all classified `ok`, none of them a review:
+  #   grok-lead-b/opencode-ollama-qwen3-judge  50KB of CLI chrome and praise,
+  #                                            ending "more resilient, ... 🚀"
+  #   lead-3state-b/opencode-ollama-qwen3-judge  39KB ending "no tool call is
+  #                                            required here ... please clarify"
+  #   fresh-1/opencode-...-nemotron-3-ultra-free  37KB that echoes the diff back
+  #                                            and stops mid-hunk
+  # All three are opencode-routed, the free path the README sends people down
+  # first -- the same route that produced the chrome-only runs handled above.
+  # The third one also shows why this cannot be left to the adapter contract:
+  # it is an UNMARKED truncation, so no `_TRUNCATED` was ever coming.
+  #
+  # The test is deliberately narrow: no findings AND no bottom line. Either one
+  # alone keeps the run `ok`, because "findings=0, ship it" is a real review and
+  # a length floor already threw those away once. Checked against every
+  # zero-finding artifact on disk: 13 genuine clean reviews all state a verdict
+  # and stay `ok`, the 3 above do not and move.
+  #
+  # ★ ctx=run only. A synthesis of a clean panel legitimately names no findings
+  # and gives no verdict of its own -- it reports each reviewer's -- so applying
+  # this there would bin good merges.
+  if [ "$ctx" = run ] && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; then
+    echo inconclusive; return 0
+  fi
   echo ok
   return 0
 }

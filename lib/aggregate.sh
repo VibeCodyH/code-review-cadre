@@ -58,9 +58,10 @@ PANELS="$OUT_D/panels.tsv"
     for spec in $roster; do
       sl=$(slug "$spec")
       st=failed; art=""
-      if   [ -s "$d/$sl.md" ];         then st=ok;       art="$d/$sl.md"
-      elif [ -s "$d/$sl.md.partial" ]; then st=degraded; art="$d/$sl.md.partial"
-      elif [ -s "$d/$sl.md.failed" ];  then st=failed;   art="$d/$sl.md.failed"
+      if   [ -s "$d/$sl.md" ];              then st=ok;           art="$d/$sl.md"
+      elif [ -s "$d/$sl.md.partial" ];      then st=degraded;     art="$d/$sl.md.partial"
+      elif [ -s "$d/$sl.md.inconclusive" ]; then st=inconclusive; art="$d/$sl.md.inconclusive"
+      elif [ -s "$d/$sl.md.failed" ];       then st=failed;       art="$d/$sl.md.failed"
       fi
       bytes=0
       [ -n "$art" ] && bytes=$(wc -c < "$art" | tr -d ' ')
@@ -76,7 +77,7 @@ PANELS="$OUT_D/panels.tsv"
 # reviewed byte-identical code and their reviewers can be set beside each other.
 # Two panels with different diff_ids cannot, however tempting the table looks.
 {
-  printf 'panel\tdiff_id\tseats\tok\tdegraded\tfailed\tsynthesis\n'
+  printf 'panel\tdiff_id\tseats\tok\tdegraded\tinconclusive\tfailed\tsynthesis\n'
   for d in "$REVIEWS"/*/; do
     [ -d "$d" ] || continue
     p=$(basename "$d")
@@ -84,16 +85,26 @@ PANELS="$OUT_D/panels.tsv"
     rt=$(sed -n 's/^reviewed-tree: *//p' "$d/manifest.txt" 2>/dev/null)
     did="unknown"
     [ -n "$bt" ] && [ -n "$rt" ] && did="${bt:0:8}..${rt:0:8}"
-    n=0 o=0 g=0 f=0
+    n=0 o=0 g=0 u=0 f=0
     while IFS=$'\t' read -r pp _s _fam st _b _sec _src; do
       [ "$pp" = "$p" ] || continue
       n=$((n+1))
-      case "$st" in ok) o=$((o+1)) ;; degraded) g=$((g+1)) ;; *) f=$((f+1)) ;; esac
+      # ★ `inconclusive` gets its own column rather than falling into the `*)`
+      # arm with failed. Collapsing it there is what would make this table say a
+      # panel had one broken adapter when what it really had was a model that
+      # will not review -- and this table is the benchmark record, so that is
+      # the number a roster decision gets made on.
+      case "$st" in
+        ok)           o=$((o+1)) ;;
+        degraded)     g=$((g+1)) ;;
+        inconclusive) u=$((u+1)) ;;
+        *)            f=$((f+1)) ;;
+      esac
     done < <(tail -n +2 "$SLOTS")
     syn=none
     [ -s "$d/synthesis.md" ]        && syn=ok
     [ -s "$d/synthesis.md.failed" ] && syn=failed
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$did" "$n" "$o" "$g" "$f" "$syn"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$did" "$n" "$o" "$g" "$u" "$f" "$syn"
   done
 } > "$PANELS"
 

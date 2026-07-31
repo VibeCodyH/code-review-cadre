@@ -103,11 +103,15 @@ for r in "${reviewers[@]}"; do
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
     echo "  $r run$n ..."
     start=$(date +%s)
-    # ★ .failed only. Deleting .partial here threw away real findings the moment
-    # a retry produced nothing -- the previous attempt's partial review was the
-    # only copy, and this feature exists because those findings are worth
-    # keeping. It is cleared on SUCCESS instead, below.
-    rm -f "$f.failed"
+    # ★ .failed and .inconclusive, never .partial. Deleting .partial here threw
+    # away real findings the moment a retry produced nothing -- the previous
+    # attempt's partial review was the only copy, and this feature exists
+    # because those findings are worth keeping. It is cleared on SUCCESS
+    # instead, below. An .inconclusive carries no findings by definition, so it
+    # is a stale artifact with nothing to protect: left behind, it would let
+    # grade.sh name a run inconclusive on the strength of an earlier
+    # invocation's file.
+    rm -f "$f.failed" "$f.inconclusive"
     # ★ Retry the SAME model on a rate limit. Never substitute a different one:
     # filing model B's review under model A is the mislabeling this whole tool
     # exists to catch. Free tiers are the reason this loop exists, see README.
@@ -171,6 +175,16 @@ for r in "${reviewers[@]}"; do
         mv "$f.part" "$f.partial"
         bad_runs=$((bad_runs + 1))
         echo "    DEGRADED after ${took}s, stopped early, kept as $(basename "$f.partial"), not scored" ;;
+      # ★ Not scored, for the same reason a degraded run is not: a benchmark
+      # number is a per-model claim, and a run that never produced a review is
+      # not a sample of how that model reviews. Kept apart from FAILED in the
+      # record because the distinction is the whole point of a benchmark here --
+      # "cannot hold the review contract" is a finding ABOUT the model, where a
+      # crashed CLI is a finding about the adapter.
+      inconclusive)
+        mv "$f.part" "$f.inconclusive"
+        bad_runs=$((bad_runs + 1))
+        echo "    INCONCLUSIVE after ${took}s, returned text but no review, kept as $(basename "$f.inconclusive"), not scored" ;;
       *)
         mv "$f.part" "$f.failed"
         bad_runs=$((bad_runs + 1))

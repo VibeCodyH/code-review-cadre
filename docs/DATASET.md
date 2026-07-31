@@ -27,9 +27,14 @@ about which model reviews *better* needs that path, not this file.
 
     panel  slot  family  status  bytes  secs  source
 
-- **status** — `ok` / `degraded` / `failed`, as `classify_run` decided at the
-  time. `failed` covers a dead account, a refused call, an empty answer, and a
-  crash; the artifact says which, this column does not.
+- **status** — `ok` / `degraded` / `inconclusive` / `failed`, as `classify_run`
+  decided at the time. `failed` covers a dead account, a refused call, an empty
+  answer, and a crash; the artifact says which, this column does not.
+  `inconclusive` is narrower and is **not** a flavour of `failed`: the run exited
+  cleanly and produced text that states no finding and no verdict, so the CLI
+  worked and the model did not review. Neither is scored, and the split is the
+  point — `failed` is a fact about the adapter, `inconclusive` is a fact about the
+  model, and only the second one belongs in a roster decision.
 - **bytes** — size of the artifact on disk. **Read this with care: bigger is
   not better and is frequently worse.** Measured on one identical diff, kimi
   produced 126,030 bytes and codex 2,279. Kimi's file is mostly tool transcript
@@ -46,7 +51,7 @@ about which model reviews *better* needs that path, not this file.
 
 ## panels.tsv — one row per panel
 
-    panel  diff_id  seats  ok  degraded  failed  synthesis
+    panel  diff_id  seats  ok  degraded  inconclusive  failed  synthesis
 
 **`diff_id` is the field that decides what may be compared with what.** It is
 `base-tree..reviewed-tree`: two panels sharing one reviewed byte-identical

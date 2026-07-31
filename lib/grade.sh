@@ -364,6 +364,13 @@ run_gauntlet() {
         # the same false-statement-about-the-model this block exists to prevent,
         # reintroduced by the fix that stopped deleting partials. Newest wins,
         # and the older artifact still gets named rather than quietly dropped.
+        # ★ Between .partial and .failed, and it says something different from
+        # both: the adapter did NOT fail and the model did NOT stop early. It
+        # ran to completion and never reviewed. Calling that "the adapter
+        # failed" is the same false-statement-about-the-model this block exists
+        # to prevent, and it is the version that costs the most, because it
+        # sends the reader to the adapter for a roster problem.
+        [ -s "$rf.inconclusive" ] && why="ran but returned no review, see $sl-run$n.md.inconclusive, not scored"
         if [ -s "$rf.failed" ]; then
           why="the adapter failed, see $sl-run$n.md.failed"
           [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
