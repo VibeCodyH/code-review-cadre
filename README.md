@@ -447,6 +447,17 @@ runs were scored `ok` while being a summary signed off with an emoji, a request
 for clarification, and a parroted diff. Thirteen genuine zero-finding reviews all
 stated a verdict and are untouched.
 
+The check is loose about **how** a bottom line is phrased, and that is deliberate,
+because the two ways it can be wrong are not symmetric. A phrasing it fails to
+recognise files a real clean review as `inconclusive` and drops it from the
+synthesis; a phrasing it recognises too readily leaves a non-review scored `ok`,
+which is what every version before this one did anyway. So `no issues found`,
+`LGTM`, `nothing to flag`, `safe to merge` and a bare `## Verdict` heading all
+count, and the list is meant to grow. The cost of that choice, stated plainly: a
+deflection that dresses itself as a bottom line — "Verdict: I cannot review this,
+please clarify" — still passes. Catching *that* means reading the verdict for
+meaning, which is the substance judgement the non-goal below is about.
+
 **How much of this you actually get depends on your adapters.** `degraded` is
 reachable only when an adapter emits the `_TRUNCATED` marker, and today that is
 `grok` — it reads a `stopReason` from structured output, so it knows it stopped.

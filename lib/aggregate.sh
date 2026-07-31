@@ -58,6 +58,14 @@ PANELS="$OUT_D/panels.tsv"
     for spec in $roster; do
       sl=$(slug "$spec")
       st=failed; art=""
+      # ★ Suffix precedence is safe here, and two reviewers of the commit that
+      # added `.inconclusive` both flagged it as a bug, so: this loop reads
+      # $CADRE_HOME/reviews only, and run-review.sh does NOT resume -- fresh
+      # out-dir per panel, exactly one mv per slot. Two terminal artifacts for one
+      # slot is unreachable in this input. `run-pass.sh` DOES resume and can leave
+      # `.partial` beside a newer `.inconclusive`, but its consumer is grade.sh,
+      # which handles the pair explicitly. Do not "fix" the order here without
+      # first giving run-review.sh a resume path.
       if   [ -s "$d/$sl.md" ];              then st=ok;           art="$d/$sl.md"
       elif [ -s "$d/$sl.md.partial" ];      then st=degraded;     art="$d/$sl.md.partial"
       elif [ -s "$d/$sl.md.inconclusive" ]; then st=inconclusive; art="$d/$sl.md.inconclusive"

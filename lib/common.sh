@@ -403,9 +403,19 @@ review_findings() {
 # below, every one of them a file that had merely quoted cadre's diff. Same
 # collision the _TRUNCATED check hit for the same reason, and the same fix.
 #
-# Loose on purpose, in the safe direction. A phrasing this misses leaves the run
-# `ok`, which is exactly what happens today; a phrasing it wrongly matches would
-# be the first thing to hide a non-review again.
+# ★★ WHICH WAY THIS FAILS, because an earlier version of this comment had it
+# exactly backwards and a cross-model review caught it. The rule is
+# `inconclusive == no findings AND no verdict`, so:
+#
+#   a phrasing this MISSES     -> a real clean review is filed `inconclusive`,
+#                                 dropped from the synthesis. EXPENSIVE.
+#   a phrasing it OVER-matches -> a non-review keeps its `ok`, which is merely
+#                                 the behaviour of every version before this one.
+#
+# So LOOSE IS SAFE HERE and tight is dangerous, which is the opposite of the
+# instinct this function invites. If you are adding a pattern, add it. If you are
+# about to remove one to make the gate "sharper", you are about to start binning
+# real reviews. The accepted cost of that choice is named at the bottom.
 # ★ Chrome is stripped off both edges first, for the same reason the emptiness
 # check above strips it: a verdict wrapped in a CLI's colour escapes is still a
 # verdict, and the anchored patterns below would not see past the escape bytes.
@@ -415,6 +425,28 @@ review_findings() {
 # that is a GNU sed extension, BSD sed reads it as a literal `x1b`, and this
 # whole strip would silently no-op on macOS. That bug has already been paid for
 # once in this function.
+# ★ NO `\b`. It is a GNU grep extension; BSD grep is what macOS ships, and there
+# `verdict\b` searches for the literal `verdictb` -- so every "Verdict: ship it"
+# would stop matching on an entire platform, silently, and file real reviews as
+# non-reviews. Same class of bug as the `\x1b` one above, caught by a
+# cross-model review of this commit. Dropping it only makes the pattern looser,
+# which is the safe direction per the failure model above.
+#
+# ★ `pipefail` + `grep -q` is a REAL bug in this repo -- see agent_installed()
+# above, where exactly that shape SIGPIPEd its producer and declared installed
+# adapters missing, at a cost of 43 failing tests. Two independent reviews of this
+# commit flagged these two pipelines for the same reason, and they were right to.
+#
+# The difference is the BOUND, and it is the only thing making this safe:
+# `agent_installed` piped an unbounded listing, where `grep -q` really can leave
+# before the producer finishes. `head -6` and `tail -12` cap the stream at a dozen
+# short lines, which fits the pipe buffer whole, so `sed` is always done writing
+# before `grep` exits. Measured on a 5001-line artifact whose match is the first
+# line of the window: rc=0.
+#
+# So: if you widen these windows to something unbounded, or drop head/tail, this
+# becomes agent_installed's bug and it fails by binning real reviews. Capture into
+# a variable instead, the way that function had to.
 has_verdict() {
   local esc; esc=$(printf '\033')
   local strip="s/${esc}\[[0-9;?]*[a-zA-Z]//g"
@@ -428,10 +460,33 @@ has_verdict() {
   # diff -- `+  echo "... or ship it."` -- is a real measured shape, so letting
   # those run against the head would undo the anchoring this function exists for.
   # `+` is deliberately not in the leading-markup class for that reason.
-  if head -3 "$1" | sed "$strip" \
-       | grep -qiE '(^ *findings=[0-9]+|^ *[*_#>]* *(overall +)?verdict\b)'; then return 0; fi
-  # Everyone else's, at the bottom. review-live.md asks for one line, last.
-  tail -8 "$1" | sed "$strip" | grep -qiE '(ship[ -]it|no defects found|nothing (worth )?(flagging|filing)|no (blocking|defects)[a-z ]*(found|here)?|^ *[*_#>]* *(overall +)?verdict\b)'
+  # ★ Six lines, not three, and the declaration is matched loosely: reviewers
+  # write `**findings=0**`, `Findings: 0` and `findings = 0`, and a heading or a
+  # blank line ahead of a `## Verdict` section pushes it off line 3.
+  if head -6 "$1" | sed "$strip" \
+       | grep -qiE '^[-*_#> `]*(findings *[:=] *[0-9]+|(overall +)?verdict)'; then return 0; fi
+  # Everyone else's, at the bottom. review-live.md asks for one line, last -- but
+  # 12 lines, not 1, because a CLI or wrapper that appends a sign-off block pushes
+  # a real verdict up out of a tight window.
+  #
+  # ★ The closer list is long because it is a list of things REAL reviewers write
+  # when they found nothing, and every one missing from it is a real review binned.
+  # "no defects found" alone was not enough: "no issues found", "nothing to flag",
+  # "LGTM", "approved", "all good", "safe to merge" are all ordinary sign-offs, and
+  # the brief's own three words are not the only way a model ends a clean review.
+  # Grow this list freely; see the failure model above for why that is the safe
+  # direction.
+  #
+  # ★ THE ACCEPTED COST, named so nobody claims more for this gate than it does.
+  # A deflection that dresses itself as a bottom line keeps its `ok`: a model
+  # ending "Verdict: I cannot review this, please clarify" matches the anchored
+  # verdict pattern and sails through. So does "no blocking changes intended in
+  # this refactor". Of the three measured non-reviews none did this, and tightening
+  # to catch it means reading the verdict for MEANING, which is the substance
+  # judgement the README's non-goal is about. This gate answers one structural
+  # question -- did the reviewer state a bottom line at all -- and deliberately
+  # stops there.
+  tail -12 "$1" | sed "$strip" | grep -qiE '(ship[ -]it|lgtm|looks good|approved?|no (defects|issues|problems|concerns|bugs|blockers)|nothing (worth )?(to )?(flag|report|fix|filing|flagging|flagged)|all (good|clear)|(safe|ready|ok) to merge|recommend merging|^[-*_#> `]*((overall +)?verdict|conclusion|recommendation)|no (blocking|defects)[a-z ]*(found|here)?)'
 }
 
 # Does this output look like a rate-limit refusal rather than a review?
@@ -574,7 +629,7 @@ provider_refused() {
 # you to the roster, and calling the second one FAILED sends you hunting for a
 # crash that never happened.
 #
-# ★ Three states, not two. A reviewer that ran but stopped early holds real
+# ★ `degraded` is not two states collapsed. A reviewer that ran but stopped early holds real
 # findings AND coverage it never reached, and both halves matter: the findings
 # are worth reading, and its SILENCE about a file is not clearance. Collapsing
 # it into "ok" is the bug that already shipped (a partial grok review scored as

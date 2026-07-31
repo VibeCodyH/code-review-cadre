@@ -370,7 +370,15 @@ run_gauntlet() {
         # failed" is the same false-statement-about-the-model this block exists
         # to prevent, and it is the version that costs the most, because it
         # sends the reader to the adapter for a roster problem.
-        [ -s "$rf.inconclusive" ] && why="ran but returned no review, see $sl-run$n.md.inconclusive, not scored"
+        # ★ ...and it names a surviving .partial for the same reason the .failed
+        # branch does. `.partial` is deliberately kept across attempts while
+        # `.inconclusive` is cleared, so an earlier attempt's partial review --
+        # which has real findings in it -- can still be on disk. Reporting only
+        # "no review" would bury it.
+        if [ -s "$rf.inconclusive" ]; then
+          why="ran but returned no review, see $sl-run$n.md.inconclusive, not scored"
+          [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
+        fi
         if [ -s "$rf.failed" ]; then
           why="the adapter failed, see $sl-run$n.md.failed"
           [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
