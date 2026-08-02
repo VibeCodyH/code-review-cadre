@@ -1012,6 +1012,20 @@ CRO=$(mktemp)
 printf '1. **blocking** - [a.ts:4](x)\n### 2. should-fix - b.ts\n' > "$CRO"
 check "and the old shapes still count" "[ \$(review_findings '$CRO') -ge 2 ]"
 rm -f "$CRO"
+# ★ Same bug, same family, one more delimiter: gemini-3.1-pro heads its sections
+# with a BACKTICKED severity. Measured 2026-08-02 -- eight straight passes came
+# back "returned text but no review" while the artifacts on disk named real
+# defects with file and line, because a backtick was not in the leading-markup
+# class and no verdict followed, which is precisely classify_run's inconclusive
+# test. A format habit was being scored as an inability to review.
+CRB=$(mktemp)
+printf '### `should-fix`\n#### 1. Mismatched lookup\n* **File:** a.tsx:24\n### `nit`\n#### 1. Stray file\n' > "$CRB"
+check "backticked severities counted"  "[ \$(review_findings '$CRB') -ge 2 ]"
+# Loosening this regex is only ever safe in the ADD direction, and the corpus is
+# the proof: no review already on disk changes its count.
+check "and prose still counts zero" \
+  "[ \$(printf 'This is a nitpick about naming, not blocking.\\n' > '$CRB'; review_findings '$CRB') -eq 0 ]"
+rm -f "$CRB"
 # findings=N is coderabbit's bottom line: it takes no prompt, so it never gets
 # asked for the prose verdict every other reviewer ends with.
 check "findings=N is a verdict"        "has_verdict '$CRF'"

@@ -385,7 +385,17 @@ secrets_preflight() {
 # which are not review vocabulary and stay out on purpose); the threshold
 # callers use only needs two.
 review_findings() {
-  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *[*_[(]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+  # ★ The backtick belongs in the leading-markup class, and leaving it out
+  # discarded whole reviews. Measured 2026-08-02: gemini-3.1-pro writes its
+  # severities as `### ` + backtick + should-fix, which is ordinary markdown, and
+  # every one of them scored zero findings. Paired with no closing verdict that
+  # is exactly classify_run's inconclusive test, so a 2.5KB review naming a real
+  # priority-lookup bug, an unvalidated status transition and a stray committed
+  # file was binned as "returned text but no review" and never reached a judge.
+  # A format habit read as a model failure. Adding it only ever ADDS matches:
+  # checked against every run in the corpus on this machine, not one existing
+  # review changes its count, so no historical grade moves.
+  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *[*_[(`]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
 }
 
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
