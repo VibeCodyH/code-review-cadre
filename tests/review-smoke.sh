@@ -1025,6 +1025,26 @@ check "backticked severities counted"  "[ \$(review_findings '$CRB') -ge 2 ]"
 # the proof: no review already on disk changes its count.
 check "and prose still counts zero" \
   "[ \$(printf 'This is a nitpick about naming, not blocking.\\n' > '$CRB'; review_findings '$CRB') -eq 0 ]"
+# ★★ The LABELED FIELD, which is how that seat writes most of its severities and
+# which cost 7 of 8 reviews in one sweep. Both colon placements occur in the
+# corpus -- inside the asterisks and after them -- so both are pinned.
+printf '* **Severity**: `should-fix`\n* **Rating:** `blocking` (real bug)\n* **Consequence**: `nit`\n' > "$CRB"
+check "labeled-field severities count" "[ \$(review_findings '$CRB') -ge 3 ]"
+# ★ THE ONE THAT KEEPS THE ANCHOR HONEST. The label may be ONE short bolded run
+# and nothing else, so a severity word loose in prose stays invisible no matter
+# how it is dressed. "**Summary:** no major issues found" is the nastiest of
+# these -- a bolded label, a colon, and `major` in the very next breath.
+printf '**Summary:** no major issues found\n' > "$CRB"
+check "a bolded summary is not one"    "[ \$(review_findings '$CRB') -eq 0 ]"
+printf 'not a nit, but worth noting\n**Note**: nothing critical here.\n' > "$CRB"
+check "and loose prose stays zero"     "[ \$(review_findings '$CRB') -eq 0 ]"
+# ★ The same seat also bolds the whole numbered heading, so the bold opens AHEAD
+# of the digit and the number group cannot match. This was the last of the eight
+# reviews still scoring zero after the labeled-field fix rescued the other seven.
+printf '#### **1. `should-fix` — filter drops IDs\n#### **2. `nit` — header names only the first row\n' > "$CRB"
+check "bold-wrapped headings count"    "[ \$(review_findings '$CRB') -ge 2 ]"
+printf '**Overall:** no critical problems\n*not a nit* but worth noting\n' > "$CRB"
+check "and dressed-up prose stays zero" "[ \$(review_findings '$CRB') -eq 0 ]"
 rm -f "$CRB"
 # findings=N is coderabbit's bottom line: it takes no prompt, so it never gets
 # asked for the prose verdict every other reviewer ends with.

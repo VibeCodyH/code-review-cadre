@@ -395,7 +395,36 @@ review_findings() {
   # A format habit read as a model failure. Adding it only ever ADDS matches:
   # checked against every run in the corpus on this machine, not one existing
   # review changes its count, so no historical grade moves.
-  grep -cEi '^ *(#{1,6} *)?([0-9]+[.)]|[-*+])? *[*_[(`]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+  #
+  # ★ The LABELED FIELD is the same story one step further, and it is how that
+  # seat writes most of its severities:
+  #
+  #   * **Severity**: `should-fix`
+  #   * **Rating:** `should-fix` (real bug, bounded blast radius)
+  #   * **Consequence**: `should-fix` (correctness bug reaching production)
+  #
+  # The severity is a field VALUE mid-line, so the anchor missed all of it and
+  # 7 of 8 reviews in one sweep -- 27KB naming a Drizzle `IN ${array}` that
+  # throws at runtime, a scope filter showing every chain modifier, a stray
+  # committed file -- were binned "returned text but no review". The optional
+  # group below admits ONE short bolded label before the severity and nothing
+  # else, so the anchor still holds: the severity must be at the head of the
+  # line or immediately behind its own label. Note `:?` INSIDE the asterisks as
+  # well as after, because both `**Rating:**` and `**Severity**:` occur.
+  #
+  # Measured before landing. On the corpus: no existing review changes its
+  # count. On prose that must stay silent: "this is not blocking", "**Note**:
+  # nothing critical here", "not a nit, but worth noting", and the nastiest one,
+  # "**Summary:** no major issues found" -- all still zero.
+  # ★ ...and the markup class before the NUMBER, because the same seat also
+  # bolds the whole heading: `#### **1. ` + backtick + `should-fix`. The bold
+  # opens ahead of the digit, so the number group could never match and the
+  # eighth review of that sweep stayed at zero after the label fix rescued the
+  # other seven. Still anchored: everything admitted here is markup, a list
+  # number, or one short label, and the severity has to arrive immediately after
+  # it. Probed against `**Overall:** no critical problems` and `*not a nit* but
+  # worth noting` -- both stay zero, as does the whole corpus.
+  grep -cEi '^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
 }
 
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
