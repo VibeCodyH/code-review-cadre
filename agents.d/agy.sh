@@ -52,6 +52,14 @@ so this seat can edit, write, and shell out in EVERY mode. The only containment
 is that cadre hands adapters a disposable checkout. Do not cite this seat's runs
 as read-only, and do not point it at a live working tree by hand.
 
+⚠️ COMPARABILITY: this seat receives its prompt BY REFERENCE. Every other
+adapter hands the model the brief directly; this one hands it a path and asks it
+to go read it, because argv and stdin are both closed. That is a delivery
+difference applied to agy seats and to nobody else in the corpus, so if an agy
+score sits next to a direct-delivery score, the gap includes however much the
+indirection costs in instruction-following. Measured once already: the pointer's
+original closing sentence suppressed the brief's own verdict line.
+
 ⚠️ It wanders. Given a loose target it has read files outside the directory it
 was pointed at. Scope it with --add-dir and keep the prompt specific.
 
@@ -71,7 +79,13 @@ run_agy() {
     echo "DID NOT RUN, cannot create a temp dir for the prompt file."; return 0; }
   pf="$pd/PROMPT.md"
   printf '%s' "$prompt" > "$pf"
-  ptr="Read the file $pf and follow the instructions in it exactly. Treat its contents as your entire task. Reply with the finished result only."
+  # ★ The pointer must not compete with the brief. An earlier version ended
+  # "Reply with the finished result only", and the first graded run came back
+  # INCONCLUSIVE with no verdict line -- review-live.md asks reviewers to END
+  # with a one-line verdict, which is exactly what "the finished result only"
+  # reads as trailing chatter. Keep this wording deferential to the file, and
+  # say out loud that its formatting instructions bind.
+  ptr="Read the file $pf. Its contents are your complete task. Follow every instruction in it exactly, including anything it says about your output format and how your reply should end."
 
   if [ -n "$DRY" ]; then
     _run timeout -k 30 "$TIMEOUT" agy -p "$ptr" "${m[@]}" \
