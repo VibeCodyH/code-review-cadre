@@ -597,6 +597,12 @@ check "and the checkout stays clean"  "grep -q 'add-dir \"\$dir\" --add-dir \"\$
 # --add-dir is what sets the workspace; without it the CLI asks which directory you
 # mean and reads nothing, which reads downstream as a reviewer that found nothing.
 check "and skip-permissions is on"    "grep -q -- '--dangerously-skip-permissions' '$ROOT/agents.d/agy.sh'"
+# ★ agy's OWN --print-timeout defaults to 5m0s, inside whatever cadre allows, and
+# it gives up on itself without the outer `timeout` ever firing. Measured: a 900s
+# TIMEOUT bought nothing when opus returned status=ERROR "timeout waiting for
+# response" at 297s, 13k output tokens generated and thrown away, filed as a model
+# failure rather than a clock. Unaligned, every long review is capped at 5 minutes.
+check "and aligns agy's own timeout" "grep -q -- '--print-timeout \"\${TIMEOUT}s\"' '$ROOT/agents.d/agy.sh'"
 check "and parses status not stdout"  "grep -q \"jq -r '.status\" '$ROOT/agents.d/agy.sh'"
 check "and names its kind of nothing" "grep -q 'DID NOT COMPLETE' '$ROOT/agents.d/agy.sh'"
 check "and exits nonzero on truncation" "grep -q '_TRUNCATED, agy ended' '$ROOT/agents.d/agy.sh'"
@@ -2052,6 +2058,17 @@ check "window: a 60s reset is not one" "! $WC"
 check "window: it still retries"       "$RL"
 printf 'Kiro rate limit reached: Request quota exceeded\n' > "$QB"
 check "window: kiro stays a rate limit" "! $WC"
+# ★ agy on a bundled consumer plan, verbatim from a sweep that died 2026-08-02.
+# It matched NONE of the three: no "usage limit" (it says "your limits"), no
+# period word for the budget matcher, and it is not a throughput refusal. So a
+# 4-hour clock was filed as a failed measurement and 11 passes went NOT
+# ATTEMPTED. The "upgrade your subscription" pitch is a red herring -- it states
+# a reset, so waiting clears it, and that is the only test that matters here.
+# One word from kiro's throughput refusal above: reached, not exceeded.
+printf 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h22m55s.\n' > "$QB"
+check "window: agy bundled quota caught" "$WC"
+check "window: agy is NOT a budget"      "! $QE"
+check "window: agy is NOT a rate limit"  "! $RL"
 # ★★ THE SHADOWING TEST. quota_exhausted's pattern list contains `usage limit`,
 # which is a WINDOW phrasing sitting in the BUDGET matcher, added speculatively in
 # 96b9697 rather than from any observed string. Both functions claim this one, so

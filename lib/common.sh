@@ -591,7 +591,21 @@ provider_window_closed() {
   local f="$1"
   [ -s "$f" ] || return 1
   [ "$(wc -c < "$f")" -le 2000 ] || return 1
-  grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit' "$f" || return 1
+  # ★ `quota reached` earns its place here rather than in quota_exhausted, and
+  # the two are one word apart. Measured 2026-08-02, agy on a bundled plan:
+  #
+  #   Individual quota reached. Please upgrade your subscription to increase
+  #   your limits. Resets in 4h22m55s.
+  #
+  # It matched NOTHING -- not this function (it says "your limits", never
+  # "usage limit"), not quota_exhausted (no period word), not rate_limited. So
+  # the sweep aborted on its first pass, filed a 4-hour clock as a failed
+  # measurement, and left 11 passes NOT ATTEMPTED. Exactly the case the comment
+  # above describes, arriving through a phrasing the pattern did not cover.
+  # The upgrade pitch is a red herring: it states a reset, so waiting clears it.
+  # Safe against kiro's "rate limit reached: Request quota exceeded" -- that is
+  # `quota exceeded`, stays on the retry path where a throughput ceiling belongs.
+  grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
 

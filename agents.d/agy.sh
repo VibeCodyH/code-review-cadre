@@ -96,8 +96,14 @@ run_agy() {
   fi
 
   out=$(mktemp)
+  # ★ --print-timeout defaults to 5m0s, INSIDE whatever cadre allows. Measured:
+  # a 900s TIMEOUT bought nothing because agy gave up on itself at 297s and
+  # returned status=ERROR "timeout waiting for response" with 13k output tokens
+  # already generated and discarded. The outer `timeout` never fired, so this
+  # read as a model failure rather than a clock. Align them, and leave the outer
+  # one as the backstop for a CLI that hangs without honouring its own flag.
   timeout -k 30 "$TIMEOUT" agy -p "$ptr" "${m[@]}" \
-    --add-dir "$dir" --add-dir "$pd" \
+    --add-dir "$dir" --add-dir "$pd" --print-timeout "${TIMEOUT}s" \
     --dangerously-skip-permissions --output-format json >"$out" 2>/dev/null
   rc=$?
 
