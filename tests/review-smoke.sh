@@ -523,11 +523,14 @@ check "rescore grades to a side file"  "grep -q 'grade_one \"\$keyfile\" \"\$rf\
 check "and swaps only on success"      "grep -q 'mv -f \"\$gf.new\" \"\$gf\"' '$ROOT/lib/grade.sh'"
 check "and no longer deletes upfront"  "! grep -q 'rm -f \"\$gf\" \"\$gf.judge-raw\"' '$ROOT/lib/grade.sh'"
 
-# ★ agy is a GRADER, never a reviewer or adjudicator. Its two limits -- it refuses
-# security-flavoured analysis, and headless it auto-denies its own tool permissions
-# -- both bite jobs that read a checkout. Judging reads no checkout and asks for no
-# vulnerability hunt, so it is exempt from both. That distinction only protects
-# anyone if the adapter says so, because the failure is a REFUSAL filed as a result.
+# ★ agy was pinned GRADING-ONLY on two limits that were BOTH misdiagnosed, and the
+# pins here outlived the findings. Re-probed 2026-08-02: the "refuses security
+# analysis" limit tracks SCOPE, not subject -- the same security wording aimed at a
+# bounded target runs fine -- and the "auto-denies its own tool permissions" limit
+# was a missing WORKSPACE. `cd` does not set one; --add-dir does, and with it the
+# CLI reads a checkout headlessly. So it is now a REVIEWER seat fronting three
+# vendor lineages. What must stay pinned is the transport, because the failure mode
+# it replaces is silent: see below.
 # ★★ ro must DENY, not merely pre-approve. `--allowedTools` allowlists without
 # denying anything else, so the claude adapter's "read-only" mode was decorative:
 # a candidate held `advisor` (a second, stronger model), `Agent`, and Bash/Edit/
@@ -578,9 +581,32 @@ check "grok ro is actually passed"   "[ \"\$(grep -c '\\\${ro\\[@\\]}' '$ROOT/ag
 
 check "agy adapter exists"           "[ -f '$ROOT/agents.d/agy.sh' ]"
 check "and defines its run function" "grep -q 'run_agy()' '$ROOT/agents.d/agy.sh'"
-check "and refuses a model suffix"   "grep -q 'nomodel_agy()' '$ROOT/agents.d/agy.sh'"
-check "and says GRADING ONLY"        "grep -q 'GRADING ONLY' '$ROOT/agents.d/agy.sh'"
-check "and names the refusal limit"  "grep -qi 'refuses security' '$ROOT/agents.d/agy.sh'"
+# ★★ THE pin. `-p` takes the prompt as an argv ARGUMENT, so a bare `agy -p --model X`
+# makes "--model" the prompt, eats the flag, and runs the DEFAULT Gemini while the
+# result is filed under X. That is a poisoned corpus row that looks like a clean run,
+# and it is exactly the corruption the old nomodel_agy() refusal was avoiding rather
+# than solving. -p must always receive a non-empty string.
+check "agy -p takes a real string"   "grep -q 'agy -p \"\$ptr\"' '$ROOT/agents.d/agy.sh'"
+check "and never a bare -p"          "! sed -n '/^run_agy/,/^}/p' '$ROOT/agents.d/agy.sh' | grep -qE '\\-p +--'"
+check "and model is passed by array" "grep -q 'm=(--model \"\$model\")' '$ROOT/agents.d/agy.sh'"
+# Prompt transport is a FILE. argv dies at ~128KB ("argument list too long") and
+# stdin is NOT ingested at all -- a piped codeword comes back as NONE. A panel
+# prompt is far past both, so an argv or stdin regression here kills big reviews.
+check "and the prompt goes in a file" "grep -q 'PROMPT.md' '$ROOT/agents.d/agy.sh'"
+check "and the checkout stays clean"  "grep -q 'add-dir \"\$dir\" --add-dir \"\$pd\"' '$ROOT/agents.d/agy.sh'"
+# --add-dir is what sets the workspace; without it the CLI asks which directory you
+# mean and reads nothing, which reads downstream as a reviewer that found nothing.
+check "and skip-permissions is on"    "grep -q -- '--dangerously-skip-permissions' '$ROOT/agents.d/agy.sh'"
+check "and parses status not stdout"  "grep -q \"jq -r '.status\" '$ROOT/agents.d/agy.sh'"
+check "and names its kind of nothing" "grep -q 'DID NOT COMPLETE' '$ROOT/agents.d/agy.sh'"
+check "and exits nonzero on truncation" "grep -q '_TRUNCATED, agy ended' '$ROOT/agents.d/agy.sh'"
+# ⚠️ ro is UNENFORCED here and the adapter must keep saying so. --mode plan does NOT
+# block writes (measured: it created the file anyway), and skip-permissions is
+# mandatory for it to read at all. Containment is cadre's disposable checkout, not
+# the seat. An unenforced mode that stops declaring itself is the claude-advisor bug.
+check "and declares ro unenforced"   "grep -q 'ro IS UNENFORCED' '$ROOT/agents.d/agy.sh'"
+check "and no longer claims grading-only" "! grep -q 'GRADING ONLY' '$ROOT/agents.d/agy.sh'"
+check "and no longer refuses models"      "! grep -q 'nomodel_agy()' '$ROOT/agents.d/agy.sh'"
 
 check "keygen demands a named mechanism"  "grep -q 'NAME the specific mechanism' '$ROOT/lib/prompts/keygen.md'"
 check "and rules on the other-guard case" "grep -q 'DIFFERENT mechanism earns credit' '$ROOT/lib/prompts/keygen.md'"
