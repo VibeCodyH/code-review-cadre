@@ -25,7 +25,7 @@ about which model reviews *better* needs that path, not this file.
 
 ## slots.tsv — one row per reviewer slot
 
-    panel  slot  family  status  bytes  secs  source
+    panel  slot  family  status  bytes  secs  prompt_bytes  source
 
 - **status** — `ok` / `degraded` / `inconclusive` / `failed`, as `classify_run`
   decided at the time. `failed` covers a dead account, a refused call, an empty
@@ -42,11 +42,15 @@ about which model reviews *better* needs that path, not this file.
   entirely findings. Byte count measures how much a CLI *prints*, not how much
   it *found*.
 - **secs** — wall-clock, and **empty for most rows**. See `source`.
-- **source** — `recorded` (written live by `run-review.sh`, status and timing
-  both measured) or `reconstructed` (rebuilt from artifacts after the fact).
-  Reconstructed rows have **no timing at all**: the per-slot logs were deleted
-  when the panel finished, and fourteen panels ran before that was fixed. The
-  field is left EMPTY rather than zeroed, because a zero would average like a
+- **prompt_bytes** — size of the exact prompt dispatched to the seat, captured
+  by the harness at dispatch time. It is empty for rows that predate this field
+  and for reconstructed rows; cadre never guesses it from surviving files.
+- **source** — `recorded` (written live by `run-review.sh`, with status and
+  timing measured and prompt size present on new rows) or `reconstructed`
+  (rebuilt from artifacts after the fact). Reconstructed rows have **no timing
+  or prompt size at all**: the per-slot scratch files were deleted when the
+  panel finished, and fourteen panels ran before timing capture was fixed. Both
+  fields are left EMPTY rather than zeroed, because a zero would average like a
   real measurement and drag every mean toward the floor.
 
 ## panels.tsv — one row per panel

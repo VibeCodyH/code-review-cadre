@@ -1395,7 +1395,10 @@ check "it survives the cleanup"     "[ ! -e '$R/.status-good' ]"
 check "one row per roster seat"     "[ \$(wc -l < '$R/slots.tsv') -eq 2 ]"
 check "a good seat is ok"           "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
 check "a dead seat is failed"       "grep -qP '\tdead\t.*\tfailed\t' '$R/slots.tsv'"
-check "timing is captured live"     "grep -qP '\tok\t[0-9]+\t[0-9]+\$' '$R/slots.tsv'"
+check "timing and prompt captured"  "grep -qP '\tok\t[0-9]+\t[0-9]+\t[1-9][0-9]*\$' '$R/slots.tsv'"
+check "failed prompt captured too"  "grep -qP '\tfailed\t[0-9]+\t\t[1-9][0-9]*\$' '$R/slots.tsv'"
+check "report has receipt table"    "grep -qF '| seat | status | secs | prompt KB | review KB | est. tokens |' '$R/report.md'"
+check "receipt caveat is explicit" "grep -qF '> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill.' '$R/report.md'"
 # ★ A seat that produced NO artifact must still appear. Deriving rows from
 # filenames instead of the roster would silently drop exactly the failure worth
 # counting -- the panel would report three seats and the dataset two.
@@ -1408,12 +1411,25 @@ rm -f "$R/slots.tsv"
 OUT=$(run_cadre "$D" dataset "$D/dataset" 2>&1)
 check "aggregate walks the reviews" "[ -s '$D/dataset/slots.tsv' ]"
 check "it reconstructs the panel"   "grep -q reconstructed '$D/dataset/slots.tsv'"
-check "and leaves secs empty"       "grep -qP '\t\treconstructed\$' '$D/dataset/slots.tsv'"
-# ★ Explicitly: NOT a zero. A reconstructed row has no timing, and writing 0
-# would average like a real measurement and drag every mean toward the floor.
-check "never a fabricated zero"     "! grep -qP '\t0\treconstructed\$' '$D/dataset/slots.tsv'"
+check "unknown measures stay empty" "grep -qP '\t[0-9]+\t\t\treconstructed\$' '$D/dataset/slots.tsv'"
+# ★ Explicitly: NOT zeroes. A reconstructed row has neither measurement, and
+# writing 0 would average like a real value and drag every mean toward the floor.
+check "never a fabricated sec zero" "! grep -qP '\t0\t\treconstructed\$' '$D/dataset/slots.tsv'"
+check "never a prompt-byte zero"     "! grep -qP '\t\t0\treconstructed\$' '$D/dataset/slots.tsv'"
 check "panels.tsv carries a diff_id" "grep -qP 'ds1\t[0-9a-f]{8}\.\.[0-9a-f]{8}' '$D/dataset/panels.tsv'"
 check "and counts the seats"        "grep -qP 'ds1\t\S+\t2\t1\t0\t0\t1\t' '$D/dataset/panels.tsv'"
+
+RF="$D/receipt-fixtures"
+mkdir -p "$RF/live" "$RF/old"
+printf 'r1\tcodex:a\topenai\tok\t1024\t7\t2048\nr1\tcodex:b\topenai\tfailed\t512\t3\t1024\nr2\tclaude\tanthropic\tdegraded\t256\t2\t256\n' > "$RF/live/slots.tsv"
+OUT=$(run_cadre "$D" receipts "$RF/live")
+check "receipts prints a family row" "awk '\$1 == \"openai\" { found=1 } END { exit !found }' <<<\"\$OUT\""
+check "receipt totals add up"        "awk '\$1 == \"openai\" && \$2 == 1 && \$3 == 2 && \$4 == 1 && \$5 == 0 && \$6 == 0 && \$7 == 1 && \$8 == 10 && \$9 == 3.0 && \$10 == 1.5 && \$11 == 1152 { found=1 } END { exit !found }' <<<\"\$OUT\""
+check "families sort by est tokens"  "[ \"\$(sed -n '2p' <<<\"\$OUT\" | awk '{print \$1}')\" = openai ]"
+printf 'oldrun\tlegacy\tlegacy\tok\t400\t5\n' > "$RF/old/slots.tsv"
+OUT=$(run_cadre "$D" receipts "$RF/old" 2>&1); RC=$?
+check "old receipts do not crash"    "[ '$RC' -eq 0 ]"
+check "old prompt spend is named"    "grep -q '1 rows predate prompt-byte capture; their prompt spend is not counted.' <<<\"\$OUT\""
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

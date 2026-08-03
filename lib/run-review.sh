@@ -453,11 +453,15 @@ mapfile -t SCRUB < <(scrubbed_env)
 run_one() {
   local spec="$1" idx="$2"
   local sl; sl=$(slug "$spec")
-  local f="$OUT/$sl.md" log="$OUT/.log-$sl" st="$OUT/.status-$sl"
+  local f="$OUT/$sl.md" log="$OUT/.log-$sl" st="$OUT/.status-$sl" len="$OUT/.len-$sl"
   local agent model dir attempt=1 rc w start took
   agent=$(spec_agent "$spec"); model=$(spec_model "$spec")
 
   : > "$log"
+  # Zero is measured here: until agentcall is reached, the harness has sent no
+  # prompt. Overwrite it at the dispatch site so adapter failures still retain
+  # the exact prompt size after the scratch files disappear.
+  echo 0 > "$len"
   # ★ A roster member that is not installed is a FAILURE, not a skip. run-pass
   # prints "skipping" and moves on, which in a live review is indistinguishable
   # from a reviewer that ran and found nothing.
@@ -477,6 +481,9 @@ run_one() {
 
   local m=(); [ -n "$model" ] && m=(-M "$model")
   start=$(date +%s)
+  # Promptless adapters use their own contract; zero is the exact number of
+  # shared-brief bytes they send to their provider.
+  if ! is_promptless "$agent"; then wc -c < "$PROMPT" | tr -d ' ' > "$len"; fi
   while :; do
     "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
       CADRE_PASS_BASE="$BASE" \
@@ -640,11 +647,12 @@ done
 
 # ★ Write the per-slot record to disk BEFORE deleting the scratch files it is
 # built from. Status and timing used to live only in .status-*/.log-*, both
-# removed on the next line, so the moment a panel finished the only surviving
-# record of WHICH reviewer failed and HOW LONG each took was the console
-# scrollback. Fourteen panels ran before this existed and their timings are
-# simply gone -- not reconstructible, because the artifacts on disk carry
-# neither. report.md is prose for a human; this is the same run as data.
+# removed below, so the moment a panel finished the only surviving record of
+# WHICH reviewer failed and HOW LONG each took was the console scrollback.
+# Fourteen panels ran before this existed and their timings are simply gone --
+# not reconstructible, because the artifacts on disk carry neither. The prompt
+# length follows the same rule: capture it at dispatch, never reconstruct it
+# later. report.md is prose for a human; this is the same run as data.
 # One line per reviewer slot, tab-separated, no header: greppable, joinable,
 # and append-safe. Bytes come from the artifact rather than the log so the
 # number always describes the file that is actually there.
@@ -656,18 +664,50 @@ done
     # the seconds if they are there and leave the field empty if they are not,
     # rather than inventing a zero that would average like a real measurement.
     secs=$(sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl" 2>/dev/null | head -1)
+    prompt_bytes=$(cat "$OUT/.len-$sl" 2>/dev/null)
     art="$OUT/$sl.md"
     [ -s "$art" ] || art="$OUT/$sl.md.partial"
     [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
     [ -s "$art" ] || art="$OUT/$sl.md.failed"
     bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(basename "$OUT")" "$spec" "$(spec_family "$spec")" \
-      "$st" "${bytes:-0}" "${secs:-}"
+      "$st" "${bytes:-0}" "${secs:-}" "${prompt_bytes:-}"
   done
 } > "$OUT/slots.tsv"
 
-rm -f "$OUT"/.log-* "$OUT"/.status-*
+{
+  echo
+  echo "## Receipts"
+  echo
+  echo "| seat | status | secs | prompt KB | review KB | est. tokens |"
+  echo "|---|---|---|---|---|---|"
+  total_secs=0; have_secs=0; total_prompt=0; have_prompt=0; total_review=0; total_est=0
+  while IFS=$'\t' read -r _run spec _fam st bytes secs prompt_bytes; do
+    prompt_kb=""
+    if [ -n "${prompt_bytes:-}" ]; then
+      prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
+      total_prompt=$((total_prompt + prompt_bytes)); have_prompt=1
+    fi
+    review_kb=$(awk -v n="${bytes:-0}" 'BEGIN { printf "%.1f", n / 1024 }')
+    est_tokens=$(( (${prompt_bytes:-0} + ${bytes:-0}) / 4 ))
+    total_est=$((total_est + est_tokens))
+    [ -n "${secs:-}" ] && { total_secs=$((total_secs + secs)); have_secs=1; }
+    total_review=$((total_review + ${bytes:-0}))
+    printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+      "$spec" "$st" "${secs:-}" "$prompt_kb" "$review_kb" "$est_tokens"
+  done < "$OUT/slots.tsv"
+  total_secs_display=""; [ "$have_secs" -eq 1 ] && total_secs_display="$total_secs"
+  total_prompt_kb=""; [ "$have_prompt" -eq 1 ] && \
+    total_prompt_kb=$(awk -v n="$total_prompt" 'BEGIN { printf "%.1f", n / 1024 }')
+  total_review_kb=$(awk -v n="$total_review" 'BEGIN { printf "%.1f", n / 1024 }')
+  printf '| **panel total** | | %s | %s | %s | %s |\n' \
+    "$total_secs_display" "$total_prompt_kb" "$total_review_kb" "$total_est"
+  echo
+  echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."
+} >> "$REPORT"
+
+rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-*
 echo
 echo "$ok_count ok, $degraded_count degraded, $inconc_count inconclusive, $fail_count failed. Report: $REPORT"
 # Degraded counts toward having something to synthesize: partial findings are

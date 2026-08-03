@@ -19,6 +19,7 @@
 #   cadre onboard [--brief]               add a second reviewer for free
 #   cadre ledger [show|path]              findings you have already ruled on
 #   cadre settle <review> [--judge spec]  split a review into NEW vs settled
+#   cadre receipts [dir ...]              total harness-side spend by family
 #
 # <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 # Recommends. Never changes your review lineup. See README.md.
@@ -80,6 +81,8 @@ then run that panel on the code you are about to ship.
   cadre ledger [show|path]              findings you have already ruled on
   cadre settle <review> [--judge spec]  split a review into NEW vs already
                                         settled. Exits 0 when nothing is new.
+  cadre receipts [dir ...]              total harness-side spend by family;
+                                        defaults to $CADRE_HOME/reviews
 
 <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 
@@ -603,16 +606,6 @@ resolve_roster() {
   printf '%s\n' "${out[@]}"
 }
 
-# Does this adapter ignore the prompt? coderabbit does: it ships its own review
-# contract. Such an adapter cannot synthesize, because synthesis IS a prompt.
-is_promptless() {
-  local a="$1" d
-  ( for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
-      [ -f "$d/$a.sh" ] && . "$d/$a.sh"
-    done
-    declare -F "noprompt_$a" >/dev/null ) 2>/dev/null
-}
-
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
@@ -1024,6 +1017,72 @@ cmd_ledger() {
   esac
 }
 
+# Sum only what slots.tsv measured. Old and reconstructed rows have no prompt
+# length, and a receipt command that guesses one would turn missing history into
+# a confident spend number.
+cmd_receipts() {
+  local roots=() d f raw rows missing tab=$'\t'
+  if [ "$#" -eq 0 ]; then roots=("$CADRE_HOME/reviews")
+  else roots=("$@")
+  fi
+  for d in "${roots[@]}"; do [ -d "$d" ] || die "receipts: not a directory: $d"; done
+
+  local slot_files=()
+  while IFS= read -r f; do slot_files+=("$f"); done \
+    < <(find "${roots[@]}" -type f -name slots.tsv -print | sort -u)
+  [ "${#slot_files[@]}" -gt 0 ] || die "receipts: no slots.tsv found"
+
+  raw=$(awk -v FS="$tab" '
+    $1 == "panel" && $2 == "slot" { next }
+    NF < 5 || $3 == "" { next }
+    {
+      fam = $3
+      seats[fam]++
+      run_key = fam SUBSEP FILENAME SUBSEP $1
+      if (!(run_key in seen)) { seen[run_key] = 1; runs[fam]++ }
+      if      ($4 == "ok")           ok[fam]++
+      else if ($4 == "degraded")     degraded[fam]++
+      else if ($4 == "inconclusive") inconclusive[fam]++
+      else                             failed[fam]++
+      review = ($5 ~ /^[0-9]+$/) ? $5 : 0
+      review_bytes[fam] += review
+      if ($6 ~ /^[0-9]+$/) { secs[fam] += $6; have_secs[fam] = 1 }
+      prompt = 0
+      if (NF < 7 || $7 == "") missing_prompt++
+      else if ($7 ~ /^[0-9]+$/) { prompt = $7; prompt_bytes[fam] += prompt }
+      else missing_prompt++
+      est_tokens[fam] += int((prompt + review) / 4)
+    }
+    END {
+      for (fam in seats) {
+        sec = have_secs[fam] ? secs[fam] : ""
+        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n", \
+          fam, runs[fam], seats[fam], ok[fam], degraded[fam], \
+          inconclusive[fam], failed[fam], sec, prompt_bytes[fam], \
+          review_bytes[fam], est_tokens[fam]
+      }
+      printf "M\t%d\n", missing_prompt
+    }
+  ' "${slot_files[@]}")
+
+  missing=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "M" { print $2 }')
+  rows=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "R"' \
+    | sort -t "$tab" -k12,12nr -k2,2)
+
+  printf '%-24s %5s %5s %4s %8s %12s %6s %8s %10s %10s %11s\n' \
+    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS'
+  printf '%s\n' "$rows" | awk -v FS="$tab" '
+    $1 == "R" {
+      printf "%-24s %5d %5d %4d %8d %12d %6d %8s %10.1f %10.1f %11d\n", \
+        $2, $3, $4, $5, $6, $7, $8, $9, $10 / 1024, $11 / 1024, $12
+    }
+  '
+  if [ "${missing:-0}" -gt 0 ]; then
+    echo
+    echo "$missing rows predate prompt-byte capture; their prompt spend is not counted."
+  fi
+}
+
 # Split one review into SETTLED / NEW against the ledger. Read-only, and it
 # never edits the review: the finding stays on disk exactly as written.
 cmd_settle() {
@@ -1311,6 +1370,7 @@ case "${1:-}" in
   onboard)   shift; cmd_onboard "$@" ;;
   ledger)    shift; cmd_ledger "$@" ;;
   settle)    shift; cmd_settle "$@" ;;
+  receipts)  shift; cmd_receipts "$@" ;;
   dataset)   shift; init_home; "$CADRE_ROOT/lib/aggregate.sh" "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;

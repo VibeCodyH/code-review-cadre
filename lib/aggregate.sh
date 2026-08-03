@@ -32,20 +32,21 @@ PANELS="$OUT_D/panels.tsv"
 # ── slots.tsv ────────────────────────────────────────────────────────────────
 # One row per reviewer slot. Panels that ran before run-review.sh started
 # writing slots.tsv are reconstructed from their artifacts, which is lossy in a
-# specific way: the artifacts carry status and size but NOT elapsed time, so
-# `secs` is empty for them. Empty, not zero -- a zero would average like a real
-# measurement and silently pull every mean toward the floor.
+# specific way: the artifacts carry status and size but NOT elapsed time or the
+# dispatched prompt size, so `secs` and `prompt_bytes` are empty for them.
+# Empty, not zero -- a zero would average like a real measurement and silently
+# pull every mean toward the floor.
 {
-  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tsource\n'
+  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tsource\n'
   for d in "$REVIEWS"/*/; do
     [ -d "$d" ] || continue
     p=$(basename "$d")
     if [ -s "$d/slots.tsv" ]; then
       # Recorded live by run-review.sh: status and timing are measured.
-      while IFS=$'\t' read -r _p spec fam st bytes secs; do
+      while IFS=$'\t' read -r _p spec fam st bytes secs prompt_bytes; do
         [ -n "${spec:-}" ] || continue
-        printf '%s\t%s\t%s\t%s\t%s\t%s\trecorded\n' \
-          "$p" "$spec" "$fam" "$st" "$bytes" "$secs"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\trecorded\n' \
+          "$p" "$spec" "$fam" "$st" "$bytes" "$secs" "${prompt_bytes:-}"
       done < "$d/slots.tsv"
       continue
     fi
@@ -85,7 +86,7 @@ PANELS="$OUT_D/panels.tsv"
       fi
       bytes=0
       [ -n "$art" ] && bytes=$(wc -c < "$art" | tr -d ' ')
-      printf '%s\t%s\t%s\t%s\t%s\t\treconstructed\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t\t\treconstructed\n' \
         "$p" "$spec" "$(spec_family "$spec")" "$st" "$bytes"
     done
   done
@@ -106,7 +107,7 @@ PANELS="$OUT_D/panels.tsv"
     did="unknown"
     [ -n "$bt" ] && [ -n "$rt" ] && did="${bt:0:8}..${rt:0:8}"
     n=0 o=0 g=0 u=0 f=0
-    while IFS=$'\t' read -r pp _s _fam st _b _sec _src; do
+    while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _src; do
       [ "$pp" = "$p" ] || continue
       n=$((n+1))
       # ★ `inconclusive` gets its own column rather than falling into the `*)`

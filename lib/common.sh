@@ -92,6 +92,17 @@ agent_installed() {
   esac
 }
 
+# Does this adapter ignore the prompt? coderabbit does: it ships its own review
+# contract. Such an adapter cannot synthesize, and its dispatched prompt size is
+# zero even when the harness has a shared brief ready for the rest of the panel.
+is_promptless() {
+  local a="$1" d
+  ( for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
+      [ -f "$d/$a.sh" ] && . "$d/$a.sh"
+    done
+    declare -F "noprompt_$a" >/dev/null ) 2>/dev/null
+}
+
 # ★ Which MODEL FAMILY a roster slot actually is, which is not the same question
 # as which CLI it runs. A panel is worth exactly its independence, and the fastest
 # way to lose that without noticing is to add a harness that fronts models you

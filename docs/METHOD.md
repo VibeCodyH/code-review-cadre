@@ -248,3 +248,9 @@ not as a pass.
 **Whether the judge is right.** It grades from the review text alone, which is
 what stops it from re-reviewing the code, but a correct finding written badly
 scores as a miss.
+
+### What receipts do NOT measure
+
+Receipts are harness-side measurements only. They do not measure hidden
+reasoning tokens, provider-side billing, or retries a CLI performs internally;
+those happen beyond the adapter boundary and are not visible to cadre.
