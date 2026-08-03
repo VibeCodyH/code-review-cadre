@@ -25,7 +25,9 @@ OUT="${3:?need an out dir}"
 JOBS="${4:-1}"
 shift 4 2>/dev/null || shift $#
 reviewers=("$@")
-[ ${#reviewers[@]} -gt 0 ] || die "no reviewers given"
+skipped_rows=()
+[ -n "${CADRE_SKIPPED:-}" ] && mapfile -t skipped_rows <<< "$CADRE_SKIPPED"
+[ ${#reviewers[@]} -gt 0 ] || [ ${#skipped_rows[@]} -gt 0 ] || die "no reviewers given"
 
 need git
 
@@ -572,6 +574,7 @@ REPORT="$OUT/report.md"
   echo
   echo "## Reviewers"
   echo
+  [ -n "${CADRE_GATE_NOTICE:-}" ] && echo "$CADRE_GATE_NOTICE."
 } > "$REPORT"
 
 ok_count=0 degraded_count=0 inconc_count=0 fail_count=0
@@ -593,6 +596,11 @@ for spec in "${reviewers[@]}"; do
       fail_count=$((fail_count + 1))
       echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT" ;;
   esac
+done
+
+for row in "${skipped_rows[@]}"; do
+  IFS=$'\t' read -r spec gate reason <<< "$row"
+  echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT"
 done
 
 # ★ Spell out what degraded costs the reader, once, where the counts are. The
@@ -674,6 +682,11 @@ done
       "$(basename "$OUT")" "$spec" "$(spec_family "$spec")" \
       "$st" "${bytes:-0}" "${secs:-}" "${prompt_bytes:-}"
   done
+  for row in "${skipped_rows[@]}"; do
+    IFS=$'\t' read -r spec _gate _reason <<< "$row"
+    printf '%s\t%s\t%s\tskipped\t0\t\t0\n' \
+      "$(basename "$OUT")" "$spec" "$(spec_family "$spec")"
+  done
 } > "$OUT/slots.tsv"
 
 {
@@ -683,7 +696,11 @@ done
   echo "| seat | status | secs | prompt KB | review KB | est. tokens |"
   echo "|---|---|---|---|---|---|"
   total_secs=0; have_secs=0; total_prompt=0; have_prompt=0; total_review=0; total_est=0
-  while IFS=$'\t' read -r _run spec _fam st bytes secs prompt_bytes; do
+  while IFS= read -r slot_row; do
+    # Tabs are IFS whitespace, so plain `read` collapses the empty secs field in
+    # a skipped row. Translate to a non-whitespace delimiter before splitting.
+    slot_row="${slot_row//$'\t'/$'\034'}"
+    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes <<< "$slot_row"
     prompt_kb=""
     if [ -n "${prompt_bytes:-}" ]; then
       prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
@@ -709,9 +726,15 @@ done
 
 rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-*
 echo
-echo "$ok_count ok, $degraded_count degraded, $inconc_count inconclusive, $fail_count failed. Report: $REPORT"
+skipped_count=${#skipped_rows[@]}
+if [ "$skipped_count" -gt 0 ]; then
+  echo "$ok_count ok, $degraded_count degraded, $inconc_count inconclusive, $fail_count failed, $skipped_count skipped. Report: $REPORT"
+else
+  echo "$ok_count ok, $degraded_count degraded, $inconc_count inconclusive, $fail_count failed. Report: $REPORT"
+fi
 # Degraded counts toward having something to synthesize: partial findings are
 # still findings. Only a panel with nothing at all is a dead run.
 [ $((ok_count + degraded_count)) -gt 0 ] || {
+  [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
   echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }
 exit 0

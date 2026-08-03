@@ -43,11 +43,12 @@ PANELS="$OUT_D/panels.tsv"
     p=$(basename "$d")
     if [ -s "$d/slots.tsv" ]; then
       # Recorded live by run-review.sh: status and timing are measured.
-      while IFS=$'\t' read -r _p spec fam st bytes secs prompt_bytes; do
-        [ -n "${spec:-}" ] || continue
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\trecorded\n' \
-          "$p" "$spec" "$fam" "$st" "$bytes" "$secs" "${prompt_bytes:-}"
-      done < "$d/slots.tsv"
+      # awk preserves adjacent tab fields. Bash read treats tab as IFS whitespace
+      # and collapsed an empty secs field, shifting skipped prompt_bytes=0 into
+      # seconds and turning the measured zero back into missing data.
+      awk -F '\t' -v OFS='\t' -v panel="$p" '
+        $2 != "" { print panel, $2, $3, $4, $5, $6, $7, "recorded" }
+      ' "$d/slots.tsv"
       continue
     fi
     # Reconstructed. The roster line is the authority on WHICH slots ran --
@@ -109,6 +110,9 @@ PANELS="$OUT_D/panels.tsv"
     n=0 o=0 g=0 u=0 f=0
     while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _src; do
       [ "$pp" = "$p" ] || continue
+      # A gated-off seat is retained in slots.tsv as operational provenance but
+      # was never on the reviewing panel, so it cannot pad the seat denominator.
+      [ "$st" = skipped ] && continue
       n=$((n+1))
       # ★ `inconclusive` gets its own column rather than falling into the `*)`
       # arm with failed. Collapsing it there is what would make this table say a

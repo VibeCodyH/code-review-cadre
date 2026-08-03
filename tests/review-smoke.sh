@@ -283,6 +283,80 @@ OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
 OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
 check "label is single-use"           "grep -q 'already exists' <<<\"\$OUT\""
 
+echo "== user-declared roster seat gates =="
+# One added line is below the declared threshold. The all-skipped case is still
+# a successful, durable review record: silence here would erase the decision.
+D=$(case_dir gate_below); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster 'good ?min-lines=2' --base main "$S"); RC=$?
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: below threshold exits clean" "[ $RC -eq 0 ]"
+check "gate: skip is loud in report"      "grep -qF -- '- \`good\` — SKIPPED by its roster gate (?min-lines=2: diff is 1 lines).' '$R/report.md'"
+check "gate: skipped slot has zero spend" "grep -qP '\tgood\t.*\tskipped\t0\t\t0\$' '$R/slots.tsv'"
+check "gate: receipt keeps empty seconds"  "grep -qF '| \`good\` | skipped |  | 0.0 | 0.0 | 0 |' '$R/report.md'"
+check "gate: console counts the skip"      "grep -q '0 ok, 0 degraded, 0 inconclusive, 0 failed, 1 skipped' <<<\"\$OUT\""
+check "gate: no prompt reached the seat"   "[ ! -e '$R/good.md' ]"
+
+# The environment source uses the same parser, and equality runs the seat.
+D=$(case_dir gate_at); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(CADRE_ROSTER='good ?min-lines=1' run_cadre "$D" review --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: at threshold runs"          "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+check "gate: run has no skip artifacts" "! grep -q 'SKIPPED' '$R/report.md' && ! grep -qP '\tskipped\t' '$R/slots.tsv'"
+
+# The roster-file source exercises the deliberately crude path definition.
+D=$(case_dir gate_untested); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+mkdir -p "$D/state"; printf 'good ?untested\n' > "$D/state/roster"
+OUT=$(run_cadre "$D" review --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: untested code change runs" "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+
+D=$(case_dir gate_tested); S="$D/src"
+git -C "$S" checkout -qb feature
+echo x >> "$S/app.js"; mkdir -p "$S/tests"; echo test > "$S/tests/unit.js"
+git -C "$S" add -A; git -C "$S" commit -qm f
+OUT=$(run_cadre "$D" review --roster 'good ?untested' --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: test file defeats untested" "grep -qF '(?untested: diff includes a test file)' '$R/report.md'"
+
+D=$(case_dir gate_and); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster 'good ?min-lines=1 ?min-files=2' --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: AND skips when one fails" "grep -qF '(?min-files=2: diff touches 1 files)' '$R/report.md'"
+
+D=$(case_dir gate_all); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --all-seats --roster 'good ?min-lines=999' --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: --all-seats forces run" "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+
+D=$(case_dir gate_full); echo doc > "$D/whole.md"
+OUT=$(run_cadre "$D" review --full --roster 'good ?min-lines=999' "$D/whole.md")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: --full runs gated seat" "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+check "gate: --full rule is reported" "grep -qF -- '--full review: seat gates do not apply.' '$R/report.md'"
+
+D=$(case_dir gate_bad); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+mkdir -p "$D/state"; printf '# roster\ngood ?min-lines=0\n' > "$D/state/roster"
+OUT=$(run_cadre "$D" review --base main "$S"); RC=$?
+check "gate: malformed dies at parse time" "[ $RC -ne 0 ] && grep -q \"roster line 2 .*malformed gate '?min-lines=0'\" <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster 'good ?min-lines=1,good ?min-lines=2' --base main "$S")
+check "gate: duplicate key is spec only" "grep -q \"'good' listed twice\" <<<\"\$OUT\""
+OUT=$(run_cadre "$D" run 'good ?min-lines=1'); RC=$?
+check "gate: graded pass rejects gates" "[ $RC -ne 0 ] && grep -qF \"seat gates are for 'cadre review'; a graded pass needs every seat present\" <<<\"\$OUT\""
+
+# Only active specs reach synthesis. A skipped seat is visible in report/slots,
+# but never appears in the echoer's copy of the synthesis prompt.
+D=$(case_dir gate_synth); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster 'good,good2,terse ?min-lines=999' --synth echoer --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "gate: skipped absent from synthesis" "[ -s '$R/synthesis.md' ] && ! grep -q 'terse' '$R/synthesis.md'"
+
 echo "== parallel =="
 D=$(case_dir parallel); S="$D/src"
 git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
@@ -1419,12 +1493,21 @@ check "never a prompt-byte zero"     "! grep -qP '\t\t0\treconstructed\$' '$D/da
 check "panels.tsv carries a diff_id" "grep -qP 'ds1\t[0-9a-f]{8}\.\.[0-9a-f]{8}' '$D/dataset/panels.tsv'"
 check "and counts the seats"        "grep -qP 'ds1\t\S+\t2\t1\t0\t0\t1\t' '$D/dataset/panels.tsv'"
 
+# Recorded skipped rows survive as rows, but cannot pad panels.tsv's seats.
+mkdir -p "$D/state/reviews/ds-skip"
+printf 'ds-skip\tgood\tstub-good\tok\t100\t1\t100\nds-skip\tgood2\tstub-good2\tskipped\t0\t\t0\n' > "$D/state/reviews/ds-skip/slots.tsv"
+printf 'base-tree: aaaaaaaa11111111\nreviewed-tree: bbbbbbbb22222222\n' > "$D/state/reviews/ds-skip/manifest.txt"
+OUT=$(run_cadre "$D" dataset "$D/dataset" 2>&1)
+check "aggregate keeps skipped slot row" "grep -qP 'ds-skip\tgood2\t.*\tskipped\t0\t\t0\trecorded\$' '$D/dataset/slots.tsv'"
+check "aggregate excludes skip from seats" "grep -qP 'ds-skip\t\S+\t1\t1\t0\t0\t0\t' '$D/dataset/panels.tsv'"
+
 RF="$D/receipt-fixtures"
 mkdir -p "$RF/live" "$RF/old"
-printf 'r1\tcodex:a\topenai\tok\t1024\t7\t2048\nr1\tcodex:b\topenai\tfailed\t512\t3\t1024\nr2\tclaude\tanthropic\tdegraded\t256\t2\t256\n' > "$RF/live/slots.tsv"
+printf 'r1\tcodex:a\topenai\tok\t1024\t7\t2048\nr1\tcodex:b\topenai\tfailed\t512\t3\t1024\nr1\tcodex:c\topenai\tskipped\t0\t\t0\nr2\tclaude\tanthropic\tdegraded\t256\t2\t256\n' > "$RF/live/slots.tsv"
 OUT=$(run_cadre "$D" receipts "$RF/live")
 check "receipts prints a family row" "awk '\$1 == \"openai\" { found=1 } END { exit !found }' <<<\"\$OUT\""
-check "receipt totals add up"        "awk '\$1 == \"openai\" && \$2 == 1 && \$3 == 2 && \$4 == 1 && \$5 == 0 && \$6 == 0 && \$7 == 1 && \$8 == 10 && \$9 == 3.0 && \$10 == 1.5 && \$11 == 1152 { found=1 } END { exit !found }' <<<\"\$OUT\""
+check "receipt totals add up"        "awk '\$1 == \"openai\" && \$2 == 1 && \$3 == 3 && \$4 == 1 && \$5 == 0 && \$6 == 0 && \$7 == 1 && \$8 == 1 && \$9 == 10 && \$10 == 3.0 && \$11 == 1.5 && \$12 == 1152 { found=1 } END { exit !found }' <<<\"\$OUT\""
+check "receipt skip is not failed"   "awk '\$1 == \"openai\" && \$7 == 1 && \$8 == 1 { found=1 } END { exit !found }' <<<\"\$OUT\""
 check "families sort by est tokens"  "[ \"\$(sed -n '2p' <<<\"\$OUT\" | awk '{print \$1}')\" = openai ]"
 printf 'oldrun\tlegacy\tlegacy\tok\t400\t5\n' > "$RF/old/slots.tsv"
 OUT=$(run_cadre "$D" receipts "$RF/old" 2>&1); RC=$?

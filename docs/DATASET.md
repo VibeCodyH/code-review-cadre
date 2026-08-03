@@ -27,7 +27,11 @@ about which model reviews *better* needs that path, not this file.
 
     panel  slot  family  status  bytes  secs  prompt_bytes  source
 
-- **status** — `ok` / `degraded` / `inconclusive` / `failed`, as `classify_run`
+- **status** — `ok` / `degraded` / `inconclusive` / `failed` / `skipped`.
+  `skipped` means the user-declared roster gate did not hold, so no prompt was
+  sent; the row stays in `slots.tsv`, while `panels.tsv` excludes it from the
+  seat count because it was not on the panel that reviewed.
+  The other states are as `classify_run`
   decided at the time. `failed` covers a dead account, a refused call, an empty
   answer, and a crash; the artifact says which, this column does not.
   `inconclusive` is narrower and is **not** a flavour of `failed`: the run exited

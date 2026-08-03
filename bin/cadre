@@ -66,6 +66,7 @@ then run that panel on the code you are about to ship.
                          a repo at all, or a single file. Opposite of --base.
                          .gitignore is honoured; refuses a target over
                          CADRE_TARGET_MAX_FILES (2000) or _MAX_KB (20480).
+      --all-seats        ignore roster seat gates and run every seat
       --roster a,b,c     override $CADRE_HOME/roster
       --jobs N           reviewers in parallel (default 1; they share rate limits)
       --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
@@ -309,6 +310,7 @@ cmd_add_pass() {
 cmd_run() {
   local spec="${1:?usage: cadre run <agent-spec> [runs] [pass-label]}"
   local runs="${2:-2}" only="${3:-}"
+  case "$spec" in *\?*) die "seat gates are for 'cadre review'; a graded pass needs every seat present" ;; esac
   init_home; need_judge; need jq
   need_runs "$runs"
 
@@ -339,6 +341,7 @@ cmd_run() {
 
 cmd_grade() {
   local spec="${1:?usage: cadre grade <agent-spec> [runs]}" runs="${2:-2}"
+  case "$spec" in *\?*) die "seat gates are for 'cadre review'; a graded pass needs every seat present" ;; esac
   init_home; need_judge; need jq
   need_runs "$runs"
   run_gauntlet "$spec" "$runs" 1 "${3:-}"
@@ -563,9 +566,12 @@ cmd_panel() {
 
 # Roster for the live path: --roster, then $CADRE_ROSTER, then the file.
 # Accepts commas or newlines, ignores '#' comments and blanks, rejects
-# duplicates (two identical specs would double-count in the synthesis tally).
+# duplicates by SPEC (two seats for one spec would double-count synthesis even
+# when their gates differ), and validates gates before any review work begins.
+# The default output remains one bare spec per line. The internal "entries"
+# mode preserves validated gates for cmd_review without changing that contract.
 resolve_roster() {
-  local raw="" src="" seen=" " s out=()
+  local raw="" src="" seen=" " s out=() mode="${2:-specs}" line=0
   if [ -n "${1:-}" ]; then raw="$1"; src="--roster"
   elif [ -n "${CADRE_ROSTER:-}" ]; then raw="$CADRE_ROSTER"; src="\$CADRE_ROSTER"
   elif [ -s "$CADRE_HOME/roster" ]; then raw=$(cat "$CADRE_HOME/roster"); src="$CADRE_HOME/roster"
@@ -596,11 +602,28 @@ resolve_roster() {
   # reviewer is indistinguishable from one that ran and found nothing, which is
   # the failure this whole tool exists to catch.
   while IFS= read -r s || [ -n "$s" ]; do
+    line=$((line + 1))
     s="${s%%#*}"; s=$(trim "$s")
     [ -n "$s" ] || continue
-    case "$seen" in *" $s "*) die "roster: '$s' listed twice ($src)" ;; esac
-    seen="$seen$s "
-    out+=("$s")
+    local fields=() spec gate n entry
+    read -r -a fields <<< "$s"
+    spec="${fields[0]}"; entry="$spec"
+    for gate in "${fields[@]:1}"; do
+      case "$gate" in
+        \?min-lines=*|\?min-files=*)
+          n="${gate#*=}"
+          case "$n" in
+            ''|*[!0-9]*) die "roster line $line ($src): malformed gate '$gate'" ;;
+            *) case "$n" in *[1-9]*) ;; *) die "roster line $line ($src): malformed gate '$gate'" ;; esac ;;
+          esac ;;
+        \?untested) ;;
+        *) die "roster line $line ($src): malformed gate '$gate'" ;;
+      esac
+      entry="$entry"$'\t'"$gate"
+    done
+    case "$seen" in *" $spec "*) die "roster: '$spec' listed twice ($src)" ;; esac
+    seen="$seen$spec "
+    if [ "$mode" = entries ]; then out+=("$entry"); else out+=("$spec"); fi
   done < <(printf '%s\n' "$raw" | tr ',' '\n')
   [ ${#out[@]} -gt 0 ] || die "every line in $src is commented out. Uncomment the reviewers you want."
   printf '%s\n' "${out[@]}"
@@ -609,10 +632,11 @@ resolve_roster() {
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
-  local prerun="${CADRE_PRERUN:-}" full=0
+  local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --full)   full=1; shift ;;
+      --all-seats) all_seats=1; shift ;;
       --base)   base="${2:?--base needs a rev}"; shift 2 ;;
       --roster) roster_arg="${2:?--roster needs specs}"; shift 2 ;;
       --jobs)   jobs="${2:?--jobs needs a number}"; shift 2 ;;
@@ -668,9 +692,9 @@ cmd_review() {
     fi
   done
 
-  local specs=() rl
-  rl=$(resolve_roster "$roster_arg") || exit 2
-  mapfile -t specs <<< "$rl"
+  local roster_entries=() rl
+  rl=$(resolve_roster "$roster_arg" entries) || exit 2
+  mapfile -t roster_entries <<< "$rl"
 
   # Resolve the base here so the error names something the user typed.
   if [ "$full" = 1 ]; then
@@ -687,6 +711,94 @@ cmd_review() {
       || die "no merge-base between HEAD and $db. Pass --base explicitly."
     echo "base: $db -> $(printf '%.9s' "$base")"
   fi
+
+  # Every explicit base is resolved here too. Gate measurements and reviewers
+  # must compare against one commit, not independently interpret a moving name.
+  if [ "$full" != 1 ]; then
+    base=$(git -C "$repo" rev-parse --verify -q "${base}^{commit}") \
+      || die "base does not resolve to a commit: $base"
+  fi
+
+  local specs=() skipped=() has_gates=0 entry parts=() spec gate
+  for entry in "${roster_entries[@]}"; do
+    IFS=$'\t' read -r -a parts <<< "$entry"
+    [ "${#parts[@]}" -gt 1 ] && has_gates=1
+  done
+
+  local diff_lines=0 diff_files=0 diff_nontest=0 diff_test=0
+  if [ "$full" != 1 ] && [ "$all_seats" != 1 ] && [ "$has_gates" = 1 ]; then
+    # Build the same content tree run-review.sh will build: stash-create captures
+    # tracked work without touching it, then a temporary index adds untracked,
+    # non-ignored files. One numstat call supplies every gate measurement. Binary
+    # rows carry '-' and deliberately add zero lines.
+    local gate_snap gate_index gate_tree diff_numstat stats rc
+    gate_snap=$(git -C "$repo" stash create "cadre seat gates" 2>/dev/null); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      die "git stash create failed in $repo (exit $rc).
+       Cadre cannot snapshot the working tree, and reviewing HEAD instead would
+       silently drop your changes. Check for an unresolved merge or a bad index."
+    fi
+    [ -n "$gate_snap" ] || gate_snap=$(git -C "$repo" rev-parse --verify HEAD) \
+      || die "cannot resolve HEAD"
+    gate_index=$(mktemp) || die "cannot create a temporary index for seat gates"
+    rm -f "$gate_index"
+    GIT_INDEX_FILE="$gate_index" git -C "$repo" read-tree "$gate_snap" \
+      || { rm -f "$gate_index"; die "could not snapshot the tracked files for seat gates"; }
+    git -C "$repo" ls-files -z --others --exclude-standard \
+      | GIT_INDEX_FILE="$gate_index" git -C "$repo" update-index -z --add --stdin \
+      || { rm -f "$gate_index"; die "could not snapshot untracked files for seat gates"; }
+    gate_tree=$(GIT_INDEX_FILE="$gate_index" git -C "$repo" write-tree) \
+      || { rm -f "$gate_index"; die "could not write the review tree for seat gates"; }
+    rm -f "$gate_index"
+    diff_numstat=$(git -C "$repo" diff --numstat "${base}^{tree}" "$gate_tree") \
+      || die "could not measure the review diff for seat gates"
+    stats=$(printf '%s\n' "$diff_numstat" | awk -F '\t' '
+      NF >= 3 {
+        files++
+        if ($1 ~ /^[0-9]+$/) lines += $1
+        if ($2 ~ /^[0-9]+$/) lines += $2
+        path = tolower($3)
+        if (path ~ /test|spec/) test = 1; else nontest = 1
+      }
+      END { printf "%d %d %d %d\n", lines, files, nontest, test }
+    ')
+    read -r diff_lines diff_files diff_nontest diff_test <<< "$stats"
+  fi
+
+  local failed_gate="" failed_reason="" n
+  for entry in "${roster_entries[@]}"; do
+    IFS=$'\t' read -r -a parts <<< "$entry"
+    spec="${parts[0]}"
+    if [ "$full" = 1 ] || [ "$all_seats" = 1 ] || [ "${#parts[@]}" -eq 1 ]; then
+      specs+=("$spec"); continue
+    fi
+    failed_gate=""; failed_reason=""
+    for gate in "${parts[@]:1}"; do
+      case "$gate" in
+        \?min-lines=*)
+          n="${gate#*=}"
+          [ "$diff_lines" -ge "$n" ] || { failed_gate="$gate"; failed_reason="diff is $diff_lines lines"; break; } ;;
+        \?min-files=*)
+          n="${gate#*=}"
+          [ "$diff_files" -ge "$n" ] || { failed_gate="$gate"; failed_reason="diff touches $diff_files files"; break; } ;;
+        \?untested)
+          if [ "$diff_nontest" -eq 0 ]; then
+            failed_gate="$gate"; failed_reason="diff has no non-test file"; break
+          elif [ "$diff_test" -ne 0 ]; then
+            failed_gate="$gate"; failed_reason="diff includes a test file"; break
+          fi ;;
+      esac
+    done
+    if [ -n "$failed_gate" ]; then
+      skipped+=("$spec"$'\t'"$failed_gate"$'\t'"$failed_reason")
+    else
+      specs+=("$spec")
+    fi
+  done
+
+  local skipped_env="" gate_notice=""
+  [ "${#skipped[@]}" -gt 0 ] && skipped_env=$(printf '%s\n' "${skipped[@]}")
+  [ "$full" = 1 ] && [ "$has_gates" = 1 ] && gate_notice="--full review: seat gates do not apply"
 
   if [ -n "$synth" ] && [ "$synth" != none ]; then
     local sa si; sa=$(spec_agent "$synth")
@@ -787,7 +899,7 @@ cmd_review() {
   # refusal must never look like a flaky run, because the retry is the wrong
   # response to it.
   local rrc=0
-  CADRE_PRERUN="$prerun" \
+  CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
     # rmdir, not rm -rf: it succeeds only when the directory is empty, so a run
@@ -1043,6 +1155,7 @@ cmd_receipts() {
       if      ($4 == "ok")           ok[fam]++
       else if ($4 == "degraded")     degraded[fam]++
       else if ($4 == "inconclusive") inconclusive[fam]++
+      else if ($4 == "skipped")      skipped[fam]++
       else                             failed[fam]++
       review = ($5 ~ /^[0-9]+$/) ? $5 : 0
       review_bytes[fam] += review
@@ -1056,9 +1169,9 @@ cmd_receipts() {
     END {
       for (fam in seats) {
         sec = have_secs[fam] ? secs[fam] : ""
-        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n", \
+        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n", \
           fam, runs[fam], seats[fam], ok[fam], degraded[fam], \
-          inconclusive[fam], failed[fam], sec, prompt_bytes[fam], \
+          inconclusive[fam], failed[fam], skipped[fam], sec, prompt_bytes[fam], \
           review_bytes[fam], est_tokens[fam]
       }
       printf "M\t%d\n", missing_prompt
@@ -1067,14 +1180,14 @@ cmd_receipts() {
 
   missing=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "M" { print $2 }')
   rows=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "R"' \
-    | sort -t "$tab" -k12,12nr -k2,2)
+    | sort -t "$tab" -k13,13nr -k2,2)
 
-  printf '%-24s %5s %5s %4s %8s %12s %6s %8s %10s %10s %11s\n' \
-    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS'
+  printf '%-24s %5s %5s %4s %8s %12s %6s %7s %8s %10s %10s %11s\n' \
+    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SKIPPED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS'
   printf '%s\n' "$rows" | awk -v FS="$tab" '
     $1 == "R" {
-      printf "%-24s %5d %5d %4d %8d %12d %6d %8s %10.1f %10.1f %11d\n", \
-        $2, $3, $4, $5, $6, $7, $8, $9, $10 / 1024, $11 / 1024, $12
+      printf "%-24s %5d %5d %4d %8d %12d %6d %7d %8s %10.1f %10.1f %11d\n", \
+        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 / 1024, $12 / 1024, $13
     }
   '
   if [ "${missing:-0}" -gt 0 ]; then

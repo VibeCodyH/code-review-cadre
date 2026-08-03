@@ -23,6 +23,9 @@ runs="${3:-1}"
 shift 3 2>/dev/null || shift $#
 reviewers=("$@")
 [ ${#reviewers[@]} -gt 0 ] || die "no reviewers given"
+for reviewer in "${reviewers[@]}"; do
+  case "$reviewer" in *\?*) die "seat gates are for 'cadre review'; a graded pass needs every seat present" ;; esac
+done
 
 CHECKOUT="${CADRE_PASS_DIR:?CADRE_PASS_DIR must point at the checkout to review}"
 BASE="${CADRE_PASS_BASE:-HEAD~1}"

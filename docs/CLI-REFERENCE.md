@@ -37,6 +37,31 @@ Two adapters do not install under their own name: **cursor** is `agent` (also
 `cursor-agent`) and **kiro** is `kiro-cli`. Both declare it with `bin_<agent>()`,
 so `agentcall --installed` finds them and `command -v cursor` does not.
 
+## `cadre review` roster gates
+
+The review roster comes from `--roster`, then `$CADRE_ROSTER`, then
+`$CADRE_HOME/roster`. Each comma- or newline-separated entry is an agent spec
+followed by optional gate tokens:
+
+```
+codex ?min-lines=200
+opencode:meta/muse-spark-1.1 ?min-files=5 ?untested
+```
+
+- `?min-lines=N` — run when added plus deleted lines are at least N. Binary
+  files add zero lines.
+- `?min-files=N` — run when at least N files are touched.
+- `?untested` — run when at least one non-test file and no test file changed.
+  Deliberately crude: a path is a test when its basename or any directory
+  segment contains `test` or `spec`, case-insensitively.
+
+Multiple gates are ANDed. `--all-seats` ignores them. `--full` has no diff to
+measure, so every gated seat runs and the report states that gates do not apply.
+Malformed gates are refused while parsing the roster.
+
+Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
+`--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
+
 ## The call cadre makes
 
 Generated with `agentcall --print-command <agent> -d . "hello"`, which is the

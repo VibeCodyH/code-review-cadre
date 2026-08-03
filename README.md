@@ -293,6 +293,26 @@ review plus a combined `report.md`. `--base <rev>` picks a different base,
 `--roster a,b,c` skips the file, `--synth <agent-spec>` merges the reviews into
 one document that tags each finding with **which** reviewers raised it.
 
+### Optional seats: roster gates
+
+A roster line can reserve a seat for changes that justify its cost:
+
+```
+codex ?min-lines=200
+opencode:meta/muse-spark-1.1 ?min-files=5 ?untested
+```
+
+`?min-lines=N` requires at least N added plus deleted lines, `?min-files=N`
+requires at least N touched files, and `?untested` requires a non-test change
+with no test file in the diff. Gates on one line are ANDed. The test-file rule
+is deliberately crude: any basename or directory segment containing `test` or
+`spec`, case-insensitively, counts as a test file.
+
+A small diff should not pay the full panel price, but the gate is yours, not
+cadre's. `--all-seats` runs every seat anyway. `--full` also runs every gated
+seat because there is no diff to measure, and says that gates do not apply in
+the report.
+
 That attribution is the point. "3 of 3 flagged this" and "only the second reader
 flagged this" are different facts, and the second one is why you staffed a
 panel instead of buying the highest scorer.
