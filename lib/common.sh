@@ -234,6 +234,8 @@ spec_family() {
     *minimax*)                                     echo minimax ;;
     swe-1*|*inkling*)                              echo cognition ;;
     *glm*)                                         echo zhipu ;;
+    *hunyuan*|hy3*)                                echo tencent ;;
+    *mimo*)                                        echo xiaomi ;;
     *gemini*|*gemma*)                              echo google ;;
     *llama*|*muse-spark*)                          echo meta ;;
     *mistral*|*magistral*|*ministral*|*codestral*|*pixtral*|*mixtral*) echo mistral ;;
