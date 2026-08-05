@@ -357,6 +357,99 @@ OUT=$(run_cadre "$D" review --roster 'good,good2,terse ?min-lines=999' --synth e
 R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
 check "gate: skipped absent from synthesis" "[ -s '$R/synthesis.md' ] && ! grep -q 'terse' '$R/synthesis.md'"
 
+echo "== capability preflight =="
+# Adapters declare what they cannot do; dispatch refuses a doomed seat before
+# spending tokens. Undeclared = unrestricted (loose is safe).
+
+# A declared role:reviewer refusal blocks the seat, names the declaration in the
+# report and slots.tsv, and leaves sibling seats free to run.
+D=$(case_dir cap_block); S="$D/src"
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/refuses"; chmod +x "$D/bin/refuses"
+cat > "$D/agents.d/refuses.sh" <<'A'
+cannot_refuses() { echo "role:reviewer"; }
+run_refuses() { echo "SHOULD NOT RUN"; echo "Verdict: ship it"; }
+A
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster refuses,good --base main "$S"); RC=$?
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "cap: blocked seat exits clean"   "[ $RC -eq 0 ]"
+check "cap: skip names declaration"     "grep -qF -- '- \`refuses\` — SKIPPED by capability preflight (role:reviewer:' '$R/report.md'"
+check "cap: reason is in the report"    "grep -q 'declared unable to serve as a reviewer' '$R/report.md'"
+check "cap: skipped slot has zero spend" "grep -qP '\trefuses\t.*\tskipped\t0\t\t0\$' '$R/slots.tsv'"
+check "cap: no prompt reached the seat" "[ ! -e '$R'/refuses-*.md ] && [ -z \"\$(ls '$R'/refuses-* 2>/dev/null)\" ]"
+check "cap: sibling seat still ran"     "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+check "cap: console counts the skip"    "grep -q '1 ok, 0 degraded, 0 inconclusive, 0 failed, 1 skipped' <<<\"\$OUT\""
+
+# ★ Undeclared = unrestricted. A test for the exemption must feed it input the
+# rule would otherwise CATCH: a security-audit-shaped stack on an adapter with
+# NO cannot_ declaration. If preflight blocked on prompt shape alone, this fails.
+# Mutation: add `cannot_good() { echo prompt:security-audit; }` and the next
+# check must go red.
+D=$(case_dir cap_undeclared); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(CADRE_STACK='Please run a full security audit of this codebase for vulnerabilities.' \
+  run_cadre "$D" review --roster good --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "cap: undeclared passes security-audit stack" "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
+check "cap: undeclared has no skip artifacts"       "! grep -q 'SKIPPED by capability preflight' '$R/report.md'"
+
+# Declared prompt:security-audit blocks only when the brief is audit-shaped.
+D=$(case_dir cap_audit); S="$D/src"
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/audithate"; chmod +x "$D/bin/audithate"
+cat > "$D/agents.d/audithate.sh" <<'A'
+cannot_audithate() { echo "prompt:security-audit"; }
+run_audithate() { echo "SHOULD NOT RUN"; echo "Verdict: ship it"; }
+A
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+# Normal brief mentions "security" in the priority list — that is NOT audit-shaped.
+OUT=$(run_cadre "$D" review --roster audithate --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "cap: security-in-priority still runs" "grep -qP '\taudithate\t.*\tok\t' '$R/slots.tsv'"
+# Audit-shaped stack trips the declaration.
+OUT=$(CADRE_STACK='Please run a full security audit of this codebase for vulnerabilities.' \
+  run_cadre "$D" review --roster audithate --label audit2 --base main "$S")
+R="$D/state/reviews/audit2"
+check "cap: audit-shaped stack blocks" "grep -qF 'SKIPPED by capability preflight (prompt:security-audit:' '$R/report.md'"
+check "cap: audit skip in slots.tsv"   "grep -qP '\taudithate\t.*\tskipped\t0\t\t0\$' '$R/slots.tsv'"
+
+# Model-keyed: cerebras/* is role:reviewer-only. Any adapter:cerebras/... is
+# blocked as a reviewer and accepted as a judge.
+D=$(case_dir cap_cerebras); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster 'good:cerebras/gpt-oss-120b' --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "cap: cerebras reviewer blocked" "grep -qF 'SKIPPED by capability preflight (role:reviewer:' '$R/report.md'"
+check "cap: cerebras reason names API" "grep -q 'reasoning_content' '$R/report.md'"
+check "cap: cerebras no review artifact" "! ls '$R'/good-*.md '$R'/good-*.md.failed '$R'/good-*.md.partial 2>/dev/null | grep -q ."
+
+# As judge: need_judge must accept cerebras (role:reviewer does not fire).
+OUT=$(CADRE_HOME="$D/state" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" CADRE_JUDGE='good:cerebras/gpt-oss-120b' \
+      "$ROOT/bin/cadre" grade nosuchagent 2>&1 || true)
+check "cap: cerebras judge not blocked" "! grep -qi 'capability preflight' <<<\"\$OUT\""
+check "cap: cerebras judge past install" "! grep -q 'not installed' <<<\"\$OUT\""
+
+# A seat that declares role:judge is refused at need_judge.
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/nojudge"; chmod +x "$D/bin/nojudge"
+cat > "$D/agents.d/nojudge.sh" <<'A'
+cannot_nojudge() { echo "role:judge"; }
+run_nojudge() { echo x; }
+A
+OUT=$(CADRE_HOME="$D/state" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      PATH="$D/bin:$PATH" CADRE_JUDGE=nojudge \
+      "$ROOT/bin/cadre" grade nosuchagent 2>&1 || true)
+check "cap: role:judge refused at need_judge" "grep -q \"blocked by capability preflight (role:judge:\" <<<\"\$OUT\""
+
+# cadre preflight prints the table (model-level + per-seat).
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/refuses"; chmod +x "$D/bin/refuses"
+cat > "$D/agents.d/refuses.sh" <<'A'
+cannot_refuses() { echo "role:reviewer"; }
+run_refuses() { echo x; }
+A
+OUT=$(run_cadre "$D" preflight --roster 'good,refuses,good:cerebras/gpt-oss-120b')
+check "cap: preflight shows unrestricted" "grep -qE 'good[[:space:]]+\\(none\\)' <<<\"\$OUT\""
+check "cap: preflight shows adapter decl" "grep -q 'refuses' <<<\"\$OUT\" && grep -q 'role:reviewer' <<<\"\$OUT\""
+check "cap: preflight shows cerebras model" "grep -q 'model:cerebras' <<<\"\$OUT\""
 echo "== parallel =="
 D=$(case_dir parallel); S="$D/src"
 git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f

@@ -99,6 +99,17 @@ for r in "${reviewers[@]}"; do
     bad_runs=$((bad_runs + runs)); dead_agents="$dead_agents  $r: not installed"$'\n'
     continue
   }
+  # Capability preflight: a doomed seat must not burn the graded-pass budget.
+  # Graded passes need every seat present (gates are refused at parse time);
+  # a capability block is the same class of refusal, recorded as failed runs.
+  pblock=""; pdecl=""; preason=""
+  if pblock=$(capability_block "$r" reviewer "$PROMPT"); then
+    IFS=$'\t' read -r pdecl preason <<< "$pblock"
+    echo "  $r: SKIPPED by capability preflight ($pdecl: $preason)"
+    bad_runs=$((bad_runs + runs))
+    dead_agents="$dead_agents  $r: capability preflight ($pdecl: $preason)"$'\n'
+    continue
+  fi
   m=(); [ -n "$model" ] && m=(-M "$model")
   budget=""; window=""
   for n in $(seq 1 "$runs"); do

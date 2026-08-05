@@ -405,6 +405,24 @@ else
   render_review_prompt "$CADRE_ROOT/lib/prompts/$BRIEF" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 fi
 
+# ★ Capability preflight BEFORE any paid call. A seat whose adapter (or model)
+# has declared it cannot do this job is skipped loudly, not dispatched. Same
+# skipped-seat path as roster gates: slots.tsv status, report line, out of
+# panel seat counts and synthesis. See seat_declarations in common.sh.
+_kept=(); _block=""; _decl=""; _reason=""
+for _spec in "${reviewers[@]}"; do
+  _block=""
+  if _block=$(capability_block "$_spec" reviewer "$PROMPT"); then
+    IFS=$'\t' read -r _decl _reason <<< "$_block"
+    skipped_rows+=("$_spec"$'\t'"$_decl"$'\t'"$_reason")
+    echo "  $_spec: SKIPPED by capability preflight ($_decl: $_reason)"
+    continue
+  fi
+  _kept+=("$_spec")
+done
+reviewers=("${_kept[@]}")
+unset _kept _spec _block _decl _reason
+
 {
   # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
   # two-commit repo, so its own shas are meaningless the moment it is deleted,
@@ -600,7 +618,14 @@ done
 
 for row in "${skipped_rows[@]}"; do
   IFS=$'\t' read -r spec gate reason <<< "$row"
-  echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT"
+  # Roster gates are ?min-lines / ?min-files / ?untested. Anything else is a
+  # capability declaration (role:reviewer, prompt:security-audit, …).
+  case "$gate" in
+    \?*)
+      echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT" ;;
+    *)
+      echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
+  esac
 done
 
 # ★ Spell out what degraded costs the reader, once, where the counts are. The

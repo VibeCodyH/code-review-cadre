@@ -42,7 +42,7 @@ _load_dir() {
     # A user adapter REPLACES the shipped one. Sourcing alone leaves a shipped
     # nomodel_/noprompt_ marker alive, still rejecting what the override
     # supports, so clear the contract first. Partial overrides are worse.
-    [ "$1" = "$USER_D" ] && unset -f "nomodel_$n" "noprompt_$n" "notes_$n" 2>/dev/null
+    [ "$1" = "$USER_D" ] && unset -f "nomodel_$n" "noprompt_$n" "notes_$n" "cannot_$n" 2>/dev/null
     # shellcheck disable=SC1090
     . "$f"
     case " $AGENTS " in *" $n "*) ;; *) AGENTS="$AGENTS $n" ;; esac

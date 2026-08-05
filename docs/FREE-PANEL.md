@@ -75,8 +75,14 @@ That prompts for the key with the input masked, stores it in
 
 ```bash
 opencode models cerebras                       # what you can now reach
-cadre review --roster claude,opencode:cerebras/gpt-oss-120b
+export CADRE_JUDGE=opencode:cerebras/gpt-oss-120b   # judge only — see below
 ```
+
+★ Cerebras is verified as a **judge**, not a reviewer. As a reviewer the API
+rejects `reasoning_content` on the second assistant turn after a tool call, so
+cadre's capability preflight skips a `cerebras/*` reviewer seat before spending
+tokens. Put it in `CADRE_JUDGE`, not on the review roster. `cadre preflight`
+shows the declaration.
 
 Most providers need nothing else. A provider `opencode auth login` does not
 already know needs a block in `~/.config/opencode/opencode.json`; see
