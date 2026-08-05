@@ -16,6 +16,15 @@ naming what we did not invent.
 - **Headless multi-CLI wrappers.**
   [RobertTLange/headless-cli](https://github.com/RobertTLange/headless-cli).
   `bin/agentcall` started from its read-only recipes for a couple of the CLIs.
+- **Ensemble judging beats a single judge.**
+  [SE-Jury (Zhou et al., ASE 2025)](https://conf.researchr.org/details/ase-2025/ase-2025-papers/222/SE-Jury-An-LLM-as-Ensemble-Judge-Metric-for-Narrowing-the-Gap-with-Human-Evaluation-)
+  reports ensemble LLM judges correlating with human judgment 34.4–113.0%
+  better than prior automatic metrics, matching human inter-rater reliability
+  on code generation and program repair. Peer-reviewed backing for the
+  multi-judge premise — not for any tie-break: the grade here is still only
+  what two judges agree on, and a split stays UNRESOLVED. (Downstream tools
+  quote punchier per-task accuracy numbers from this paper; verify against
+  the paper itself, we could not reproduce those figures from the abstract.)
 - There is a whole [survey of code-review
   benchmarks](https://arxiv.org/html/2602.13377v1). Read it before believing
   anyone's novelty claim, including this one.
