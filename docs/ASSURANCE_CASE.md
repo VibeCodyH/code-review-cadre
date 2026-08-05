@@ -74,3 +74,7 @@ says what it misses".
   target-pick time.
 - **Receipts do not measure hidden reasoning tokens, provider billing, or
   in-CLI retries.** METHOD.md §6.
+- **Capability declarations are seeded from measured refusals, not
+  exhaustive.** An undeclared quirk costs one wasted paid call, not a lost
+  review — loose is safe, and a declaration earns its place from an observed
+  refusal, never a guess. docs/ADDING-AN-AGENT.md has the contract.
