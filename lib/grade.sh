@@ -181,6 +181,32 @@ key_problems() {
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"
   local sl; sl=$(slug "$spec")
+  # ★ One gauntlet per candidate at a time. Measured 2026-08-04: two `cadre run`
+  # sweeps of the same candidate overlapped for half an hour. Same spec means
+  # same artifact paths, so each sweep's classify-and-rename stole the other's
+  # `.part` mid-run: the loser logged `mv: cannot stat` and filed FAILED for a
+  # review that had completed, `already have it, skipping` and grade reuse then
+  # laundered the winner's artifacts into the loser's report, which printed
+  # graded rows for a pass its own console called "0 usable". Not one symptom
+  # named the actual problem; every one pointed at the adapter. flock releases
+  # with the process, so a kill leaves nothing to clean up; the mkdir fallback
+  # (macOS has no flock) can leave a stale lock after a crash, and its message
+  # says what to remove.
+  local lockf="$CADRE_HOME/.gauntlet-$sl.lock"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$lockf"
+    flock -n 9 || die "another cadre run/grade of '$spec' is already running (lock: $lockf).
+Two sweeps of one candidate share artifact paths and silently corrupt each
+other's runs, grades, and report. Wait for the other sweep, or kill it, then re-run."
+  else
+    if ! mkdir "$lockf.d" 2>/dev/null; then
+      die "another cadre run/grade of '$spec' appears to be running (lock: $lockf.d).
+If it is not -- on systems without flock a crash can leave this behind --
+remove that directory and re-run."
+    fi
+    # No other trap in cadre sets EXIT, so nothing is clobbered here.
+    trap 'rmdir "$CADRE_HOME/.gauntlet-'"$sl"'.lock.d" 2>/dev/null' EXIT
+  fi
   # ★ The JUDGE is in the grade filename and the report filename, for the reason
   # `1821318` put the adjudicator in the adjudication filename -- a lesson this
   # path had not learned. Keyed on the candidate alone, a second judge DELETES the
