@@ -55,6 +55,16 @@ fourth chair from a family you don't have is not the same purchase as a fourth
 chair. Cadre does not inherit those numbers and does not reproduce them; it
 gives you the apparatus to find out what your own curve looks like.
 
+The pairing literature points the same way from the other side.
+[Cross-Model LLM Code Review](https://arxiv.org/abs/2607.21656) (Xiang et al.,
+2026) had two agents draft and review for each other across 116 tasks: the
+stronger model reviewing the weaker raised pass rates 71.6% → 89.7%, the
+reverse ordering **lowered** them 91.4% → 82.8%, and the stronger model
+reviewing its own drafts bought nothing. Their reviewer rewrites the draft
+where Cadre's seats only report, so the numbers don't transfer — but the shape
+does: who should review whom is an empirical question with an asymmetric
+answer, not a leaderboard lookup.
+
 ## What Cadre actually does
 
 - **Mines your history for real bugs.** Finds commits where the author broke
