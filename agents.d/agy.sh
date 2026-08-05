@@ -1,5 +1,14 @@
 # agentcall adapter: agy  (Antigravity CLI)
 
+# Machine-checkable incapability. cadre preflight / dispatch refuse a doomed
+# seat before spending tokens. See docs/ADDING-AN-AGENT.md.
+cannot_agy() {
+  # A broad "audit this codebase for vulnerabilities" brief comes back as a
+  # refusal, not a review. Scoped security wording on a bounded target is fine;
+  # the check only matches audit-shaped briefs, not "security" in a priority list.
+  echo "prompt:security-audit"
+}
+
 notes_agy() {
   cat <<'NOTES'
 ★ Fronts THREE vendor lineages, not just Gemini: `agy models` lists

@@ -59,6 +59,22 @@ Multiple gates are ANDed. `--all-seats` ignores them. `--full` has no diff to
 measure, so every gated seat runs and the report states that gates do not apply.
 Malformed gates are refused while parsing the roster.
 
+## Capability preflight
+
+Adapters may declare what they **cannot** do via optional `cannot_<agent>()`
+(and model-level quirks via `model_cannot` in `lib/common.sh`). Dispatch checks
+every seat before spending tokens and skips a doomed one with the declaration
+named in the report and `slots.tsv`. Undeclared = unrestricted — a missed
+declaration wastes a paid call, it does not lose a review. See
+`docs/ADDING-AN-AGENT.md` for the tag list.
+
+```
+cadre preflight [--roster a,b,c]
+```
+
+prints the table. Seed declarations today: `agy` refuses
+security-audit-shaped prompts; `cerebras/*` works as a judge but not a reviewer.
+
 Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
 `--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
 

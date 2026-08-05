@@ -103,6 +103,109 @@ is_promptless() {
     declare -F "noprompt_$a" >/dev/null ) 2>/dev/null
 }
 
+# ---- capability preflight ----------------------------------------------------
+# Adapters may declare what they CANNOT do. Undeclared = unrestricted: a missed
+# declaration wastes a paid call, it does not lose a review. Loose is safe.
+#
+# Optional per adapter: cannot_<agent>() prints one tag per line. $model is in
+# scope so a multi-provider front-end can key on the model half of the spec.
+# Tags currently checked:
+#   role:reviewer | role:judge | role:synth
+#   prompt:security-audit
+# Model-level quirks that are not CLI-level live in model_cannot below so every
+# adapter that reaches that model inherits them.
+
+# Model-keyed incapabilities, independent of which CLI fronts the model.
+model_cannot() {
+  local model="$1"
+  case "$model" in
+    # Cerebras works as a judge. As a reviewer the API rejects
+    # messages.N.assistant.reasoning_content on the 2nd assistant turn after a
+    # tool call, so the seat hard-fails after the first tool use.
+    cerebras/*) printf '%s\n' 'role:reviewer' ;;
+  esac
+}
+
+# Print every incapability tag for a seat (adapter + model). Empty = unrestricted.
+seat_declarations() {
+  local spec="$1" a m d
+  a=$(spec_agent "$spec"); m=$(spec_model "$spec")
+  model_cannot "$m"
+  (
+    for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
+      [ -f "$d/$a.sh" ] && . "$d/$a.sh"
+    done
+    # shellcheck disable=SC2034
+    model="$m"
+    if declare -F "cannot_$a" >/dev/null 2>&1; then cannot_"$a"; fi
+  ) 2>/dev/null
+}
+
+# Is this text a security-audit-shaped brief? Mere "security" in a priority list
+# is not enough -- that is every review brief. The shape that burns a paid call
+# on agy is asking for a vulnerability audit of a codebase.
+prompt_is_security_audit() {
+  local text="${1:-}" low
+  [ -n "$text" ] || return 1
+  [ -f "$text" ] && text=$(cat -- "$text")
+  low=$(printf '%s' "$text" | tr 'A-Z' 'a-z')
+  case "$low" in
+    *'security audit'*|*'security-audit'*|*'audit for vulnerabilit'*|\
+    *'vulnerabilit'*'audit'*|*'audit this code'*|*'audit this codebase'*|\
+    *'audit this repo'*|*'audit the codebase'*) return 0 ;;
+  esac
+  return 1
+}
+
+# Human-readable reason for a declaration, naming the measured quirk when known.
+declaration_reason() {
+  local spec="$1" decl="$2" m
+  m=$(spec_model "$spec")
+  case "$decl" in
+    role:reviewer)
+      case "$m" in
+        cerebras/*)
+          printf '%s' 'cerebras rejects reasoning_content on the 2nd assistant turn after a tool call' ;;
+        *) printf '%s' 'declared unable to serve as a reviewer' ;;
+      esac ;;
+    role:judge)  printf '%s' 'declared unable to serve as a judge' ;;
+    role:synth)  printf '%s' 'declared unable to serve as a synthesizer' ;;
+    prompt:security-audit)
+      printf '%s' 'returns a refusal, not a review, on security-audit-shaped prompts' ;;
+    *) printf '%s' "declared unable ($decl)" ;;
+  esac
+}
+
+# If the seat is doomed for this role (and optional prompt), print
+# "declaration<TAB>reason" and return 0. Otherwise return 1 (clear to dispatch).
+# role is one of: reviewer | judge | synth
+capability_block() {
+  local spec="$1" role="$2" prompt="${3:-}" decl
+  while IFS= read -r decl; do
+    [ -n "$decl" ] || continue
+    case "$decl" in
+      role:reviewer)
+        [ "$role" = reviewer ] || continue
+        printf '%s\t%s\n' "$decl" "$(declaration_reason "$spec" "$decl")"
+        return 0 ;;
+      role:judge)
+        [ "$role" = judge ] || continue
+        printf '%s\t%s\n' "$decl" "$(declaration_reason "$spec" "$decl")"
+        return 0 ;;
+      role:synth)
+        [ "$role" = synth ] || continue
+        printf '%s\t%s\n' "$decl" "$(declaration_reason "$spec" "$decl")"
+        return 0 ;;
+      prompt:security-audit)
+        [ "$role" = reviewer ] || continue
+        prompt_is_security_audit "$prompt" || continue
+        printf '%s\t%s\n' "$decl" "$(declaration_reason "$spec" "$decl")"
+        return 0 ;;
+    esac
+  done < <(seat_declarations "$spec")
+  return 1
+}
+
 # ★ Which MODEL FAMILY a roster slot actually is, which is not the same question
 # as which CLI it runs. A panel is worth exactly its independence, and the fastest
 # way to lose that without noticing is to add a harness that fronts models you

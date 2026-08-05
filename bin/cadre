@@ -15,6 +15,7 @@
 #                                         (--full reviews the target as it stands)
 #   cadre passes                          list registered passes
 #   cadre agents                          list adapters
+#   cadre preflight [--roster a,b,c]      show each seat's capability declarations
 #   cadre doctor [--probe]                check the install and the passes
 #   cadre onboard [--brief]               add a second reviewer for free
 #   cadre ledger [show|path]              findings you have already ruled on
@@ -75,6 +76,11 @@ then run that panel on the code you are about to ship.
                          give every reviewer the transcript. Off unless you ask.
   cadre passes                          list registered passes
   cadre agents                          list adapters
+  cadre preflight [--roster a,b,c]      show each roster seat's capability
+                                        declarations (what it cannot do).
+                                        Without --roster, uses the staffed
+                                        roster; with none, lists every adapter
+                                        plus known model-level quirks.
   cadre doctor [--probe]                check the install and the passes
   cadre onboard [--brief]               walk through adding a second reviewer
                                         for free. --brief prints a prompt to
@@ -142,10 +148,17 @@ need_judge() {
   # ★ agent_installed, not command -v on the name: CADRE_JUDGE=cursor died as
   # "not installed" with `agent` sitting on the user's PATH. See common.sh.
   local js=(); mapfile -t js < <(judge_specs)
-  local j ja
+  local j ja block decl reason
   for j in "${js[@]}"; do
     ja=$(spec_agent "$j")
     agent_installed "$ja" || die "CADRE_JUDGE names '$j' but '$ja' is not installed"
+    # Same preflight as a reviewer seat: a judge that cannot do the job must
+    # not burn the whole pass on doomed calls. role:judge declarations refuse
+    # here; cerebras is role:reviewer-only and is fine as a judge.
+    if block=$(capability_block "$j" judge); then
+      IFS=$'\t' read -r decl reason <<< "$block"
+      die "CADRE_JUDGE '$j' is blocked by capability preflight ($decl: $reason)"
+    fi
   done
   [ "${#js[@]}" -le 2 ] || die "CADRE_JUDGE names ${#js[@]} judges. Two is the most this scores.
      Beyond two, 'they agree' stops being a rule and becomes a vote, and a
@@ -1052,6 +1065,14 @@ and declined to flag it, which is exactly backwards.
   echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
   local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
   [ -n "$m" ] && mm=(-M "$m")
+  # Capability preflight: a doomed synthesizer must not burn the merge call.
+  local sblock sdecl sreason
+  if sblock=$(capability_block "$synth" synth); then
+    IFS=$'\t' read -r sdecl sreason <<< "$sblock"
+    echo "synthesis SKIPPED by capability preflight ($sdecl: $sreason). Individual reviews are intact in $out." >&2
+    rm -f "$pf"
+    return 0
+  fi
   local rc=0
   while :; do
     raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
@@ -1468,6 +1489,71 @@ EOF
   [ "$bad" -eq 0 ] || { echo; echo "doctor: one or more passes are broken (see ★ above)"; return 1; }
 }
 
+# Human-readable view of the tribal knowledge encoded as cannot_*/model_cannot.
+# Dispatch refuses a doomed seat before spending tokens; this is the table it
+# reads. Undeclared = unrestricted (a missed declaration wastes a paid call).
+cmd_preflight() {
+  local roster_arg="" specs=() s decls reason_line d
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --roster) roster_arg="${2:?--roster needs specs}"; shift 2 ;;
+      -h|--help)
+        echo "usage: cadre preflight [--roster a,b,c]"
+        echo "  Show each seat's capability declarations (what it cannot do)."
+        return 0 ;;
+      *) die "preflight: unknown argument '$1' (try --roster a,b,c)" ;;
+    esac
+  done
+
+  printf '%-36s %s\n' SEAT 'CANNOT (undeclared = unrestricted)'
+  printf '%-36s %s\n' '------------------------------------' '----------------------------------------'
+
+  # Model-level quirks first: they apply to every adapter that reaches the model.
+  printf '%-36s %s\n' 'model:cerebras/*' 'role:reviewer — cerebras rejects reasoning_content on the 2nd assistant turn after a tool call'
+
+  if [ -n "$roster_arg" ] || [ -n "${CADRE_ROSTER:-}" ] || [ -s "$CADRE_HOME/roster" ]; then
+    local rl
+    # resolve_roster dies when empty; preflight should still show model quirks.
+    if rl=$(resolve_roster "$roster_arg" specs 2>/dev/null); then
+      mapfile -t specs <<< "$rl"
+      for s in "${specs[@]}"; do
+        decls=$(seat_declarations "$s" | tr '\n' ' ')
+        decls=$(trim "$decls")
+        if [ -z "$decls" ]; then
+          printf '%-36s %s\n' "$s" '(none)'
+        else
+          reason_line=""
+          while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            reason_line="${reason_line:+$reason_line; }$d — $(declaration_reason "$s" "$d")"
+          done < <(seat_declarations "$s")
+          printf '%-36s %s\n' "$s" "$reason_line"
+        fi
+      done
+      return 0
+    fi
+  fi
+
+  # No roster: list every shipped/user adapter with its bare declarations.
+  local a f
+  for f in "$CADRE_ROOT/agents.d"/*.sh "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"/*.sh; do
+    [ -e "$f" ] || continue
+    a=$(basename "$f" .sh)
+    decls=$(seat_declarations "$a" | tr '\n' ' ')
+    decls=$(trim "$decls")
+    if [ -z "$decls" ]; then
+      printf '%-36s %s\n' "$a" '(none)'
+    else
+      reason_line=""
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        reason_line="${reason_line:+$reason_line; }$d — $(declaration_reason "$a" "$d")"
+      done < <(seat_declarations "$a")
+      printf '%-36s %s\n' "$a" "$reason_line"
+    fi
+  done | sort -u
+}
+
 case "${1:-}" in
   setup)     shift; cmd_setup "$@" ;;
   make-pass) shift; cmd_make_pass "$@" ;;
@@ -1479,6 +1565,7 @@ case "${1:-}" in
   review)    shift; cmd_review "$@" ;;
   passes)    shift; cmd_passes "$@" ;;
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
+  preflight) shift; cmd_preflight "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   onboard)   shift; cmd_onboard "$@" ;;
   ledger)    shift; cmd_ledger "$@" ;;

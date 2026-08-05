@@ -20,13 +20,32 @@ needs.
 agentcall --new mycli        # writes $CADRE_HOME/agents.d/mycli.sh
 ```
 
-Edit the stub. It has two functions:
+Edit the stub. It has two required functions, and one optional:
 
 - `notes_mycli()`, one paragraph, printed by `cadre agents`. Write **measured**
   quirks here, not the vendor's description. This file is where the next person
   finds out that a flag silently no-ops.
 - `run_mycli()`. `$dir`, `$mode` (`ro`/`rw`), `$model`, `$prompt` and `$TIMEOUT`
   are in scope. Print the agent's **final text** on stdout and nothing else.
+- `cannot_mycli()` (optional). Machine-checkable incapability declarations.
+  Print one tag per line. Undeclared means unrestricted: **a missed declaration
+  wastes a paid call, it does not lose a review.** Loose is safe here. Dispatch
+  reads these before any seat runs and refuses a doomed seat with the tag named
+  in the report and in `slots.tsv`. `$model` is in scope, so multi-provider
+  front-ends can key a declaration on the model half of the spec.
+
+  Tags currently checked:
+
+  | tag | blocks when |
+  |---|---|
+  | `role:reviewer` | the seat is dispatched as a reviewer |
+  | `role:judge` | the seat is used as `CADRE_JUDGE` |
+  | `role:synth` | the seat is used as `--synth` |
+  | `prompt:security-audit` | the brief is a security-audit-shaped prompt (not mere "security" in a priority list) |
+
+  Model-level quirks that are not CLI-level (today: `cerebras/*` cannot be a
+  reviewer) live in `model_cannot` in `lib/common.sh` so every adapter that
+  reaches that model inherits them. See `cadre preflight` for the table.
 
 ### Say which kind of nothing you have
 
