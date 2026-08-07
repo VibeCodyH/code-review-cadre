@@ -166,6 +166,31 @@ quote_collisions() {
   ' "$gf" 2>/dev/null
 }
 
+# ★ The EMPTY-receipt rule, pulled out of the report block so it can be proved.
+# Its three "-" branches are not reachable through the gauntlet fixtures --
+# `cadre run` writes prompt.txt itself, so an end-to-end test can never observe
+# a missing receipt. Measured: the first cut of this feature shipped an
+# "empty receipt is a dash" test that the run satisfied with a 1469-byte prompt,
+# so it would have passed on a broken implementation and failed on a correct
+# one. A rule that only ever runs in production is a rule nobody has checked.
+#
+# "-" is the answer for every case where a number would be a claim the
+# measurement does not support:
+#   no receipt at all      -- reconstructed rows carry EMPTY prompt_bytes, and a
+#                             fabricated 0 would print the seat as free
+#   any run missing one    -- one silent zero mixed into a real total averages
+#                             the seat toward the floor, which is why slots.tsv
+#                             leaves reconstructed prompt_bytes blank
+#   zero blocking hits     -- a zero denominator is not infinite efficiency
+# Never 0 and never a division result in those cases: both read as measurements.
+cost_per_hit() {
+  local bytes="$1" hits="$2" have="$3" empty="$4"
+  [ -z "$empty" ] || { echo "-"; return; }
+  [ "$have" -eq 0 ] && { echo "-"; return; }
+  [ "$hits" -eq 0 ] && { echo "-"; return; }
+  echo $(( bytes / 4 / hits ))
+}
+
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
 #
@@ -282,6 +307,12 @@ remove that directory and re-run."
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
+  # ★ Receipt accumulator for cost-per-hit. Same estimator as cadre receipts and
+  # the panel receipt table: (prompt_bytes + review_bytes) / 4. prompt_bytes is
+  # EMPTY when the pass never recorded a prompt (fixtures, reconstructed runs),
+  # and EMPTY must stay EMPTY -- a fabricated 0 understates spend and makes the
+  # seat look cheaper than the measurement supports.
+  local receipt_prompt_bytes=0 receipt_review_bytes=0 receipt_empty="" receipt_have=0
   # ★ usable_runs is the only counter that answers "did anything get MEASURED",
   # and nothing tracked it. `graded_passes` counts passes the loop entered, and
   # blocking_total only grows inside the per-item loop a run reaches after every
@@ -531,6 +562,25 @@ remove that directory and re-run."
         continue
       fi
       pass_usable=$((pass_usable + 1)); usable_runs=$((usable_runs + 1))
+
+      # ★ Harness-side receipt for this usable run. Only runs that contribute to
+      # the hit count feed the cost-per-hit number: an unusable or suspect run is
+      # not in the score, so its spend must not pad the numerator either.
+      # ★ One EMPTY prompt voids the whole seat's cost-per-item. Mixing a real
+      # measurement with a silent zero is the same average-toward-the-floor bug
+      # slots.tsv avoids by leaving reconstructed prompt_bytes blank.
+      if [ -z "$receipt_empty" ]; then
+        local pfile="$CADRE_HOME/$label/prompt.txt" pb rb
+        if [ -s "$pfile" ]; then
+          pb=$(wc -c < "$pfile" | tr -d ' ')
+          rb=$(wc -c < "$rf" | tr -d ' ')
+          receipt_prompt_bytes=$((receipt_prompt_bytes + pb))
+          receipt_review_bytes=$((receipt_review_bytes + rb))
+          receipt_have=1
+        else
+          receipt_empty=1
+        fi
+      fi
 
       # Union across judges: a collision in ANY grade file means at least one
       # grader's credit is doubled, and letting the clean judge overrule it
@@ -821,6 +871,27 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     esac
   fi
 
+  # ★ Cost per blocking item hit sits BESIDE the hit rate; it never replaces it.
+  # The seating question is not only "how many" but "at what spend": a 4/6 seat
+  # at a tenth the cost can beat a 5/6 seat. Estimator is bytes/4 of harness-side
+  # prompt+review -- the same relative-spend signal as cadre receipts, not a
+  # bill and not a count of hidden reasoning tokens.
+  #
+  # ★ EMPTY receipt -> "-". Never 0 (looks like free) and never a huge number
+  # from dividing by a missing measure. A seat that hit 0 blocking items has no
+  # defined cost-per-item either: zero denominator is not infinite efficiency.
+  # UNRESOLVED is already out of blocking_hit, so it is out of this denominator
+  # too -- scores nothing either way.
+  local cost_per partial_note=""
+  cost_per=$(cost_per_hit "$((receipt_prompt_bytes + receipt_review_bytes))" \
+                          "$blocking_hit" "$receipt_have" "$receipt_empty")
+  # ★ Same partial-denominator condition the hit count already names (skipped
+  # passes, --only scoping). A cost line without the caveat inherits a lie the
+  # report already knows how to call out.
+  if [ "$nskipped" -gt 0 ] || { [ -n "$scoped" ] && [ "$nfiltered" -gt 0 ]; }; then
+    partial_note=" (partial denominator)"
+  fi
+
   {
     echo "## Verdict: $slot"
     echo
@@ -831,6 +902,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     else
       echo "- blocking items hit: **$blocking_hit / $blocking_total**"
     fi
+    echo "- est. tokens per blocking item hit: **$cost_per**$partial_note"
     echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"

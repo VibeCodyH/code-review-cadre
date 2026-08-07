@@ -2552,6 +2552,70 @@ check "runs: zero is refused too"     "grep -q 'at least 1' <<<\"\$OUT\""
 # The report must not hand over a command it just refused.
 check "runs: report hint is runnable" "! grep -q 'cadre grade .* --rescore' '$R2'"
 
+echo "== ★ cost per blocking item hit (hit rate stays; spend sits beside it) =="
+# The seating question is not only how many blocking items a seat caught but at
+# what harness-side spend. Estimator is bytes/4 of prompt+review -- same relative
+# signal as cadre receipts, never a bill. EMPTY receipt, zero hits, a normal
+# number, and a partial denominator each have a shape the report must not lie
+# about.
+
+# ★ The "-" branches are unit-tested, not driven through the gauntlet. `cadre
+# run` writes prompt.txt itself, so no fixture can present a MISSING receipt to
+# the report path -- an end-to-end "empty receipt is a dash" test passes on a
+# state it never actually built. (Measured: grok's first cut asserted exactly
+# that and the run created a 1469-byte prompt underneath it.)
+check "cost: no receipt at all is a dash"  "[ \"\$(cost_per_hit 2000 2 0 '')\" = '-' ]"
+check "cost: one missing receipt voids it" "[ \"\$(cost_per_hit 2000 2 1 1)\" = '-' ]"
+check "cost: zero hits is a dash"          "[ \"\$(cost_per_hit 2000 0 1 '')\" = '-' ]"
+check "cost: a real receipt divides"       "[ \"\$(cost_per_hit 2000 2 1 '')\" = '250' ]"
+# ★ MUTATION-CHECKED: these two die if a "-" branch is replaced by the division.
+# Both would otherwise print a number that reads as a measurement -- 0 for a
+# seat that looks free, and a crash or a huge value on the zero denominator.
+check "cost: a dash is never zero"         "[ \"\$(cost_per_hit 0 2 0 '')\" != '0' ]"
+check "cost: zero hits never divides"      "[ \"\$(cost_per_hit 2000 0 1 '')\" != '2000' ]"
+
+# End-to-end: the wiring, on the one state the fixture CAN build. The value is
+# read back from the files the run actually produced, because the run rewrites
+# both the prompt and the review -- computing it from the fixture's bytes
+# measures files that no longer exist by the time the report is written.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+PB=$(wc -c < "$D/home/p1/prompt.txt" | tr -d ' ')
+RB=$(wc -c < "$D/home/p1/$(slug terse)-run1.md" | tr -d ' ')
+COST=$(( (PB + RB) / 4 / 2 ))
+check "cost: normal case is a number" \
+  "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\*' '$R'"
+check "cost: normal case value" \
+  "grep -qF 'est. tokens per blocking item hit: **$COST**' '$R'"
+check "cost: hit rate still present" \
+  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+
+# Zero hits end-to-end. ★ extras must be non-empty: a judge crediting nothing
+# AND listing no extras against a review stating two findings is what
+# judge_incoherent bins as unread, so an empty-extras MISS fixture never reaches
+# the score at all and the test would assert on a report that was never written.
+MISSBOTH='{"items":{"K1":"MISS","K2":"MISS"},"quotes":{},"verdict":"none","extras":["out of key"]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$MISSBOTH" "$MISSBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "cost: zero hits is dash e2e" \
+  "grep -qF 'est. tokens per blocking item hit: **-**' '$R'"
+check "cost: zero hits still reports 0/N" \
+  "grep -q 'blocking items hit: \*\*0 / 2\*\*' '$R'"
+
+# Partial denominator: a registered pass never graded. Cost must carry the same
+# caveat the hit count already names, or it silently inherits a short set.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+sha=$(git -C "$D/checkout" rev-parse HEAD)
+printf 'p2|%s|%s|%s|%s\n' "$sha" "$D/checkout" "$sha" "$D/home/no-such-key.md" \
+  >> "$D/home/passes.conf"
+head -c 100 /dev/zero | tr '\0' 'p' > "$D/home/p1/prompt.txt"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "cost: partial denominator named" \
+  "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\* \(partial denominator\)' '$R'"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
