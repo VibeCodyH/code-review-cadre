@@ -2552,6 +2552,43 @@ check "runs: zero is refused too"     "grep -q 'at least 1' <<<\"\$OUT\""
 # The report must not hand over a command it just refused.
 check "runs: report hint is runnable" "! grep -q 'cadre grade .* --rescore' '$R2'"
 
+echo "== ★ a collided credit reaches the report, not just the helper =="
+# The helper is unit-tested above; this is the WIRING -- `collided` accumulating
+# across judges, in_list forcing UNRESOLVED ahead of the counters, the report
+# branch, and the range logic absorbing a SECOND source of UNRESOLVED.
+COLLIDE='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"same sentence","K2":"same sentence"},"verdict":"found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$COLLIDE" "$COLLIDE"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: report says counted twice" \
+  "grep -q 'credited to a sentence that also credits another item' '$R'"
+check "collide: names the sharing items"  "grep -q 'shared by K1, K2' '$R'"
+check "collide: scores as a range"        "grep -q 'blocking items hit: \*\*0 to 2 / 2\*\*' '$R'"
+check "collide: both items unresolved"    "grep -q '(2 UNRESOLVED)' '$R'"
+# ★ Not the judge-split sentence: these two judges agreed perfectly.
+check "collide: not blamed on the judges" \
+  "! grep -q 'judges read this item differently' '$R'"
+# ★ A collided DEFER stops short of defer_on_blocking, which moves the verdict
+# TOWARD the candidate -- a disqualification quietly not applied. Pinned here so
+# the drift is a decision rather than a side effect: the DEFER is unreliable for
+# exactly the reason the HIT is, so it scores nothing instead of disqualifying.
+CDEFER='{"items":{"K1":"HIT","K2":"DEFER"},"quotes":{"K1":"same sentence","K2":"same sentence"},"verdict":"found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$CDEFER" "$CDEFER"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: a doubled DEFER does not disqualify" \
+  "grep -q 'deferred on a blocking item: 0' '$R'"
+check "collide: and it is not silently a hit" \
+  "grep -q 'blocking items hit: \*\*0 to 2 / 2\*\*' '$R'"
+# A pass where nothing shares a sentence must be untouched by any of this.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: distinct quotes unaffected" \
+  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+check "collide: no collision wording"      \
+  "! grep -q 'credited to a sentence that also credits another item' '$R'"
+
 echo "== ★ cost per blocking item hit (hit rate stays; spend sits beside it) =="
 # The seating question is not only how many blocking items a seat caught but at
 # what harness-side spend. Estimator is bytes/4 of prompt+review -- same relative

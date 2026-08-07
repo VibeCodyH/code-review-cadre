@@ -152,6 +152,14 @@ in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # Empty quotes are the trivial false positive here and are dropped before
 # grouping: "" is what a MISS records, and treating it as a shared sentence
 # would collide every miss in the pass with every other.
+#
+# ★ Measured on the 203 grade files on this box: it fires on ZERO of them -- but
+# the honest denominator is 8, not 203. Only 8 files carry two or more QUOTED
+# credits and are therefore even eligible to collide; 117 have no quoted credit
+# at all, predating the day `quotes` became mandatory, and can never fire by
+# construction. So this gate is cheap and has no observed false positives, and
+# it is also close to unvalidated -- 0 of 8 is not the evidence 0 of 203 would
+# look like. Recheck the number once a keyed corpus has grown.
 quote_collisions() {
   local gf="$1"
   [ -s "$gf" ] || return 0
