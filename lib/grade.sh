@@ -236,10 +236,37 @@ key_items() { grep -oE '\bK[0-9]+\b' "$1" | sort -u | sed 's/^K//' | sort -n | s
 # three graded runs scored that item with NO severity -- so a BLOCKING item was
 # silently counted as unweighted and the slot verdict was computed from the
 # wrong denominator. Prints one problem per line; empty output means usable.
+# ★ A CLEAN pass has NO key items on purpose: nothing was planted, so the only
+# thing it measures is what a reviewer wrongly flags. Stolen from
+# mountainowl/bubo, whose corpus carries cases with an empty ground-truth array
+# for exactly this. Cadre already records out-of-key findings as `extras`, but
+# every key so far has items, so extras have only ever been a side channel next
+# to a hit rate rather than the whole score.
+#
+# ★ It must DECLARE itself, and that is the entire design. An empty key file and
+# a deliberately-clean one are otherwise byte-identical, and `key_problems`
+# rejects an itemless key because of a measured incident: a key clobbered
+# mid-write by a still-running make-pass lost K1's heading, `doctor` said "ok",
+# and a blocking item was scored with no severity. Accepting "0 items" outright
+# would re-open that hole in the worst place -- a clobbered key would score as a
+# passed false-positive probe.
+#
+# ★ NAMED NON-GOAL: this narrows the hole, it does not close it. A write
+# truncated AFTER the marker still looks exactly like a clean key. Nothing in
+# the file format can tell those apart; what saves you is that the marker is a
+# thing an author typed, not a thing a partial write produces.
+key_is_clean() { grep -qiE '^#+ *\*{0,2}CLEAN\b' "$1"; }
+
 key_problems() {
   local kf="$1" item sev
   [ -s "$kf" ] || { echo "key file is empty"; return; }
   local items; items=$(key_items "$kf")
+  if key_is_clean "$kf"; then
+    # Both at once is a contradiction, and silently honouring one of them is how
+    # a half-edited key scores. Say which two things disagree.
+    [ -z "$items" ] || echo "declares CLEAN but also lists $(printf '%s' "$items" | wc -w) key item(s)"
+    return
+  fi
   [ -n "$items" ] || { echo "no K1/K2… items"; return; }
   for item in $items; do
     if ! grep -qiE "^#+ *\*{0,2}$item\b" "$kf"; then
@@ -315,6 +342,9 @@ remove that directory and re-run."
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
+  # CLEAN passes are counted apart from the keyed score all the way through:
+  # they share no denominator with it and must not share a column either.
+  local clean_passes=0 clean_fp=0 clean_labels="" clean_extras=""
   # ★ Receipt accumulator for cost-per-hit. Same estimator as cadre receipts and
   # the panel receipt table: (prompt_bytes + review_bytes) / 4. prompt_bytes is
   # EMPTY when the pass never recorded a prompt (fixtures, reconstructed runs),
@@ -448,7 +478,14 @@ remove that directory and re-run."
     pass_usable=0; pass_reviews=0
     # ref-* = public repo = contaminated. Warn in the report. passes/README.md.
     case "$label" in ref-*) reference_used=1 ;; esac
-    { echo "## $label"; echo; } >> "$report"
+    # A clean pass measures the opposite thing from a keyed one, so it is tracked
+    # apart from the first line of the section rather than being separated later.
+    local pass_clean=""
+    if key_is_clean "$keyfile"; then
+      pass_clean=1; clean_passes=$((clean_passes + 1))
+      clean_labels="${clean_labels:+$clean_labels, }$label"
+    fi
+    { echo "## $label${pass_clean:+ (CLEAN - false-positive probe, no planted defects)}"; echo; } >> "$report"
 
     local items; items=$(key_items "$keyfile")
     local n
@@ -661,7 +698,17 @@ remove that directory and re-run."
         verdict="${verdict:+$verdict | }$vv"
         [ -n "$xx" ] && {
           ex="${ex:+$ex; }$xx"
-          extras_all="$extras_all- $label run $n (${judges[$i]}): $xx"$'\n'
+          # ★ On a CLEAN pass an extra is not a bonus finding, it is the score:
+          # there was nothing to find, so everything raised is a false positive.
+          # Kept in its own list because pooling it with keyed extras would mix
+          # "found something the key did not ask about" (often good) with
+          # "flagged a defect that does not exist" (never good).
+          if [ -n "$pass_clean" ]; then
+            clean_fp=$((clean_fp + 1))
+            clean_extras="$clean_extras- $label run $n (${judges[$i]}): $xx"$'\n'
+          else
+            extras_all="$extras_all- $label run $n (${judges[$i]}): $xx"$'\n'
+          fi
         }
       done
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
@@ -964,6 +1011,31 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
       echo "Every number above is over the passes that ran. The benchmark you"
       echo "registered is larger. Restore the missing key or checkout and re-run"
       echo "before comparing this candidate against one scored on the full set."
+    fi
+    # ★ Its own section, never a column beside the hit rate. A clean pass and a
+    # keyed pass measure opposite things -- what a reviewer wrongly raises, and
+    # what it correctly catches -- and a reviewer trades one for the other, so a
+    # single pooled number would hide the trade this is here to expose.
+    # Reported as a COUNT, not a rate: a rate needs a denominator of things that
+    # could have been flagged, and a key with no items does not have one.
+    if [ "$clean_passes" -gt 0 ]; then
+      echo
+      echo "### False-positive probes ($clean_passes CLEAN pass(es): $clean_labels)"
+      echo
+      echo "- findings raised where nothing was planted: **$clean_fp**"
+      echo
+      if [ -n "$clean_extras" ]; then
+        echo "$clean_extras"
+        echo "Each of these is a defect the reviewer asserted in code that has none."
+        echo "Verify before believing the count: a clean checkout can still contain a"
+        echo "real bug nobody planted, and that is a finding about the PASS, not a"
+        echo "false positive. Fix the pass or move it to a keyed one."
+      else
+        echo "Raised nothing on a clean checkout, which is the result this pass is for."
+      fi
+      echo
+      echo "Not pooled with the keyed score above: these passes have no items, so"
+      echo "they contribute no denominator and no hit rate."
     fi
     if [ -n "$extras_all" ]; then
       echo

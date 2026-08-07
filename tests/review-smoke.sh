@@ -2552,6 +2552,71 @@ check "runs: zero is refused too"     "grep -q 'at least 1' <<<\"\$OUT\""
 # The report must not hand over a command it just refused.
 check "runs: report hint is runnable" "! grep -q 'cadre grade .* --rescore' '$R2'"
 
+echo "== ★ a CLEAN pass scores false positives, and declares itself to do it =="
+# Stolen from mountainowl/bubo: a case with no planted defects, whose only
+# measurement is what the reviewer wrongly raises. It must DECLARE itself,
+# because an itemless key is otherwise indistinguishable from a clobbered one.
+KD=$(mktemp -d -p "$SANDBOX")
+printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing was planted here.\n' > "$KD/clean.md"
+printf '# Pass\n\nThis key is perfectly clean and tidy prose.\n' > "$KD/prose.md"
+printf '#### K1 blocking - the write is dropped\ntext\n' > "$KD/keyed.md"
+printf '# Pass\n\n## CLEAN - no planted defects\n\n#### K1 blocking - oops\ntext\n' > "$KD/both.md"
+: > "$KD/empty.md"
+
+check "clean: marker is recognised"        "key_is_clean '$KD/clean.md'"
+# ★ Heading-anchored. The word "clean" in prose must not turn a key into a
+# probe -- that is the whole clobber guard, defeated by a sentence.
+check "clean: prose is not a declaration"  "! key_is_clean '$KD/prose.md'"
+check "clean: a keyed file is not clean"   "! key_is_clean '$KD/keyed.md'"
+check "clean: a declared key is gradeable" "[ -z \"\$(key_problems '$KD/clean.md')\" ]"
+# ★ MUTATION-CHECKED, and the reason this feature is a marker rather than a
+# relaxed check: an itemless key WITHOUT the declaration must still be refused,
+# or a key clobbered mid-write scores as a passed false-positive probe.
+check "clean: itemless without marker still fails" \
+  "grep -q 'no K1/K2' <<<\"\$(key_problems '$KD/prose.md')\""
+check "clean: an empty file still fails"   \
+  "grep -q 'key file is empty' <<<\"\$(key_problems '$KD/empty.md')\""
+# Declaring both is a half-edited key, not a preference to be honoured silently.
+check "clean: CLEAN plus items is refused" \
+  "grep -q 'declares CLEAN but also lists 1 key item' <<<\"\$(key_problems '$KD/both.md')\""
+
+# End to end: a clean pass reports its own section and pools with nothing.
+clean_case() {  # clean_case <dir> <spec> <judgeA> <judgeB>
+  local d="$1" spec="$2" va="$3" vb="$4" sl ja jb sha
+  mkdir -p "$d/home/p1"; setup_agents "$d"; new_repo "$d/checkout"
+  sha=$(git -C "$d/checkout" rev-parse HEAD)
+  printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing planted.\n' > "$d/home/k.md"
+  printf 'p1|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$sha" "$d/home/k.md" > "$d/home/passes.conf"
+  sl=$(slug "$spec"); ja=$(slug good); jb=$(slug good2)
+  printf 'blocking - something\n' > "$d/home/p1/$sl-run1.md"
+  printf '%s\n' "$va" > "$d/home/p1/$sl-run1.by-$ja.grade.json"
+  printf '%s\n' "$vb" > "$d/home/p1/$sl-run1.by-$jb.grade.json"
+}
+FPRAISED='{"items":{},"quotes":{},"verdict":"blocking","extras":["asserted a bug that is not there"]}'
+D=$(mktemp -d -p "$SANDBOX"); clean_case "$D" terse "$FPRAISED" "$FPRAISED"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "clean: section header labels it"  "grep -q 'CLEAN - false-positive probe' '$R'"
+check "clean: counts the false positives" \
+  "grep -q 'findings raised where nothing was planted: \*\*2\*\*' '$R'"
+# ★ The FPs must NOT land in the out-of-key section, where the report tells the
+# reader that finding something outside the key is the most valuable result it
+# can produce. On a clean pass that sentence is exactly backwards.
+check "clean: not pooled as out-of-key"  \
+  "! grep -q 'asserted a bug that is not there' <<<\"\$(sed -n '/Out-of-key findings/,\$p' '$R')\""
+check "clean: says it shares no denominator" \
+  "grep -q 'contribute no denominator and no hit rate' '$R'"
+
+# A clean pass that raised nothing is the passing case and must say so.
+NOFP='{"items":{},"quotes":{},"verdict":"no defects found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); clean_case "$D" terse "$NOFP" "$NOFP"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "clean: silence is the good result" \
+  "grep -q 'Raised nothing on a clean checkout' '$R'"
+check "clean: and the count is zero"      \
+  "grep -q 'findings raised where nothing was planted: \*\*0\*\*' '$R'"
+
 echo "== ★ a collided credit reaches the report, not just the helper =="
 # The helper is unit-tested above; this is the WIRING -- `collided` accumulating
 # across judges, in_list forcing UNRESOLVED ahead of the counters, the report
