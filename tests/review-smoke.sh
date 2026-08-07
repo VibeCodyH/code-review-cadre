@@ -2617,6 +2617,48 @@ check "clean: silence is the good result" \
 check "clean: and the count is zero"      \
   "grep -q 'findings raised where nothing was planted: \*\*0\*\*' '$R'"
 
+# ★ THE MIXED CORPUS, which is the shape a real passes.conf has -- a probe alone
+# measures nothing worth seating. Every clean test above uses a lone clean pass
+# and every cost test a lone keyed pass, so none of them could observe a clean
+# pass leaking its spend into the keyed cost-per-HIT. It did: the receipt
+# accumulator was guarded on receipt_empty only, so probe bytes entered the
+# numerator while contributing no hit to the denominator, inflating the seat's
+# cost by however many probes the corpus carried. Asserted as an EQUALITY
+# against the keyed-only number, because "is a number" would have passed
+# throughout the bug.
+# ★ UNSCOPED. run_gaunt passes `p1` as the pass argument, which filters every
+# other pass out -- a "mixed" corpus run through it is not mixed, and the first
+# version of this test asserted on a report the probe never entered.
+run_gaunt_all() {  # run_gaunt_all <dir> <judge-spec> <candidate>
+  local d="$1" j="$2" c="$3"
+  CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" "$ROOT/bin/cadre" run "$c" 1 2>&1
+}
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt_all "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+KEYED_ONLY=$(grep -oE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\*' "$R" | head -1)
+# Same keyed pass, plus a CLEAN probe carrying its own review and grades.
+D2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D2" terse "$HITBOTH" "$HITBOTH"
+sha=$(git -C "$D2/checkout" rev-parse HEAD)
+mkdir -p "$D2/home/p2"
+printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing planted.\n' > "$D2/home/kclean.md"
+printf 'p2|%s|%s|%s|%s\n' "$sha" "$D2/checkout" "$sha" "$D2/home/kclean.md" >> "$D2/home/passes.conf"
+printf 'blocking - something\n' > "$D2/home/p2/$(slug terse)-run1.md"
+for J in $(slug good) $(slug good2); do
+  printf '%s\n' "$FPRAISED" > "$D2/home/p2/$(slug terse)-run1.by-$J.grade.json"
+done
+OUT=$(run_gaunt_all "$D2" good,good2 terse)
+R2=$(ls "$D2/home"/report-*.md | head -1)
+check "mixed: clean probe is reported"   "grep -q 'CLEAN - false-positive probe' '$R2'"
+check "mixed: keyed pass also graded"    "grep -q '^## p1' '$R2'"
+# ★ Guards the assertion itself: if KEYED_ONLY were empty, the spend check below
+# would grep for "" and pass no matter what the mixed report said.
+check "mixed: baseline number was captured" "[ -n '$KEYED_ONLY' ]"
+check "mixed: keyed score is unchanged"  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R2'"
+check "mixed: probe spend stays out of cost" \
+  "grep -qF '$KEYED_ONLY' '$R2'"
+
 echo "== ★ a collided credit reaches the report, not just the helper =="
 # The helper is unit-tested above; this is the WIRING -- `collided` accumulating
 # across judges, in_list forcing UNRESOLVED ahead of the counters, the report

@@ -1472,6 +1472,12 @@ EOF
         echo "★ KEY IS INSIDE THE CHECKOUT, reviewers can read the answers"; bad=1
       elif [ -n "$(key_problems "$kf")" ]; then
         echo "KEY NOT GRADEABLE:"; key_problems "$kf" | sed 's/^/      /'; bad=1
+      elif key_is_clean "$kf"; then
+        # ★ Never "ok, 0 key items". That sentence is the exact surface the
+        # clobber incident showed up on ("ok, 2 key items" about a key whose
+        # heading had been destroyed), and doctor is now the one place a human
+        # sees the two itemless states side by side. Say which one this is.
+        echo "ok, CLEAN probe (no planted defects), $(git -C "$tgt" rev-list --count HEAD 2>/dev/null) commits visible"
       else
         echo "ok, $(key_items "$kf" | wc -l) key items, $(git -C "$tgt" rev-list --count HEAD 2>/dev/null) commits visible"
       fi

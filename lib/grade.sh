@@ -614,7 +614,17 @@ remove that directory and re-run."
       # ★ One EMPTY prompt voids the whole seat's cost-per-item. Mixing a real
       # measurement with a silent zero is the same average-toward-the-floor bug
       # slots.tsv avoids by leaving reconstructed prompt_bytes blank.
-      if [ -z "$receipt_empty" ]; then
+      # ★ A CLEAN pass pays no part of the cost-per-HIT, because it structurally
+      # cannot produce one. On a mixed passes.conf -- the intended shape, since a
+      # probe alone measures nothing worth seating -- letting its bytes into the
+      # numerator charges spend from one experiment against hits from another,
+      # and inflates the seat's cost by however many probes the corpus carries.
+      # That is the same pooling METHOD.md forbids one paragraph up; spend is
+      # part of the score. A clean-only gauntlet then reaches receipt_have=0 and
+      # prints "-", which is the right answer for a run with no hits to cost.
+      # Skipped entirely rather than voided: a probe with no prompt.txt is not a
+      # missing measurement, it is a measurement that was never owed.
+      if [ -z "$receipt_empty" ] && [ -z "$pass_clean" ]; then
         local pfile="$CADRE_HOME/$label/prompt.txt" pb rb
         if [ -s "$pfile" ]; then
           pb=$(wc -c < "$pfile" | tr -d ' ')
