@@ -125,6 +125,47 @@ judge_incoherent() {
   [ "$(review_findings "$rf")" -ge 2 ]
 }
 
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# ★ Greedy 1:1 -- one finding may be credited to at most one key item. Stolen
+# from mountainowl/bubo's benchmark matcher, whose rule is that duplicate
+# comments cannot inflate true positives.
+#
+# Cadre's exposure runs the OTHER way from bubo's. Scoring is per key item, so N
+# copies of one finding already credit an item once; what nothing stops is ONE
+# vague sentence credited against SEVERAL items -- "this file has error-handling
+# problems" against all three error-handling items in that file.
+#
+# `quotes` makes that checkable with no schema change. It is the reviewer's
+# verbatim sentence behind each HIT/DEFER, so the SAME sentence under two items
+# IS the collision. It was made mandatory to diagnose judge splits; this is the
+# second thing it buys, and the comparison is the one at the split gate below
+# transposed -- that asks one item across judges, this asks one judge across
+# items.
+#
+# ★ Flag, never demote. One sentence can legitimately describe two key items
+# ("both handlers swallow the exception"), so demoting the second to MISS would
+# manufacture a false MISS -- worse than the inflation it fixes, because it
+# penalises a correct review for being concise. Collided items go UNRESOLVED and
+# are reported, the same no-tie-break posture as a judge split.
+#
+# Empty quotes are the trivial false positive here and are dropped before
+# grouping: "" is what a MISS records, and treating it as a shared sentence
+# would collide every miss in the pass with every other.
+quote_collisions() {
+  local gf="$1"
+  [ -s "$gf" ] || return 0
+  jq -r '
+    (.quotes // {}) as $q
+    | [ (.items // {}) | to_entries[]
+        | select(.value == "HIT" or .value == "DEFER")
+        | { k: .key,
+            q: (($q[.key] // "") | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")) } ]
+    | map(select(.q != "" and .q != "null"))
+    | group_by(.q) | map(select(length > 1)) | flatten | map(.k) | .[]
+  ' "$gf" 2>/dev/null
+}
+
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
 #
@@ -491,6 +532,14 @@ remove that directory and re-run."
       fi
       pass_usable=$((pass_usable + 1)); usable_runs=$((usable_runs + 1))
 
+      # Union across judges: a collision in ANY grade file means at least one
+      # grader's credit is doubled, and letting the clean judge overrule it
+      # would be the tie-break the gate below refuses to make.
+      local collided="" cg
+      for cg in "${gfs[@]}"; do
+        collided="$collided $(quote_collisions "$cg" | tr '\n' ' ')"
+      done
+
       local row="" k v sev
       for k in $items; do
         sev=$(key_severity "$keyfile" "$k")
@@ -507,6 +556,10 @@ remove that directory and re-run."
         v="${vs[0]}"
         local x
         for x in "${vs[@]}"; do [ "$x" = "$v" ] || v=UNRESOLVED; done
+        # A finding credited twice is not evidence twice. See quote_collisions().
+        # This runs AFTER the split gate so it can only ever widen the range,
+        # never resolve one the judges disagreed on.
+        in_list "$k" "$collided" && v=UNRESOLVED
 
         total_items=$((total_items + 1))
         [ "$v" = HIT ]        && total_hit=$((total_hit + 1))
@@ -573,6 +626,26 @@ remove that directory and re-run."
         for gg in "${gfs[@]}"; do
           kv2="$kv2 $(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gg")"
         done
+        # ★ Checked BEFORE the split gate, and it needs its own sentence. The
+        # split wording below ("the judges read this item differently") is a
+        # FALSE statement about a collision -- the judges may agree perfectly and
+        # still both be crediting one finding twice. Reusing that line would put
+        # a lie in the report, which is the failure mode the inconclusive work
+        # was written up to avoid.
+        if in_list "$k" "$collided"; then
+          echo "  - $k **UNRESOLVED**, credited to a sentence that also credits another item, so one finding is being counted twice:" >> "$report"
+          for i in "${!gfs[@]}"; do
+            local cq cshare
+            cq=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "${gfs[$i]}")
+            [ -n "$cq" ] && [ "$cq" != null ] || continue
+            cshare=$(jq -r --arg q "$cq" '
+              [ (.quotes // {}) | to_entries[]
+                | select((.value | gsub("\\s+"; " ")) == $q) | .key ] | join(", ")' "${gfs[$i]}")
+            echo "    - ${judges[$i]}: shared by $cshare ↳ \"$cq\"" >> "$report"
+          done
+          split_notes="$split_notes- $label run $n $k (one sentence credited to more than one item)"$'\n'
+          continue
+        fi
         local uniq2; uniq2=$(printf '%s\n' $kv2 | sort -u | grep -c .)
         if [ "$uniq2" -gt 1 ]; then
           echo "  - $k **UNRESOLVED**, the judges read this item differently, so it scores nothing:" >> "$report"

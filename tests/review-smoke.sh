@@ -575,6 +575,50 @@ mkjson '{"items":{"K1":"MISS"},"extras":[],"unusable":false}'
 check "an honest no-defects run passes" "! judge_incoherent '$J/g.json' '$J/empty.md'"
 check "counts numbered-bold findings"   "[ \$(review_findings '$J/codex.md') -ge 2 ]"
 
+echo "== ★ one finding cannot be credited to two key items =="
+# Greedy 1:1, stolen from mountainowl/bubo. Scoring is per key item, so N copies
+# of one finding already credit an item once -- the open direction is ONE vague
+# sentence credited against SEVERAL items. `quotes` is the reviewer's verbatim
+# sentence behind each credit, so the same sentence under two items IS the
+# collision, with no schema change.
+qc() { printf '%s' "$1" > "$J/qc.json"; quote_collisions "$J/qc.json" | tr '\n' ' '; }
+
+check "same sentence under two items collides" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"MISS\",\"K3\":\"HIT\"},\"quotes\":{\"K1\":\"the handler swallows it\",\"K2\":\"\",\"K3\":\"the handler swallows it\"}}')\" = 'K1 K3 ' ]"
+check "distinct sentences do not collide" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"one thing\",\"K2\":\"a different thing\"}}')\" ]"
+# ★ The whitespace normalisation is the point: a judge copying verbatim out of a
+# wrapped review reproduces the same sentence with different line breaks, and an
+# exact-string compare would miss the collision it exists to catch.
+check "wrapping differences still collide" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"the handler   swallows\\nit\",\"K2\":\"the handler swallows it\"}}')\" = 'K1 K2 ' ]"
+# ★ MUTATION-CHECKED: this is the test that dies if the empty-quote filter is
+# deleted. Both items are CREDITED, so the HIT/DEFER select does not exclude
+# them -- only `select(.q != "")` keeps two unquoted credits from grouping
+# together. grade.sh reports an unquoted credit already; it must not also be
+# scored as double-counting.
+check "two unquoted credits do not collide" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"\",\"K2\":\"\"}}')\" ]"
+check "a missing quotes map is not a collision" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"}}')\" ]"
+# A MISS is not a credit, so a stray quote on one cannot consume a finding.
+check "an uncredited item is not eligible" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"MISS\"},\"quotes\":{\"K1\":\"same words\",\"K2\":\"same words\"}}')\" ]"
+# A DEFER located the item and weighed it, so it consumes a finding exactly as a
+# HIT does -- and a collided DEFER must stop reaching the disqualification path.
+check "a DEFER collides with a HIT" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"DEFER\"},\"quotes\":{\"K1\":\"same words\",\"K2\":\"same words\"}}')\" = 'K1 K2 ' ]"
+# ★ The collision branch must not reuse the judge-split sentence. Judges can
+# agree perfectly and still both double-credit, so "the judges read this item
+# differently" would be a false statement about the report's own finding.
+check "collision has its own reason text" \
+  "grep -q 'credited to a sentence that also credits another item' '$ROOT/lib/grade.sh'"
+# Counts lines that WRITE the sentence, not lines that mention it -- the comment
+# above the collision branch quotes the split wording to explain why it is wrong
+# there, and a bare text count reads that explanation as a second use.
+check "and does not reuse the split wording" \
+  "[ \$(grep -cE '^ *echo .*judges read this item differently' '$ROOT/lib/grade.sh') -eq 1 ]"
+
 echo "== ★ the open track counts findings, and never derives one ratio =="
 # The keyed score measures agreement with the one fix an author happened to ship.
 # Measured on a real 1,842-line commit: a reviewer scored 0/2 on the key while
