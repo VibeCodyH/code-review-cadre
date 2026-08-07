@@ -125,6 +125,80 @@ judge_incoherent() {
   [ "$(review_findings "$rf")" -ge 2 ]
 }
 
+in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# ★ Greedy 1:1 -- one finding may be credited to at most one key item. Stolen
+# from mountainowl/bubo's benchmark matcher, whose rule is that duplicate
+# comments cannot inflate true positives.
+#
+# Cadre's exposure runs the OTHER way from bubo's. Scoring is per key item, so N
+# copies of one finding already credit an item once; what nothing stops is ONE
+# vague sentence credited against SEVERAL items -- "this file has error-handling
+# problems" against all three error-handling items in that file.
+#
+# `quotes` makes that checkable with no schema change. It is the reviewer's
+# verbatim sentence behind each HIT/DEFER, so the SAME sentence under two items
+# IS the collision. It was made mandatory to diagnose judge splits; this is the
+# second thing it buys, and the comparison is the one at the split gate below
+# transposed -- that asks one item across judges, this asks one judge across
+# items.
+#
+# ★ Flag, never demote. One sentence can legitimately describe two key items
+# ("both handlers swallow the exception"), so demoting the second to MISS would
+# manufacture a false MISS -- worse than the inflation it fixes, because it
+# penalises a correct review for being concise. Collided items go UNRESOLVED and
+# are reported, the same no-tie-break posture as a judge split.
+#
+# Empty quotes are the trivial false positive here and are dropped before
+# grouping: "" is what a MISS records, and treating it as a shared sentence
+# would collide every miss in the pass with every other.
+#
+# ★ Measured on the 203 grade files on this box: it fires on ZERO of them -- but
+# the honest denominator is 8, not 203. Only 8 files carry two or more QUOTED
+# credits and are therefore even eligible to collide; 117 have no quoted credit
+# at all, predating the day `quotes` became mandatory, and can never fire by
+# construction. So this gate is cheap and has no observed false positives, and
+# it is also close to unvalidated -- 0 of 8 is not the evidence 0 of 203 would
+# look like. Recheck the number once a keyed corpus has grown.
+quote_collisions() {
+  local gf="$1"
+  [ -s "$gf" ] || return 0
+  jq -r '
+    (.quotes // {}) as $q
+    | [ (.items // {}) | to_entries[]
+        | select(.value == "HIT" or .value == "DEFER")
+        | { k: .key,
+            q: (($q[.key] // "") | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")) } ]
+    | map(select(.q != "" and .q != "null"))
+    | group_by(.q) | map(select(length > 1)) | flatten | map(.k) | .[]
+  ' "$gf" 2>/dev/null
+}
+
+# ★ The EMPTY-receipt rule, pulled out of the report block so it can be proved.
+# Its three "-" branches are not reachable through the gauntlet fixtures --
+# `cadre run` writes prompt.txt itself, so an end-to-end test can never observe
+# a missing receipt. Measured: the first cut of this feature shipped an
+# "empty receipt is a dash" test that the run satisfied with a 1469-byte prompt,
+# so it would have passed on a broken implementation and failed on a correct
+# one. A rule that only ever runs in production is a rule nobody has checked.
+#
+# "-" is the answer for every case where a number would be a claim the
+# measurement does not support:
+#   no receipt at all      -- reconstructed rows carry EMPTY prompt_bytes, and a
+#                             fabricated 0 would print the seat as free
+#   any run missing one    -- one silent zero mixed into a real total averages
+#                             the seat toward the floor, which is why slots.tsv
+#                             leaves reconstructed prompt_bytes blank
+#   zero blocking hits     -- a zero denominator is not infinite efficiency
+# Never 0 and never a division result in those cases: both read as measurements.
+cost_per_hit() {
+  local bytes="$1" hits="$2" have="$3" empty="$4"
+  [ -z "$empty" ] || { echo "-"; return; }
+  [ "$have" -eq 0 ] && { echo "-"; return; }
+  [ "$hits" -eq 0 ] && { echo "-"; return; }
+  echo $(( bytes / 4 / hits ))
+}
+
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
 #
@@ -162,10 +236,37 @@ key_items() { grep -oE '\bK[0-9]+\b' "$1" | sort -u | sed 's/^K//' | sort -n | s
 # three graded runs scored that item with NO severity -- so a BLOCKING item was
 # silently counted as unweighted and the slot verdict was computed from the
 # wrong denominator. Prints one problem per line; empty output means usable.
+# ★ A CLEAN pass has NO key items on purpose: nothing was planted, so the only
+# thing it measures is what a reviewer wrongly flags. Stolen from
+# mountainowl/bubo, whose corpus carries cases with an empty ground-truth array
+# for exactly this. Cadre already records out-of-key findings as `extras`, but
+# every key so far has items, so extras have only ever been a side channel next
+# to a hit rate rather than the whole score.
+#
+# ★ It must DECLARE itself, and that is the entire design. An empty key file and
+# a deliberately-clean one are otherwise byte-identical, and `key_problems`
+# rejects an itemless key because of a measured incident: a key clobbered
+# mid-write by a still-running make-pass lost K1's heading, `doctor` said "ok",
+# and a blocking item was scored with no severity. Accepting "0 items" outright
+# would re-open that hole in the worst place -- a clobbered key would score as a
+# passed false-positive probe.
+#
+# ★ NAMED NON-GOAL: this narrows the hole, it does not close it. A write
+# truncated AFTER the marker still looks exactly like a clean key. Nothing in
+# the file format can tell those apart; what saves you is that the marker is a
+# thing an author typed, not a thing a partial write produces.
+key_is_clean() { grep -qiE '^#+ *\*{0,2}CLEAN\b' "$1"; }
+
 key_problems() {
   local kf="$1" item sev
   [ -s "$kf" ] || { echo "key file is empty"; return; }
   local items; items=$(key_items "$kf")
+  if key_is_clean "$kf"; then
+    # Both at once is a contradiction, and silently honouring one of them is how
+    # a half-edited key scores. Say which two things disagree.
+    [ -z "$items" ] || echo "declares CLEAN but also lists $(printf '%s' "$items" | wc -w) key item(s)"
+    return
+  fi
   [ -n "$items" ] || { echo "no K1/K2… items"; return; }
   for item in $items; do
     if ! grep -qiE "^#+ *\*{0,2}$item\b" "$kf"; then
@@ -241,6 +342,15 @@ remove that directory and re-run."
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
+  # CLEAN passes are counted apart from the keyed score all the way through:
+  # they share no denominator with it and must not share a column either.
+  local clean_passes=0 clean_fp=0 clean_labels="" clean_extras=""
+  # ★ Receipt accumulator for cost-per-hit. Same estimator as cadre receipts and
+  # the panel receipt table: (prompt_bytes + review_bytes) / 4. prompt_bytes is
+  # EMPTY when the pass never recorded a prompt (fixtures, reconstructed runs),
+  # and EMPTY must stay EMPTY -- a fabricated 0 understates spend and makes the
+  # seat look cheaper than the measurement supports.
+  local receipt_prompt_bytes=0 receipt_review_bytes=0 receipt_empty="" receipt_have=0
   # ★ usable_runs is the only counter that answers "did anything get MEASURED",
   # and nothing tracked it. `graded_passes` counts passes the loop entered, and
   # blocking_total only grows inside the per-item loop a run reaches after every
@@ -368,7 +478,14 @@ remove that directory and re-run."
     pass_usable=0; pass_reviews=0
     # ref-* = public repo = contaminated. Warn in the report. passes/README.md.
     case "$label" in ref-*) reference_used=1 ;; esac
-    { echo "## $label"; echo; } >> "$report"
+    # A clean pass measures the opposite thing from a keyed one, so it is tracked
+    # apart from the first line of the section rather than being separated later.
+    local pass_clean=""
+    if key_is_clean "$keyfile"; then
+      pass_clean=1; clean_passes=$((clean_passes + 1))
+      clean_labels="${clean_labels:+$clean_labels, }$label"
+    fi
+    { echo "## $label${pass_clean:+ (CLEAN - false-positive probe, no planted defects)}"; echo; } >> "$report"
 
     local items; items=$(key_items "$keyfile")
     local n
@@ -491,6 +608,43 @@ remove that directory and re-run."
       fi
       pass_usable=$((pass_usable + 1)); usable_runs=$((usable_runs + 1))
 
+      # ★ Harness-side receipt for this usable run. Only runs that contribute to
+      # the hit count feed the cost-per-hit number: an unusable or suspect run is
+      # not in the score, so its spend must not pad the numerator either.
+      # ★ One EMPTY prompt voids the whole seat's cost-per-item. Mixing a real
+      # measurement with a silent zero is the same average-toward-the-floor bug
+      # slots.tsv avoids by leaving reconstructed prompt_bytes blank.
+      # ★ A CLEAN pass pays no part of the cost-per-HIT, because it structurally
+      # cannot produce one. On a mixed passes.conf -- the intended shape, since a
+      # probe alone measures nothing worth seating -- letting its bytes into the
+      # numerator charges spend from one experiment against hits from another,
+      # and inflates the seat's cost by however many probes the corpus carries.
+      # That is the same pooling METHOD.md forbids one paragraph up; spend is
+      # part of the score. A clean-only gauntlet then reaches receipt_have=0 and
+      # prints "-", which is the right answer for a run with no hits to cost.
+      # Skipped entirely rather than voided: a probe with no prompt.txt is not a
+      # missing measurement, it is a measurement that was never owed.
+      if [ -z "$receipt_empty" ] && [ -z "$pass_clean" ]; then
+        local pfile="$CADRE_HOME/$label/prompt.txt" pb rb
+        if [ -s "$pfile" ]; then
+          pb=$(wc -c < "$pfile" | tr -d ' ')
+          rb=$(wc -c < "$rf" | tr -d ' ')
+          receipt_prompt_bytes=$((receipt_prompt_bytes + pb))
+          receipt_review_bytes=$((receipt_review_bytes + rb))
+          receipt_have=1
+        else
+          receipt_empty=1
+        fi
+      fi
+
+      # Union across judges: a collision in ANY grade file means at least one
+      # grader's credit is doubled, and letting the clean judge overrule it
+      # would be the tie-break the gate below refuses to make.
+      local collided="" cg
+      for cg in "${gfs[@]}"; do
+        collided="$collided $(quote_collisions "$cg" | tr '\n' ' ')"
+      done
+
       local row="" k v sev
       for k in $items; do
         sev=$(key_severity "$keyfile" "$k")
@@ -507,6 +661,10 @@ remove that directory and re-run."
         v="${vs[0]}"
         local x
         for x in "${vs[@]}"; do [ "$x" = "$v" ] || v=UNRESOLVED; done
+        # A finding credited twice is not evidence twice. See quote_collisions().
+        # This runs AFTER the split gate so it can only ever widen the range,
+        # never resolve one the judges disagreed on.
+        in_list "$k" "$collided" && v=UNRESOLVED
 
         total_items=$((total_items + 1))
         [ "$v" = HIT ]        && total_hit=$((total_hit + 1))
@@ -550,7 +708,17 @@ remove that directory and re-run."
         verdict="${verdict:+$verdict | }$vv"
         [ -n "$xx" ] && {
           ex="${ex:+$ex; }$xx"
-          extras_all="$extras_all- $label run $n (${judges[$i]}): $xx"$'\n'
+          # ★ On a CLEAN pass an extra is not a bonus finding, it is the score:
+          # there was nothing to find, so everything raised is a false positive.
+          # Kept in its own list because pooling it with keyed extras would mix
+          # "found something the key did not ask about" (often good) with
+          # "flagged a defect that does not exist" (never good).
+          if [ -n "$pass_clean" ]; then
+            clean_fp=$((clean_fp + 1))
+            clean_extras="$clean_extras- $label run $n (${judges[$i]}): $xx"$'\n'
+          else
+            extras_all="$extras_all- $label run $n (${judges[$i]}): $xx"$'\n'
+          fi
         }
       done
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
@@ -573,6 +741,26 @@ remove that directory and re-run."
         for gg in "${gfs[@]}"; do
           kv2="$kv2 $(jq -r --arg k "$k" '.items[$k] // "MISS"' "$gg")"
         done
+        # ★ Checked BEFORE the split gate, and it needs its own sentence. The
+        # split wording below ("the judges read this item differently") is a
+        # FALSE statement about a collision -- the judges may agree perfectly and
+        # still both be crediting one finding twice. Reusing that line would put
+        # a lie in the report, which is the failure mode the inconclusive work
+        # was written up to avoid.
+        if in_list "$k" "$collided"; then
+          echo "  - $k **UNRESOLVED**, credited to a sentence that also credits another item, so one finding is being counted twice:" >> "$report"
+          for i in "${!gfs[@]}"; do
+            local cq cshare
+            cq=$(jq -r --arg k "$k" '(.quotes[$k] // "") | gsub("\\s+"; " ")' "${gfs[$i]}")
+            [ -n "$cq" ] && [ "$cq" != null ] || continue
+            cshare=$(jq -r --arg q "$cq" '
+              [ (.quotes // {}) | to_entries[]
+                | select((.value | gsub("\\s+"; " ")) == $q) | .key ] | join(", ")' "${gfs[$i]}")
+            echo "    - ${judges[$i]}: shared by $cshare ↳ \"$cq\"" >> "$report"
+          done
+          split_notes="$split_notes- $label run $n $k (one sentence credited to more than one item)"$'\n'
+          continue
+        fi
         local uniq2; uniq2=$(printf '%s\n' $kv2 | sort -u | grep -c .)
         if [ "$uniq2" -gt 1 ]; then
           echo "  - $k **UNRESOLVED**, the judges read this item differently, so it scores nothing:" >> "$report"
@@ -748,6 +936,27 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     esac
   fi
 
+  # ★ Cost per blocking item hit sits BESIDE the hit rate; it never replaces it.
+  # The seating question is not only "how many" but "at what spend": a 4/6 seat
+  # at a tenth the cost can beat a 5/6 seat. Estimator is bytes/4 of harness-side
+  # prompt+review -- the same relative-spend signal as cadre receipts, not a
+  # bill and not a count of hidden reasoning tokens.
+  #
+  # ★ EMPTY receipt -> "-". Never 0 (looks like free) and never a huge number
+  # from dividing by a missing measure. A seat that hit 0 blocking items has no
+  # defined cost-per-item either: zero denominator is not infinite efficiency.
+  # UNRESOLVED is already out of blocking_hit, so it is out of this denominator
+  # too -- scores nothing either way.
+  local cost_per partial_note=""
+  cost_per=$(cost_per_hit "$((receipt_prompt_bytes + receipt_review_bytes))" \
+                          "$blocking_hit" "$receipt_have" "$receipt_empty")
+  # ★ Same partial-denominator condition the hit count already names (skipped
+  # passes, --only scoping). A cost line without the caveat inherits a lie the
+  # report already knows how to call out.
+  if [ "$nskipped" -gt 0 ] || { [ -n "$scoped" ] && [ "$nfiltered" -gt 0 ]; }; then
+    partial_note=" (partial denominator)"
+  fi
+
   {
     echo "## Verdict: $slot"
     echo
@@ -758,6 +967,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     else
       echo "- blocking items hit: **$blocking_hit / $blocking_total**"
     fi
+    echo "- est. tokens per blocking item hit: **$cost_per**$partial_note"
     echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"
@@ -811,6 +1021,31 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
       echo "Every number above is over the passes that ran. The benchmark you"
       echo "registered is larger. Restore the missing key or checkout and re-run"
       echo "before comparing this candidate against one scored on the full set."
+    fi
+    # ★ Its own section, never a column beside the hit rate. A clean pass and a
+    # keyed pass measure opposite things -- what a reviewer wrongly raises, and
+    # what it correctly catches -- and a reviewer trades one for the other, so a
+    # single pooled number would hide the trade this is here to expose.
+    # Reported as a COUNT, not a rate: a rate needs a denominator of things that
+    # could have been flagged, and a key with no items does not have one.
+    if [ "$clean_passes" -gt 0 ]; then
+      echo
+      echo "### False-positive probes ($clean_passes CLEAN pass(es): $clean_labels)"
+      echo
+      echo "- findings raised where nothing was planted: **$clean_fp**"
+      echo
+      if [ -n "$clean_extras" ]; then
+        echo "$clean_extras"
+        echo "Each of these is a defect the reviewer asserted in code that has none."
+        echo "Verify before believing the count: a clean checkout can still contain a"
+        echo "real bug nobody planted, and that is a finding about the PASS, not a"
+        echo "false positive. Fix the pass or move it to a keyed one."
+      else
+        echo "Raised nothing on a clean checkout, which is the result this pass is for."
+      fi
+      echo
+      echo "Not pooled with the keyed score above: these passes have no items, so"
+      echo "they contribute no denominator and no hit rate."
     fi
     if [ -n "$extras_all" ]; then
       echo

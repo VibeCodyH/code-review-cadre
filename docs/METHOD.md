@@ -82,6 +82,42 @@ approval on a data-loss bug costs more than a hundred missed nits save.
 Severity is read out of the key's own item headings, so what counts as blocking
 is your judgement about your code, not a constant in the grader.
 
+### CLEAN passes: the case with nothing to find
+
+A hit rate only measures what a reviewer catches. It says nothing about what it
+raises that is not there, and reviewers trade one for the other — a reviewer
+tuned to miss nothing also flags a lot of nothing.
+
+A **CLEAN pass** is a checkout with no planted defect. Its key has no `K` items,
+and the only thing it measures is how much the reviewer wrongly asserts. It has
+to say so out loud:
+
+```
+# Pass: py-clean-001
+
+## CLEAN - no planted defects
+
+Nothing was planted here. This pass measures false positives only.
+```
+
+The declaration is not ceremony. An itemless key and a key **clobbered
+mid-write** are byte-identical, and that clobber is a measured incident here —
+`doctor` once said "ok, 2 key items" about a key whose `K1` heading had been
+destroyed, and a blocking item got scored with no severity. So a key with no
+items is still refused; a key with no items *and* the `## CLEAN` heading is a
+probe. Declaring both is refused as a half-edited key.
+
+Named non-goal: this narrows the hole and does not close it. A write truncated
+*after* the marker still looks exactly like a clean key. What protects you is
+that the marker is a thing an author typed, not a thing a partial write
+produces.
+
+CLEAN results are reported in their own section and pooled with nothing. They
+have no items, so they contribute no denominator and no hit rate, and the score
+is a **count** — findings raised where nothing was planted — not a rate, because
+a rate needs a denominator of things that could have been flagged and a key with
+no items does not have one.
+
 ### The grade is what two judges agree on
 
 Everything above assumes HIT / DEFER / MISS is a fact. It is not: it is one

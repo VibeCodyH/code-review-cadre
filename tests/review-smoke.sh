@@ -575,6 +575,50 @@ mkjson '{"items":{"K1":"MISS"},"extras":[],"unusable":false}'
 check "an honest no-defects run passes" "! judge_incoherent '$J/g.json' '$J/empty.md'"
 check "counts numbered-bold findings"   "[ \$(review_findings '$J/codex.md') -ge 2 ]"
 
+echo "== ★ one finding cannot be credited to two key items =="
+# Greedy 1:1, stolen from mountainowl/bubo. Scoring is per key item, so N copies
+# of one finding already credit an item once -- the open direction is ONE vague
+# sentence credited against SEVERAL items. `quotes` is the reviewer's verbatim
+# sentence behind each credit, so the same sentence under two items IS the
+# collision, with no schema change.
+qc() { printf '%s' "$1" > "$J/qc.json"; quote_collisions "$J/qc.json" | tr '\n' ' '; }
+
+check "same sentence under two items collides" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"MISS\",\"K3\":\"HIT\"},\"quotes\":{\"K1\":\"the handler swallows it\",\"K2\":\"\",\"K3\":\"the handler swallows it\"}}')\" = 'K1 K3 ' ]"
+check "distinct sentences do not collide" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"one thing\",\"K2\":\"a different thing\"}}')\" ]"
+# ★ The whitespace normalisation is the point: a judge copying verbatim out of a
+# wrapped review reproduces the same sentence with different line breaks, and an
+# exact-string compare would miss the collision it exists to catch.
+check "wrapping differences still collide" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"the handler   swallows\\nit\",\"K2\":\"the handler swallows it\"}}')\" = 'K1 K2 ' ]"
+# ★ MUTATION-CHECKED: this is the test that dies if the empty-quote filter is
+# deleted. Both items are CREDITED, so the HIT/DEFER select does not exclude
+# them -- only `select(.q != "")` keeps two unquoted credits from grouping
+# together. grade.sh reports an unquoted credit already; it must not also be
+# scored as double-counting.
+check "two unquoted credits do not collide" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"},\"quotes\":{\"K1\":\"\",\"K2\":\"\"}}')\" ]"
+check "a missing quotes map is not a collision" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"HIT\"}}')\" ]"
+# A MISS is not a credit, so a stray quote on one cannot consume a finding.
+check "an uncredited item is not eligible" \
+  "[ -z \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"MISS\"},\"quotes\":{\"K1\":\"same words\",\"K2\":\"same words\"}}')\" ]"
+# A DEFER located the item and weighed it, so it consumes a finding exactly as a
+# HIT does -- and a collided DEFER must stop reaching the disqualification path.
+check "a DEFER collides with a HIT" \
+  "[ \"\$(qc '{\"items\":{\"K1\":\"HIT\",\"K2\":\"DEFER\"},\"quotes\":{\"K1\":\"same words\",\"K2\":\"same words\"}}')\" = 'K1 K2 ' ]"
+# ★ The collision branch must not reuse the judge-split sentence. Judges can
+# agree perfectly and still both double-credit, so "the judges read this item
+# differently" would be a false statement about the report's own finding.
+check "collision has its own reason text" \
+  "grep -q 'credited to a sentence that also credits another item' '$ROOT/lib/grade.sh'"
+# Counts lines that WRITE the sentence, not lines that mention it -- the comment
+# above the collision branch quotes the split wording to explain why it is wrong
+# there, and a bare text count reads that explanation as a second use.
+check "and does not reuse the split wording" \
+  "[ \$(grep -cE '^ *echo .*judges read this item differently' '$ROOT/lib/grade.sh') -eq 1 ]"
+
 echo "== ★ the open track counts findings, and never derives one ratio =="
 # The keyed score measures agreement with the one fix an author happened to ship.
 # Measured on a real 1,842-line commit: a reviewer scored 0/2 on the key while
@@ -2507,6 +2551,214 @@ OUT=$(CADRE_HOME="$D2/home" CADRE_WORK="$D2/work" CADRE_AGENTS_D="$D2/agents.d" 
 check "runs: zero is refused too"     "grep -q 'at least 1' <<<\"\$OUT\""
 # The report must not hand over a command it just refused.
 check "runs: report hint is runnable" "! grep -q 'cadre grade .* --rescore' '$R2'"
+
+echo "== ★ a CLEAN pass scores false positives, and declares itself to do it =="
+# Stolen from mountainowl/bubo: a case with no planted defects, whose only
+# measurement is what the reviewer wrongly raises. It must DECLARE itself,
+# because an itemless key is otherwise indistinguishable from a clobbered one.
+KD=$(mktemp -d -p "$SANDBOX")
+printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing was planted here.\n' > "$KD/clean.md"
+printf '# Pass\n\nThis key is perfectly clean and tidy prose.\n' > "$KD/prose.md"
+printf '#### K1 blocking - the write is dropped\ntext\n' > "$KD/keyed.md"
+printf '# Pass\n\n## CLEAN - no planted defects\n\n#### K1 blocking - oops\ntext\n' > "$KD/both.md"
+: > "$KD/empty.md"
+
+check "clean: marker is recognised"        "key_is_clean '$KD/clean.md'"
+# ★ Heading-anchored. The word "clean" in prose must not turn a key into a
+# probe -- that is the whole clobber guard, defeated by a sentence.
+check "clean: prose is not a declaration"  "! key_is_clean '$KD/prose.md'"
+check "clean: a keyed file is not clean"   "! key_is_clean '$KD/keyed.md'"
+check "clean: a declared key is gradeable" "[ -z \"\$(key_problems '$KD/clean.md')\" ]"
+# ★ MUTATION-CHECKED, and the reason this feature is a marker rather than a
+# relaxed check: an itemless key WITHOUT the declaration must still be refused,
+# or a key clobbered mid-write scores as a passed false-positive probe.
+check "clean: itemless without marker still fails" \
+  "grep -q 'no K1/K2' <<<\"\$(key_problems '$KD/prose.md')\""
+check "clean: an empty file still fails"   \
+  "grep -q 'key file is empty' <<<\"\$(key_problems '$KD/empty.md')\""
+# Declaring both is a half-edited key, not a preference to be honoured silently.
+check "clean: CLEAN plus items is refused" \
+  "grep -q 'declares CLEAN but also lists 1 key item' <<<\"\$(key_problems '$KD/both.md')\""
+
+# End to end: a clean pass reports its own section and pools with nothing.
+clean_case() {  # clean_case <dir> <spec> <judgeA> <judgeB>
+  local d="$1" spec="$2" va="$3" vb="$4" sl ja jb sha
+  mkdir -p "$d/home/p1"; setup_agents "$d"; new_repo "$d/checkout"
+  sha=$(git -C "$d/checkout" rev-parse HEAD)
+  printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing planted.\n' > "$d/home/k.md"
+  printf 'p1|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$sha" "$d/home/k.md" > "$d/home/passes.conf"
+  sl=$(slug "$spec"); ja=$(slug good); jb=$(slug good2)
+  printf 'blocking - something\n' > "$d/home/p1/$sl-run1.md"
+  printf '%s\n' "$va" > "$d/home/p1/$sl-run1.by-$ja.grade.json"
+  printf '%s\n' "$vb" > "$d/home/p1/$sl-run1.by-$jb.grade.json"
+}
+FPRAISED='{"items":{},"quotes":{},"verdict":"blocking","extras":["asserted a bug that is not there"]}'
+D=$(mktemp -d -p "$SANDBOX"); clean_case "$D" terse "$FPRAISED" "$FPRAISED"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "clean: section header labels it"  "grep -q 'CLEAN - false-positive probe' '$R'"
+check "clean: counts the false positives" \
+  "grep -q 'findings raised where nothing was planted: \*\*2\*\*' '$R'"
+# ★ The FPs must NOT land in the out-of-key section, where the report tells the
+# reader that finding something outside the key is the most valuable result it
+# can produce. On a clean pass that sentence is exactly backwards.
+check "clean: not pooled as out-of-key"  \
+  "! grep -q 'asserted a bug that is not there' <<<\"\$(sed -n '/Out-of-key findings/,\$p' '$R')\""
+check "clean: says it shares no denominator" \
+  "grep -q 'contribute no denominator and no hit rate' '$R'"
+
+# A clean pass that raised nothing is the passing case and must say so.
+NOFP='{"items":{},"quotes":{},"verdict":"no defects found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); clean_case "$D" terse "$NOFP" "$NOFP"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "clean: silence is the good result" \
+  "grep -q 'Raised nothing on a clean checkout' '$R'"
+check "clean: and the count is zero"      \
+  "grep -q 'findings raised where nothing was planted: \*\*0\*\*' '$R'"
+
+# ★ THE MIXED CORPUS, which is the shape a real passes.conf has -- a probe alone
+# measures nothing worth seating. Every clean test above uses a lone clean pass
+# and every cost test a lone keyed pass, so none of them could observe a clean
+# pass leaking its spend into the keyed cost-per-HIT. It did: the receipt
+# accumulator was guarded on receipt_empty only, so probe bytes entered the
+# numerator while contributing no hit to the denominator, inflating the seat's
+# cost by however many probes the corpus carried. Asserted as an EQUALITY
+# against the keyed-only number, because "is a number" would have passed
+# throughout the bug.
+# ★ UNSCOPED. run_gaunt passes `p1` as the pass argument, which filters every
+# other pass out -- a "mixed" corpus run through it is not mixed, and the first
+# version of this test asserted on a report the probe never entered.
+run_gaunt_all() {  # run_gaunt_all <dir> <judge-spec> <candidate>
+  local d="$1" j="$2" c="$3"
+  CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" "$ROOT/bin/cadre" run "$c" 1 2>&1
+}
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt_all "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+KEYED_ONLY=$(grep -oE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\*' "$R" | head -1)
+# Same keyed pass, plus a CLEAN probe carrying its own review and grades.
+D2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D2" terse "$HITBOTH" "$HITBOTH"
+sha=$(git -C "$D2/checkout" rev-parse HEAD)
+mkdir -p "$D2/home/p2"
+printf '# Pass\n\n## CLEAN - no planted defects\n\nNothing planted.\n' > "$D2/home/kclean.md"
+printf 'p2|%s|%s|%s|%s\n' "$sha" "$D2/checkout" "$sha" "$D2/home/kclean.md" >> "$D2/home/passes.conf"
+printf 'blocking - something\n' > "$D2/home/p2/$(slug terse)-run1.md"
+for J in $(slug good) $(slug good2); do
+  printf '%s\n' "$FPRAISED" > "$D2/home/p2/$(slug terse)-run1.by-$J.grade.json"
+done
+OUT=$(run_gaunt_all "$D2" good,good2 terse)
+R2=$(ls "$D2/home"/report-*.md | head -1)
+check "mixed: clean probe is reported"   "grep -q 'CLEAN - false-positive probe' '$R2'"
+check "mixed: keyed pass also graded"    "grep -q '^## p1' '$R2'"
+# ★ Guards the assertion itself: if KEYED_ONLY were empty, the spend check below
+# would grep for "" and pass no matter what the mixed report said.
+check "mixed: baseline number was captured" "[ -n '$KEYED_ONLY' ]"
+check "mixed: keyed score is unchanged"  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R2'"
+check "mixed: probe spend stays out of cost" \
+  "grep -qF '$KEYED_ONLY' '$R2'"
+
+echo "== ★ a collided credit reaches the report, not just the helper =="
+# The helper is unit-tested above; this is the WIRING -- `collided` accumulating
+# across judges, in_list forcing UNRESOLVED ahead of the counters, the report
+# branch, and the range logic absorbing a SECOND source of UNRESOLVED.
+COLLIDE='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"same sentence","K2":"same sentence"},"verdict":"found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$COLLIDE" "$COLLIDE"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: report says counted twice" \
+  "grep -q 'credited to a sentence that also credits another item' '$R'"
+check "collide: names the sharing items"  "grep -q 'shared by K1, K2' '$R'"
+check "collide: scores as a range"        "grep -q 'blocking items hit: \*\*0 to 2 / 2\*\*' '$R'"
+check "collide: both items unresolved"    "grep -q '(2 UNRESOLVED)' '$R'"
+# ★ Not the judge-split sentence: these two judges agreed perfectly.
+check "collide: not blamed on the judges" \
+  "! grep -q 'judges read this item differently' '$R'"
+# ★ A collided DEFER stops short of defer_on_blocking, which moves the verdict
+# TOWARD the candidate -- a disqualification quietly not applied. Pinned here so
+# the drift is a decision rather than a side effect: the DEFER is unreliable for
+# exactly the reason the HIT is, so it scores nothing instead of disqualifying.
+CDEFER='{"items":{"K1":"HIT","K2":"DEFER"},"quotes":{"K1":"same sentence","K2":"same sentence"},"verdict":"found","extras":[]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$CDEFER" "$CDEFER"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: a doubled DEFER does not disqualify" \
+  "grep -q 'deferred on a blocking item: 0' '$R'"
+check "collide: and it is not silently a hit" \
+  "grep -q 'blocking items hit: \*\*0 to 2 / 2\*\*' '$R'"
+# A pass where nothing shares a sentence must be untouched by any of this.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "collide: distinct quotes unaffected" \
+  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+check "collide: no collision wording"      \
+  "! grep -q 'credited to a sentence that also credits another item' '$R'"
+
+echo "== ★ cost per blocking item hit (hit rate stays; spend sits beside it) =="
+# The seating question is not only how many blocking items a seat caught but at
+# what harness-side spend. Estimator is bytes/4 of prompt+review -- same relative
+# signal as cadre receipts, never a bill. EMPTY receipt, zero hits, a normal
+# number, and a partial denominator each have a shape the report must not lie
+# about.
+
+# ★ The "-" branches are unit-tested, not driven through the gauntlet. `cadre
+# run` writes prompt.txt itself, so no fixture can present a MISSING receipt to
+# the report path -- an end-to-end "empty receipt is a dash" test passes on a
+# state it never actually built. (Measured: grok's first cut asserted exactly
+# that and the run created a 1469-byte prompt underneath it.)
+check "cost: no receipt at all is a dash"  "[ \"\$(cost_per_hit 2000 2 0 '')\" = '-' ]"
+check "cost: one missing receipt voids it" "[ \"\$(cost_per_hit 2000 2 1 1)\" = '-' ]"
+check "cost: zero hits is a dash"          "[ \"\$(cost_per_hit 2000 0 1 '')\" = '-' ]"
+check "cost: a real receipt divides"       "[ \"\$(cost_per_hit 2000 2 1 '')\" = '250' ]"
+# ★ MUTATION-CHECKED: these two die if a "-" branch is replaced by the division.
+# Both would otherwise print a number that reads as a measurement -- 0 for a
+# seat that looks free, and a crash or a huge value on the zero denominator.
+check "cost: a dash is never zero"         "[ \"\$(cost_per_hit 0 2 0 '')\" != '0' ]"
+check "cost: zero hits never divides"      "[ \"\$(cost_per_hit 2000 0 1 '')\" != '2000' ]"
+
+# End-to-end: the wiring, on the one state the fixture CAN build. The value is
+# read back from the files the run actually produced, because the run rewrites
+# both the prompt and the review -- computing it from the fixture's bytes
+# measures files that no longer exist by the time the report is written.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+PB=$(wc -c < "$D/home/p1/prompt.txt" | tr -d ' ')
+RB=$(wc -c < "$D/home/p1/$(slug terse)-run1.md" | tr -d ' ')
+COST=$(( (PB + RB) / 4 / 2 ))
+check "cost: normal case is a number" \
+  "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\*' '$R'"
+check "cost: normal case value" \
+  "grep -qF 'est. tokens per blocking item hit: **$COST**' '$R'"
+check "cost: hit rate still present" \
+  "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+
+# Zero hits end-to-end. ★ extras must be non-empty: a judge crediting nothing
+# AND listing no extras against a review stating two findings is what
+# judge_incoherent bins as unread, so an empty-extras MISS fixture never reaches
+# the score at all and the test would assert on a report that was never written.
+MISSBOTH='{"items":{"K1":"MISS","K2":"MISS"},"quotes":{},"verdict":"none","extras":["out of key"]}'
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$MISSBOTH" "$MISSBOTH"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "cost: zero hits is dash e2e" \
+  "grep -qF 'est. tokens per blocking item hit: **-**' '$R'"
+check "cost: zero hits still reports 0/N" \
+  "grep -q 'blocking items hit: \*\*0 / 2\*\*' '$R'"
+
+# Partial denominator: a registered pass never graded. Cost must carry the same
+# caveat the hit count already names, or it silently inherits a short set.
+D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
+sha=$(git -C "$D/checkout" rev-parse HEAD)
+printf 'p2|%s|%s|%s|%s\n' "$sha" "$D/checkout" "$sha" "$D/home/no-such-key.md" \
+  >> "$D/home/passes.conf"
+head -c 100 /dev/zero | tr '\0' 'p' > "$D/home/p1/prompt.txt"
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "cost: partial denominator named" \
+  "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\* \(partial denominator\)' '$R'"
 
 echo
 echo "$PASS passed, $FAIL failed"
