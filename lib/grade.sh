@@ -199,6 +199,69 @@ cost_per_hit() {
   echo $(( bytes / 4 / hits ))
 }
 
+# ---- coverage-per-changeset (#5) --------------------------------------------
+# Deterministic, uncorrelated signal the judges never produce: which files the
+# change touched that a reviewer never mentioned. Scores what the reviewer
+# DIDN'T look at, not what it found.
+#
+# ★ Every rail here exists because the naive version manufactures a false
+# "you skipped files", and a false skip is worse than a missed real one:
+#  - CREDITING a mention is the SAFE direction. Over-crediting only ever shrinks
+#    the accusation; it never invents one. So the full-path test is a generous
+#    substring, and the aim throughout is to under-accuse, never over-accuse.
+#  - Basename matches ONLY as a bare token. `grep -F index.ts` fires inside
+#    `src/a/index.ts`, so one full-path mention would silently credit every
+#    changed file named index.ts. A shared basename cannot identify a file, so
+#    both sharers go to an AMBIGUOUS bucket, counted in neither covered nor
+#    uncovered rather than guessed into one.
+#  - The escape covers EVERY non-word char. A filename with `+ ( ) { } ? | .`
+#    (Next.js `(group)`/`[id]`) would otherwise be read as a regex and an
+#    unbalanced `(` would error grep, dropping a real file to `uncovered`.
+#  - `case`, never `printf | grep`, for the substring test: under `pipefail` a
+#    `grep -q` that exits early SIGPIPEs the producer (exit 141), which on a
+#    large review flips a real mention into a false "never mentioned".
+#  - Empty denominator (no base, git failure, zero changed files) is "-", never
+#    0/0 -- same rule cost_per_hit follows: a number would be a claim the
+#    measurement does not support.
+# ★ DEFERRED (issue #5, criterion b): anchor/position-drift validation. A first
+# cut manufactured false drift four ways (substring file mis-attribution, an
+# anchor regex that fragments metachar paths, range anchors tested only at their
+# start, and pure-deletion files judged against another file's hunks). Left out
+# rather than shipped noisy; it is its own follow-up.
+# ★ NAMED NON-GOAL: mention detection is TEXT matching, not comprehension. A
+# reviewer can name a file without reviewing it. Coverage bounds attention from
+# below (never mentioned => never reviewed); it does not certify a read.
+changed_files() {  # <dir> <base> <sha> -> relative paths; empty on any failure
+  local dir="$1" base="$2" sha="$3"
+  [ -n "$base" ] || return 0
+  git -C "$dir" diff --name-only "$base...$sha" 2>/dev/null
+}
+
+# coverage_scan <review-file> <changed-newline>; sets COV_* for the caller.
+coverage_scan() {
+  local review="$1" changed="$2"
+  COV_TOTAL=0 COV_COVERED=0 COV_AMBIG=0 COV_UNCOVERED=0 COV_UNCOVERED_LIST=""
+  [ -n "$changed" ] || return 0          # empty denominator -> caller prints "-"
+  local body; body=$(cat "$review" 2>/dev/null)
+  local f bn ebn nshare
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    COV_TOTAL=$((COV_TOTAL + 1))
+    bn=${f##*/}
+    ebn=$(printf '%s' "$bn" | sed 's/[^[:alnum:]_-]/\\&/g')
+    if case "$body" in *"$f"*) true ;; *) false ;; esac; then
+      COV_COVERED=$((COV_COVERED + 1))
+    elif grep -qE -- "(^|[^A-Za-z0-9_/.-])$ebn([^A-Za-z0-9]|\$)" <<<"$body"; then
+      nshare=$(printf '%s\n' "$changed" | awk -v b="$bn" 'BEGIN{n=0}{p=$0;sub(/.*\//,"",p);if(p==b)n++}END{print n}')
+      if [ "$nshare" -ge 2 ]; then COV_AMBIG=$((COV_AMBIG + 1))
+      else COV_COVERED=$((COV_COVERED + 1)); fi
+    else
+      COV_UNCOVERED=$((COV_UNCOVERED + 1))
+      COV_UNCOVERED_LIST="${COV_UNCOVERED_LIST:+$COV_UNCOVERED_LIST, }$f"
+    fi
+  done <<< "$changed"
+}
+
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
 #
@@ -369,6 +432,13 @@ remove that directory and re-run."
   # driver ends up treating an ollama hiccup at hour two as a reason to abandon
   # hour three onward.
   local pass_reviews=0 grading_failed=""
+  # ★ Coverage is aggregated PER PASS, never pooled across passes: the whole
+  # hypothesis is that coverage degrades as a changeset grows, so pooling a
+  # 3-file pass with a 40-file one lets the big pass swamp the signal being
+  # measured. cov_pct_sum/cov_npass is the mean of per-pass ratios; the worst
+  # pass is named alongside. CLEAN passes are excluded from this aggregate, the
+  # same rail cost-per-hit honours (a CLEAN probe is a different measurement).
+  local cov_npass=0 cov_pct_sum=0 cov_worst=101 cov_worst_frac="" cov_worst_label=""
 
   {
     if [ -n "$scoped" ]; then
@@ -476,6 +546,10 @@ remove that directory and re-run."
     echo "==> $label: grading"
     graded_passes=$((graded_passes + 1))
     pass_usable=0; pass_reviews=0
+    # Changed-file set for this pass, computed once. Empty (no base resolvable,
+    # git failure) leaves every coverage line a "-".
+    local pass_changed passcov_runs=0 passcov_pctsum=0
+    pass_changed=$(changed_files "$target" "$base" "$sha")
     # ref-* = public repo = contaminated. Warn in the report. passes/README.md.
     case "$label" in ref-*) reference_used=1 ;; esac
     # A clean pass measures the opposite thing from a keyed one, so it is tracked
@@ -538,6 +612,26 @@ remove that directory and re-run."
         echo "- run $n: **★ SUSPECT, quotes $leaked key items verbatim**, this reviewer" >> "$report"
         echo "  probably read the answer key rather than finding the defects. NOT scored." >> "$report"
         continue
+      fi
+
+      # ---- coverage of the changeset by THIS review (#5) ----------------------
+      # Runs after the leak gate, so a SUSPECT review (which `continue`d above)
+      # never earns coverage credit for files it may have read from the key.
+      coverage_scan "$rf" "$pass_changed"
+      local cov_denom=$((COV_COVERED + COV_UNCOVERED))
+      if [ "$COV_TOTAL" -eq 0 ] || [ "$cov_denom" -eq 0 ]; then
+        # No changeset, or every changed file was ambiguous: "-", never 0/0 (a
+        # ratio the measurement cannot support), same rule cost_per_hit follows.
+        local why="no changeset to measure against"
+        [ "$COV_TOTAL" -gt 0 ] && why="all $COV_AMBIG changed file(s) ambiguous by shared basename"
+        echo "- run $n coverage: — ($why)" >> "$report"
+      else
+        local cov_line="- run $n coverage: $COV_COVERED/$cov_denom changed files mentioned"
+        [ "$COV_AMBIG" -gt 0 ] && cov_line="$cov_line ($COV_AMBIG ambiguous, shared basename)"
+        echo "$cov_line" >> "$report"
+        [ "$COV_UNCOVERED" -gt 0 ] && echo "  - never mentioned: $COV_UNCOVERED_LIST" >> "$report"
+        passcov_runs=$((passcov_runs + 1))
+        passcov_pctsum=$((passcov_pctsum + (100 * COV_COVERED / cov_denom)))
       fi
 
       # ---- grade this run with EVERY judge ------------------------------------
@@ -789,6 +883,18 @@ remove that directory and re-run."
         done
       done
     done
+    # Per-pass coverage into the candidate mean. KEYED passes only (a CLEAN
+    # probe is a different measurement and stays out of the aggregate, the same
+    # rail cost-per-hit follows); worst pass tracked with its own denominator so
+    # the summary can name where coverage was thinnest, not just the average.
+    if [ -z "$pass_clean" ] && [ "$passcov_runs" -gt 0 ]; then
+      local pass_pct=$((passcov_pctsum / passcov_runs))
+      cov_npass=$((cov_npass + 1)); cov_pct_sum=$((cov_pct_sum + pass_pct))
+      if [ "$pass_pct" -lt "$cov_worst" ]; then
+        cov_worst=$pass_pct; cov_worst_label="$label"; cov_worst_frac="$pass_pct%"
+      fi
+    fi
+
     # ★ A pass whose every run was UNUSABLE is a pass that did not happen. It
     # belongs with the missing keys and the deleted checkouts, because it has
     # exactly their effect on the arithmetic: nothing in the numerator, nothing
@@ -968,6 +1074,15 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
       echo "- blocking items hit: **$blocking_hit / $blocking_total**"
     fi
     echo "- est. tokens per blocking item hit: **$cost_per**$partial_note"
+    # ★ Coverage sits beside the hit rate: a seat that hits every planted defect
+    # while never mentioning half the diff is a different bet from one that read
+    # all of it. Mean of per-pass ratios (not pooled), worst pass named. "-" when
+    # no keyed pass had a resolvable changeset -- never a fabricated 0%.
+    if [ "$cov_npass" -gt 0 ]; then
+      echo "- changed-file coverage (mean over $cov_npass keyed pass(es)): **$((cov_pct_sum / cov_npass))%**, thinnest on \`$cov_worst_label\` at $cov_worst_frac$partial_note"
+    else
+      echo "- changed-file coverage: **-** (no keyed pass had a resolvable changeset)"
+    fi
     echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"

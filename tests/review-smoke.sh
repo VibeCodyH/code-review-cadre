@@ -2760,6 +2760,158 @@ R=$(ls "$D/home"/report-*.md | head -1)
 check "cost: partial denominator named" \
   "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\* \(partial denominator\)' '$R'"
 
+# ============================================================================
+# coverage-per-changeset (#5): what the reviewer never looked at.
+# ============================================================================
+
+# ---- unit tests on the helpers (grade.sh is already sourced above, line ~542),
+# because the metric ACCUSES and a wrong bucket is a false "you skipped a file". ----
+CR=$(mktemp -d -p "$SANDBOX"); CRR="$CR/repo"; mkdir -p "$CRR/src/a" "$CRR/src/b"
+git -C "$CRR" init -q; git -C "$CRR" config user.email t@t; git -C "$CRR" config user.name t
+printf 'v0\n' > "$CRR/src/a/index.ts"; printf 'v0\n' > "$CRR/src/b/index.ts"; printf 'v0\n' > "$CRR/src/keep.ts"
+git -C "$CRR" add -A; git -C "$CRR" commit -qm base
+CBASE=$(git -C "$CRR" rev-parse HEAD)
+printf 'v1\nl2\nl3\n' > "$CRR/src/a/index.ts"; printf 'v1\n' > "$CRR/src/b/index.ts"; printf 'v1\n' > "$CRR/src/keep.ts"
+git -C "$CRR" add -A; git -C "$CRR" commit -qm change
+CSHA=$(git -C "$CRR" rev-parse HEAD)
+CH=$(changed_files "$CRR" "$CBASE" "$CSHA")
+
+# A full path credits ONLY its file; a sibling sharing the basename is NOT
+# credited off it (the grep -F index.ts trap). keep.ts is a unique basename.
+printf 'bug in src/a/index.ts, and keep.ts is fine. see localhost:3000, node:18\n' > "$CR/rev1"
+coverage_scan "$CR/rev1" "$CH"
+check "cov unit: full-path + unique basename => covered=2" "[ $COV_COVERED -eq 2 ]"
+check "cov unit: sibling index.ts stays uncovered=1"       "[ $COV_UNCOVERED -eq 1 ]"
+check "cov unit: names the uncovered file"     "printf %s '$COV_UNCOVERED_LIST' | grep -q 'src/b/index.ts'"
+
+# Bare shared basename cannot identify a file => BOTH sharers ambiguous, in
+# neither covered nor uncovered. This is the test that keeps the trap fixed.
+printf 'issue in index.ts somewhere. keep.ts is fine.\n' > "$CR/rev2"
+coverage_scan "$CR/rev2" "$CH"
+check "cov unit: shared bare basename => ambiguous=2" "[ $COV_AMBIG -eq 2 ]"
+check "cov unit: ambiguous not folded into covered"   "[ $COV_COVERED -eq 1 ]"
+
+# ★ Empty denominator (base == sha) is "-", never 0/0. Mutation guard: the rule
+# is COV_TOTAL stays 0 so the caller dashes. A version that treated an empty
+# changeset as "all covered" would set COV_TOTAL and hand up a ratio.
+CH0=$(changed_files "$CRR" "$CSHA" "$CSHA")
+coverage_scan "$CR/rev1" "$CH0"
+check "cov unit: empty changeset => COV_TOTAL=0 (caller prints -)" "[ $COV_TOTAL -eq 0 ]"
+
+# ★ pipefail SIGPIPE regression: a real mention on line 1 of a LARGE review must
+# not flip to uncovered because grep -q exits early and SIGPIPEs a `printf |`
+# producer. `case` matching removes the pipe. 200 KiB is well past the ~128 KiB
+# where the pipe version was measured to fail.
+{ printf 'the fix is in src/keep.ts here\n'; head -c 204800 /dev/zero | tr '\0' 'x'; } > "$CR/revbig"
+coverage_scan "$CR/revbig" "$CH"
+check "cov unit: huge review, line-1 mention still covered (no SIGPIPE flip)" \
+  "! printf %s '$COV_UNCOVERED_LIST' | grep -q 'src/keep.ts'"
+
+# ★ ERE metachars in a filename must not break the basename match into a false
+# "uncovered". A bare mention of `a+(x).ts` under a naive escape reads as the
+# regex a+(x) and never matches the literal name (and an unbalanced ( errors the
+# whole grep). Next.js (group)/[id] names are the realistic trigger.
+MRD=$(mktemp -d -p "$SANDBOX"); MR="$MRD/r"; mkdir -p "$MR/src"
+git -C "$MR" init -q; git -C "$MR" config user.email t@t; git -C "$MR" config user.name t
+printf 'v0\n' > "$MR/src/a+(x).ts"; git -C "$MR" add -A; git -C "$MR" commit -qm base
+MB=$(git -C "$MR" rev-parse HEAD)
+printf 'v1\nl2\n' > "$MR/src/a+(x).ts"; git -C "$MR" add -A; git -C "$MR" commit -qm change
+MS=$(git -C "$MR" rev-parse HEAD); MCH=$(changed_files "$MR" "$MB" "$MS")
+printf 'the bug is in a+(x).ts near the top\n' > "$CR/revm"
+coverage_scan "$CR/revm" "$MCH"
+check "cov unit: ERE-metachar filename covered by bare basename, not false-uncovered" \
+  "[ $COV_COVERED -eq 1 ] && [ $COV_UNCOVERED -eq 0 ]"
+
+# ---- end to end: a real multi-file diff, a review mentioning HALF of it, and
+# the report has to name the skipped files and a 50% mean. ----
+cov_case() {  # cov_case <dir> <review-body>
+  local d="$1" body="$2" sl base sha
+  mkdir -p "$d/home/p1"; setup_agents "$d"
+  git init -q "$d/checkout"
+  git -C "$d/checkout" config user.email t@t; git -C "$d/checkout" config user.name t
+  mkdir -p "$d/checkout/src/a" "$d/checkout/src/b"
+  printf 'v0\n' > "$d/checkout/src/a/index.ts"; printf 'v0\n' > "$d/checkout/src/b/index.ts"
+  printf 'v0\n' > "$d/checkout/src/keep.ts";    printf 'v0\n' > "$d/checkout/src/other.ts"
+  git -C "$d/checkout" add -A; git -C "$d/checkout" commit -qm base
+  base=$(git -C "$d/checkout" rev-parse HEAD)
+  printf 'v1\nl2\nl3\n' > "$d/checkout/src/a/index.ts"; printf 'v1\n' > "$d/checkout/src/b/index.ts"
+  printf 'v1\n' > "$d/checkout/src/keep.ts";           printf 'v1\n' > "$d/checkout/src/other.ts"
+  git -C "$d/checkout" add -A; git -C "$d/checkout" commit -qm change
+  sha=$(git -C "$d/checkout" rev-parse HEAD)
+  printf '#### K1 blocking - the write is dropped\ntext\n\n#### K2 blocking - the token leaks\ntext\n' > "$d/home/k.md"
+  printf 'p1|%s|%s|%s|%s\n' "$sha" "$d/checkout" "$base" "$d/home/k.md" > "$d/home/passes.conf"
+  sl=$(slug terse)
+  printf '%s\n' "$body" > "$d/home/p1/$sl-run1.md"
+  local ja jb; ja=$(slug good); jb=$(slug good2)
+  printf '%s\n' "$HITBOTH" > "$d/home/p1/$sl-run1.by-$ja.grade.json"
+  printf '%s\n' "$HITBOTH" > "$d/home/p1/$sl-run1.by-$jb.grade.json"
+}
+D=$(mktemp -d -p "$SANDBOX")
+# Mentions src/a/index.ts (full path) + keep.ts (unique basename); never names
+# src/b/index.ts or src/other.ts. 2 of 4 changed files => 50%.
+cov_case "$D" 'blocking - the write is dropped in src/a/index.ts
+blocking - the token leaks, see keep.ts
+Verdict: ship it'
+OUT=$(run_gaunt "$D" good,good2 terse)
+R=$(ls "$D/home"/report-*.md | head -1)
+check "cov e2e: per-run line, 2/4 mentioned"   "grep -qF 'run 1 coverage: 2/4 changed files mentioned' '$R'"
+check "cov e2e: names skipped src/b/index.ts"  "grep -q 'never mentioned:.*src/b/index.ts' '$R'"
+check "cov e2e: names skipped src/other.ts"    "grep -q 'never mentioned:.*src/other.ts' '$R'"
+check "cov e2e: candidate summary is 50%"      "grep -qF 'changed-file coverage (mean over 1 keyed pass(es)): **50%**' '$R'"
+check "cov e2e: names the thinnest pass"        "grep -q 'thinnest on .p1. at 50%' '$R'"
+
+# ---- all-ambiguous pass: per-run is "—" and the candidate summary is "-", never
+# a fabricated 0/0 or 0%. Two changed files sharing basename index.ts, review
+# names only the bare basename. ----
+DA=$(mktemp -d -p "$SANDBOX"); mkdir -p "$DA/home/p1"; setup_agents "$DA"
+git init -q "$DA/checkout"; git -C "$DA/checkout" config user.email t@t; git -C "$DA/checkout" config user.name t
+mkdir -p "$DA/checkout/a" "$DA/checkout/b"
+printf 'v0\n' > "$DA/checkout/a/index.ts"; printf 'v0\n' > "$DA/checkout/b/index.ts"
+git -C "$DA/checkout" add -A; git -C "$DA/checkout" commit -qm base; ABASE=$(git -C "$DA/checkout" rev-parse HEAD)
+printf 'v1\n' > "$DA/checkout/a/index.ts"; printf 'v1\n' > "$DA/checkout/b/index.ts"
+git -C "$DA/checkout" add -A; git -C "$DA/checkout" commit -qm ch; ASHA=$(git -C "$DA/checkout" rev-parse HEAD)
+printf '#### K1 blocking - the write is dropped\ntext\n\n#### K2 blocking - the token leaks\ntext\n' > "$DA/home/k.md"
+printf 'p1|%s|%s|%s|%s\n' "$ASHA" "$DA/checkout" "$ABASE" "$DA/home/k.md" > "$DA/home/passes.conf"
+SLA=$(slug terse)
+printf 'blocking - the write is dropped in index.ts\nblocking - the token leaks in index.ts\nVerdict: ship it\n' > "$DA/home/p1/$SLA-run1.md"
+printf '%s\n' "$HITBOTH" > "$DA/home/p1/$SLA-run1.by-$(slug good).grade.json"
+printf '%s\n' "$HITBOTH" > "$DA/home/p1/$SLA-run1.by-$(slug good2).grade.json"
+run_gaunt "$DA" good,good2 terse >/dev/null 2>&1
+RA=$(ls "$DA/home"/report-*.md | head -1)
+check "cov e2e: all-ambiguous per-run is a dash"  "grep -q 'run 1 coverage: — (all 2 changed' '$RA'"
+check "cov e2e: all-ambiguous summary is a dash"  "grep -qF 'changed-file coverage: **-**' '$RA'"
+
+# ---- two passes of different sizes: the candidate summary is the MEAN of
+# per-pass ratios, NOT pooled over files (which lets the big pass swamp the
+# small one -- the exact signal #5 measures). Small 1/2=50%, large 4/4=100%
+# => mean 75% (pooled would be 5/6=83%). Worst pass named. ----
+DT=$(mktemp -d -p "$SANDBOX"); mkdir -p "$DT/home/pA" "$DT/home/pB"; setup_agents "$DT"
+git init -q "$DT/ca"; git -C "$DT/ca" config user.email t@t; git -C "$DT/ca" config user.name t
+printf 'v0\n' > "$DT/ca/one.ts"; printf 'v0\n' > "$DT/ca/two.ts"
+git -C "$DT/ca" add -A; git -C "$DT/ca" commit -qm base; TAB=$(git -C "$DT/ca" rev-parse HEAD)
+printf 'v1\n' > "$DT/ca/one.ts"; printf 'v1\n' > "$DT/ca/two.ts"
+git -C "$DT/ca" add -A; git -C "$DT/ca" commit -qm ch; TAS=$(git -C "$DT/ca" rev-parse HEAD)
+git init -q "$DT/cb"; git -C "$DT/cb" config user.email t@t; git -C "$DT/cb" config user.name t
+for x in w x y z; do printf 'v0\n' > "$DT/cb/$x.ts"; done
+git -C "$DT/cb" add -A; git -C "$DT/cb" commit -qm base; TBB=$(git -C "$DT/cb" rev-parse HEAD)
+for x in w x y z; do printf 'v1\n' > "$DT/cb/$x.ts"; done
+git -C "$DT/cb" add -A; git -C "$DT/cb" commit -qm ch; TBS=$(git -C "$DT/cb" rev-parse HEAD)
+printf '#### K1 blocking - the write is dropped\ntext\n\n#### K2 blocking - the token leaks\ntext\n' > "$DT/home/k.md"
+{ printf 'pA|%s|%s|%s|%s\n' "$TAS" "$DT/ca" "$TAB" "$DT/home/k.md"
+  printf 'pB|%s|%s|%s|%s\n' "$TBS" "$DT/cb" "$TBB" "$DT/home/k.md"; } > "$DT/home/passes.conf"
+SLT=$(slug terse)
+printf 'blocking - the write is dropped in one.ts\nblocking - the token leaks\nVerdict: ship it\n' > "$DT/home/pA/$SLT-run1.md"
+printf 'blocking - dropped in w.ts x.ts\nblocking - leaks in y.ts z.ts\nVerdict: ship it\n' > "$DT/home/pB/$SLT-run1.md"
+for p in pA pB; do
+  printf '%s\n' "$HITBOTH" > "$DT/home/$p/$SLT-run1.by-$(slug good).grade.json"
+  printf '%s\n' "$HITBOTH" > "$DT/home/$p/$SLT-run1.by-$(slug good2).grade.json"
+done
+run_gaunt_all "$DT" good,good2 terse >/dev/null 2>&1
+RT=$(ls "$DT/home"/report-*.md | head -1)
+check "cov e2e: 2-pass mean is 75% (per-pass, not pooled 83%)" \
+  "grep -qF 'changed-file coverage (mean over 2 keyed pass(es)): **75%**' '$RT'"
+check "cov e2e: names thinnest as pA at 50%"    "grep -q 'thinnest on .pA. at 50%' '$RT'"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
