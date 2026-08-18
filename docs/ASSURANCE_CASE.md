@@ -74,6 +74,16 @@ says what it misses".
   target-pick time.
 - **Receipts do not measure hidden reasoning tokens, provider billing, or
   in-CLI retries.** METHOD.md §6.
+- **A scratch file in the tree is a source file to the harness.** Planning
+  notes, TODO dumps and other author-written artifacts ride into the checkout
+  like any other file — tracked, or untracked-but-not-gitignored (carried on
+  purpose: a change whose whole contribution is new files must stay
+  reviewable). A note spelling out the author's reasoning hands reviewers the
+  blind spot the fresh checkout exists to remove — the rationale that produced
+  a bug reads the code the way the author did — and in a graded pass it can
+  spell out the answer. The harness cannot tell a scratch note from
+  documentation. Keep session scratch out of the tree, or gitignore it,
+  before pointing cadre at the repo.
 - **Capability declarations are seeded from measured refusals, not
   exhaustive.** An undeclared quirk costs one wasted paid call, not a lost
   review — loose is safe, and a declaration earns its place from an observed

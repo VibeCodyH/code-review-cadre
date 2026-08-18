@@ -25,6 +25,21 @@ naming what we did not invent.
   what two judges agree on, and a split stays UNRESOLVED. (Downstream tools
   quote punchier per-task accuracy numbers from this paper; verify against
   the paper itself, we could not reproduce those figures from the abstract.)
+- **Fresh context reviews better than the authoring context.** The premise
+  behind handing reviewers a clean checkout instead of the conversation that
+  produced the change, and it is backed three ways:
+  [Liang et al.](https://arxiv.org/abs/2305.19118) name it
+  Degeneration-of-Thought — once a model has confidence in a solution,
+  reflection stops producing novel thoughts about it, even when the stance is
+  wrong (their fix, multi-agent debate, is also this repo's shape);
+  [Huang et al.](https://arxiv.org/abs/2310.01798) find LLMs cannot
+  intrinsically self-correct reasoning, and sometimes get worse trying;
+  [Panickssery et al.](https://arxiv.org/abs/2404.13076) show evaluators
+  recognise and systematically prefer their own generations. None of it is
+  new to software: Fagan inspections (1976) and Weinberg's egoless
+  programming (1971) are the same principle without the GPUs. In tooling the
+  pattern already ships as Claude Code's built-in `/code-review` and
+  [fresh-eyes-review](https://github.com/eai-org/agent-toolkit/blob/main/skills/fresh-eyes-review/SKILL.md).
 - There is a whole [survey of code-review
   benchmarks](https://arxiv.org/html/2602.13377v1). Read it before believing
   anyone's novelty claim, including this one.
