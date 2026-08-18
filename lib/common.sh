@@ -782,6 +782,124 @@ provider_refused() {
   [ "$(wc -c < "$f")" -lt 500 ]
 }
 
+# Does this artifact hold nothing at all? THE one copy of the chrome strip.
+#
+# ★ Empty means empty of CONTENT, not of bytes. CLIs wrap the model's text in
+# their own chrome -- colour escapes, a "> build <model>" banner -- so a run
+# that returned nothing still leaves a non-empty file and scores as a clean
+# review that found no defects. Measured with opencode, which is the free
+# route the README sends people down first. NOT a minimum-length rule:
+# "findings=0" is a valid review and a length floor threw those away.
+# ★ A LITERAL escape byte, not `\x1b`. `\x1b` is a GNU sed extension; BSD sed
+# (macOS, and macOS keeps BSD sed even with GNU coreutils installed, because
+# sed is not part of coreutils) reads it as a literal `x1b`, matches nothing,
+# and this whole check silently no-ops -- filing a chrome-only run as a clean
+# review again, on an entire platform, with no error. Found by a panel
+# reviewer on cadre's own diff.
+# ★ Extracted from inside classify_run (#12) because the answer is needed TWICE
+# and used to be computed once and thrown away: classify_run asks it to reach
+# `failed`, and the reporters ask it to say WHICH failure. A second copy at each
+# print site would be the free-text-grep debt #2 exists to delete, so there is
+# one function and three renderers over it.
+content_empty() {  # <file> -> 0 when the file holds no content
+  local f="$1"
+  [ -s "$f" ] || return 0
+  local esc; esc=$(printf '\033')
+  [ -z "$(sed -e "s/${esc}\[[0-9;?]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]
+}
+
+# ★ WHICH nothing (#12). Three root causes rendered one identical line -- a
+# `FAILED after Ns (rc=124)` that meant, on the same opencode-go sweep:
+#   1. the adapter was ALIVE and producing (a 72KB transcript) and cadre's own
+#      clock killed it. Raising CADRE_TIMEOUT turned that exact pass into a
+#      graded blocking HIT.
+#   2. the provider returned NOTHING -- 2 bytes, two newlines -- and burned the
+#      full timeout doing it. A whole-sweep streak of this was a provider
+#      OUTAGE: every model hung on `Reply with exactly: OK`.
+#   3. a genuine refusal / capability block, which classify_run already splits.
+# Read as one message, case 1 is a verdict about the MODEL manufactured out of a
+# harness kill. That is the fabricated-grade failure mode, so the split is not
+# cosmetic.
+#
+# ★ This does NOT return a new classify_run state, and must not. Three call
+# sites string-compare that function (`= failed || break` in run-pass.sh and
+# run-review.sh, `!= ok` in bin/cadre); a fourth bucket would silently rewire
+# their retry loops. Same `.failed` bucket, different operator-facing line.
+#
+# ★ CONTENT-EMPTY WINS over the timeout code, because case 2 is both: nothing
+# came back AND the clock ran out. "The provider sent nothing" is the actionable
+# half; "raise the timeout" would be advice that cannot help.
+#
+# rc is OPTIONAL. `cadre grade` re-reads .failed artifacts off disk long after
+# the exit code is gone, and the content discriminator still works there -- so
+# with no rc the timeout case is simply not claimed rather than guessed at.
+failure_kind() {  # <file> [rc] -> no-output | timed-out | failed
+  local f="$1" rc="${2:-}"
+  if content_empty "$f"; then echo no-output; return 0; fi
+  # ★ THE ADAPTER'S OWN VERDICT BEFORE THE EXIT CODE, the same rail classify_run
+  # follows and for the same reason: the adapter is the only layer that watched
+  # the run. This is not decoration here, it is most of the roster. Adapters
+  # NORMALISE their exit code on a clock kill -- agents.d/codex.sh:107 prints
+  # "codex was killed at the 900s timeout with no output" and then returns 0,
+  # because the trailing `rm -f` is the last command in the function. So for the
+  # codex family, and for agy.sh:137, the rc test below can NEVER see the
+  # timeout, and the case this whole issue is about would keep printing FAILED.
+  # Measured on codex 0.145.0, where `-o` is written only at final completion:
+  # a mid-turn kill leaves it empty, so this branch is the COMMON codex timeout,
+  # not the rare one.
+  # ★ head -3 for the reason classify_run anchors its markers there: past the
+  # edge, a timeout sentence is the reviewed code or a reviewer quoting one.
+  # Over-claiming here is cheap in a way it is not elsewhere -- failure_phrase
+  # is only ever asked about a run already binned `failed`, so the worst case is
+  # a wording change, never a bucket change and never a score.
+  if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE).*[0-9]+s timeout'; then
+    echo timed-out; return 0
+  fi
+  # 124 is GNU timeout's "the command timed out"; 137 is the -k SIGKILL landing
+  # as 128+9 on a child that ignored the TERM. bin/agentcall wraps every adapter
+  # in `timeout -k 30 "$TIMEOUT"`, so both codes are CADRE'S clock, not the
+  # provider's -- which is exactly the confusion this exists to end.
+  case "$rc" in 124|137) echo timed-out; return 0 ;; esac
+  echo failed
+}
+
+# The operator-facing phrase for a failed run. Renderers append their own
+# "kept as X" suffix.
+#
+# ★ Names CADRE_TIMEOUT and its current value. It took a `bin/agentcall` grep to
+# learn the knob existed and that rc=124 was cadre's own clock rather than the
+# provider's; a message that costs a source dive to act on is a message that
+# does not work. Default mirrors bin/agentcall:33 -- if that number moves, move
+# this one.
+# ★ Vocabulary is agents.d/codex.sh's ("killed at the Ns timeout", "with no
+# output", "Raise CADRE_TIMEOUT"), not a third phrasing for the same split.
+# ★ rc=0 is NOT printed. A failure line carrying `(rc=0)` sends an operator
+# hunting for a crash that never happened -- which is this issue's own disease
+# in miniature, and it is not hypothetical: an adapter that normalises its exit
+# code produces exactly that line. No exit code beats a meaningless one.
+failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
+  local f="$1" rc="$2" secs="${3:-}" after="" rcp="" tmo="${CADRE_TIMEOUT:-900}"
+  [ -n "$secs" ] && after=" after ${secs}s"
+  case "$rc" in ''|0) ;; *) rcp=" (rc=$rc)" ;; esac
+  case "$(failure_kind "$f" "$rc")" in
+    no-output)
+      local burned=""
+      case "$rc" in 124|137) burned=", burning the full ${tmo}s CADRE_TIMEOUT" ;; esac
+      echo "NO OUTPUT$after$rcp: the provider returned nothing$burned" ;;
+    # ★ Says HOW it ended, and deliberately does not say how much the run had
+    # produced. Both routes into `timed-out` land here and they disagree on
+    # that: an rc=124 kill means the adapter was mid-flight, while the codex
+    # marker means the clock ran out with nothing written yet. The artifact
+    # itself states which, and a phrase that guessed would be a claim about the
+    # model built from a harness setting -- the exact move this issue exists to
+    # stop, one level up.
+    timed-out)
+      echo "TIMED OUT$after$rcp: killed at the ${tmo}s CADRE_TIMEOUT, so this is cadre's clock and not a verdict on the model -- raise CADRE_TIMEOUT and re-run" ;;
+    *)
+      echo "FAILED$after$rcp" ;;
+  esac
+}
+
 # Classify one agent run: ok | degraded | inconclusive | failed. THE one copy of
 # this rule.
 #
@@ -826,23 +944,7 @@ classify_run() {
   # Same rule, one copy; the only difference is whether the truncation MARKER is
   # readable in that context. See the marker check below for why it is not.
   local f="$1" rc="$2" ctx="${3:-run}"
-  if [ ! -s "$f" ]; then echo failed; return 0; fi
-  # ★ Empty means empty of CONTENT, not of bytes. CLIs wrap the model's text in
-  # their own chrome -- colour escapes, a "> build <model>" banner -- so a run
-  # that returned nothing still leaves a non-empty file and scores as a clean
-  # review that found no defects. Measured with opencode, which is the free
-  # route the README sends people down first. NOT a minimum-length rule:
-  # "findings=0" is a valid review and a length floor threw those away.
-  # ★ A LITERAL escape byte, not `\x1b`. `\x1b` is a GNU sed extension; BSD sed
-  # (macOS, and macOS keeps BSD sed even with GNU coreutils installed, because
-  # sed is not part of coreutils) reads it as a literal `x1b`, matches nothing,
-  # and this whole check silently no-ops -- filing a chrome-only run as a clean
-  # review again, on an entire platform, with no error. Found by a panel
-  # reviewer on cadre's own diff.
-  local esc; esc=$(printf '\033')
-  if [ -z "$(sed -e "s/${esc}\[[0-9;?]*[a-zA-Z]//g" -e 's/[[:space:]]//g' "$f")" ]; then
-    echo failed; return 0
-  fi
+  if content_empty "$f"; then echo failed; return 0; fi
   # ★ THE ADAPTER'S OWN VERDICT COMES FIRST, both markers together, ahead of
   # anything inferred from the text or the exit code. The adapter is the only
   # layer that watched the run; everything below this is cadre guessing from

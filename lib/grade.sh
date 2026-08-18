@@ -423,6 +423,13 @@ remove that directory and re-run."
   # the one path where it costs most: 11 of 12 passes producing nothing scored
   # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
   local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed=""
+  # ★ Sweep-wide tally behind the fourth "nothing" verdict (#12). A NO OUTPUT
+  # streak across every seat of a sweep is evidence about the PROVIDER, not the
+  # candidate -- measured when every opencode-go model hung on `Reply with
+  # exactly: OK` while a direct-provider model answered instantly. The existing
+  # NOTHING MEASURED wording ("this says nothing about X") is true but reads as a
+  # property of the model, which is the misread this issue is about.
+  local no_output_runs=0 provider_empty=""
   # ★ Two failures that must not share an exit code, because the caller's correct
   # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
   # time and the reason to stop a sweep. A review that exists but could not be
@@ -535,6 +542,15 @@ remove that directory and re-run."
         if [ "$prc" -eq 6 ]; then
           skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume after its reset)"$'\n'
           window_closed=1
+        # ★ 7 gets the same treatment as 6 and for the same reason: the pass
+        # measured nothing, but the cause is on the provider's side and clears
+        # on its own, so calling it a failed measurement sends the operator
+        # looking for a defect that is not there. This is the ONLY route by
+        # which `cadre run` can reach the outage verdict -- it aborts here and
+        # never reaches the grading loop that computes the other one.
+        elif [ "$prc" -eq 7 ]; then
+          skipped="$skipped- $label: NOT MEASURED, every run came back empty (suspect a provider outage)"$'\n'
+          provider_empty=1
         else
           skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
           measurement_failed=1
@@ -596,8 +612,27 @@ remove that directory and re-run."
           why="ran but returned no review, see $sl-run$n.md.inconclusive, not scored"
           [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
         fi
-        if [ -s "$rf.failed" ]; then
-          why="the adapter failed, see $sl-run$n.md.failed"
+        # ★ "the adapter failed" was a claim, not an observation (#12). The same
+        # line covered a provider that returned nothing, a live adapter killed
+        # by cadre's own clock, and a real adapter crash -- and it sent the
+        # reader to the adapter for all three. The discriminator survives on
+        # disk even though the exit code does not, so failure_kind is asked
+        # WITHOUT an rc here: a no-output artifact is stated as fact, and the
+        # timeout case is left unclaimed rather than guessed at from bytes.
+        # ★ -e, not -s. A hung provider that wrote nothing to stdout OR stderr
+        # leaves run-pass.sh a 0-byte `.part` to rename, so the truest form of
+        # "the provider returned nothing" is the one a `-s` gate skips entirely:
+        # the branch never ran, the count never incremented, and a sweep of pure
+        # silence was the one shape that could not reach the outage verdict.
+        # Every other artifact test in this block stays `-s` on purpose -- an
+        # empty .partial or .inconclusive really is nothing to report.
+        if [ -e "$rf.failed" ]; then
+          if content_empty "$rf.failed"; then
+            why="the provider returned NOTHING (no content in $sl-run$n.md.failed)"
+            no_output_runs=$((no_output_runs + 1))
+          else
+            why="the run produced output but no usable review, see $sl-run$n.md.failed"
+          fi
           [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
         fi
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
@@ -940,10 +975,53 @@ It is a failed measurement, and a failed measurement is not a result."
 here -- but nothing expensive was lost, and \`cadre grade $spec $runs\` re-runs
 the judge over what is already on disk. Do not re-review."
       fi
+      local tail1="Fix the cause and re-run. Do not quote a number from this file."
+      # ★ A fourth nothing (#12), and it is a statement about the PROVIDER. Fires
+      # only when EVERY failed run of the sweep came back content-empty: one
+      # empty artifact is an ordinary failure, a clean sweep of them is an
+      # outage, and the two need opposite responses (drop the seat vs. wait and
+      # re-run). Checked before the window branch and gated on the same
+      # grading_failed guard, so a sweep that actually produced reviews and only
+      # failed to grade them still gets NOTHING GRADED.
+      # ★ The denominator is $unusable -- EVERY unusable run of the sweep -- not
+      # the failed ones alone. Against the failed-run count, a sweep of one empty
+      # artifact plus three INCONCLUSIVE runs reads as 1-of-1 empty and blames a
+      # provider for what is a roster problem: those three runs answered, they
+      # just never reviewed. Widening the denominator makes the claim exactly as
+      # strong as the words: nothing usable came back, and every last piece of
+      # that nothing was empty.
+      # ★ And it must be > 0. A sweep whose passes were all skipped for missing
+      # keys has zero of both, and `0 -eq 0` would blame a provider never called.
+      # ★ TWO routes reach this, and both are needed. `cadre grade` re-reads the
+      # artifacts and computes it here; `cadre run` never gets here at all,
+      # because run-pass.sh exit 7 aborts the sweep above -- so that path sets
+      # the flag directly. A verdict only the rarer command can print is a
+      # verdict the operator does not get.
+      if [ -n "$provider_empty" ] ||
+         { [ "$no_output_runs" -gt 0 ] && [ "$no_output_runs" -eq "$unusable" ]; }; then
+        provider_empty=1
+      fi
+      if [ -n "$provider_empty" ] && [ -z "$grading_failed" ]; then
+        # ★ Its own exit code, for the reason window-closed has one: a driver
+        # piping stdout to /dev/null sees only this, and "wait for the provider,
+        # nothing here is broken" is a different instruction from 4's "fix the
+        # cause". Collapsing them is what makes a driver retry a real defect or
+        # file a bug against a healthy tool.
+        head1="NOT MEASURED -- PROVIDER RETURNED NOTHING"; rc1=7
+        body1="Every failed run on this sweep came back EMPTY -- $no_output_runs of them, no
+content at all after CLI chrome is stripped. That pattern is evidence about the
+PROVIDER, not about \`$spec\`: a model that is answering normally does not return
+zero bytes to every seat. Nothing here scores the candidate either way.
+
+If the runs also burned the full timeout, check the endpoint before re-running:
+a trivial prompt (\`Reply with exactly: OK\`) against the same route answers
+instantly when the provider is healthy."
+        tail1="Confirm the provider is up, then re-run. Do not quote a number from this
+file, and do not record a verdict about the candidate from it."
+      fi
       # ★ A third nothing, and the only one where the operator's correct move is
       # to do nothing at all for a while. Checked last so a real failure
       # elsewhere in the sweep still gets its own verdict.
-      local tail1="Fix the cause and re-run. Do not quote a number from this file."
       if [ -n "$window_closed" ] && [ -z "$measurement_failed" ] && [ -z "$grading_failed" ]; then
         head1="NOT MEASURED -- PROVIDER WINDOW CLOSED"; rc1=6
         body1="A provider usage window closed mid-sweep, so this pass never got to run.

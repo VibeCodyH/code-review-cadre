@@ -2507,7 +2507,11 @@ check "run: did NOT abort"            "! grep -q 'ABORTING' <<<\"\$OUT\""
 # ★ The reason line must name the ROSTER problem, not the adapter. "the adapter
 # failed" sends the reader to agents.d for a model that will not hold the brief.
 check "grade: UNUSABLE names no review" "grep -q 'ran but returned no review' <<<\"\$OUT\""
-check "grade: does NOT blame adapter"   "! grep -q 'the adapter failed' <<<\"\$OUT\""
+# ★ Asserts against the .failed wording that EXISTS today. It used to grep for
+# "the adapter failed", which #12 deleted -- leaving a check that could never
+# fail again and so could never catch the collision it was written for.
+check "grade: does NOT use the .failed wording" \
+  "! grep -qE 'produced output but no usable review|provider returned NOTHING' <<<\"\$OUT\""
 # ★ .partial is deliberately kept across attempts while .inconclusive is cleared,
 # so an earlier attempt's partial -- which HAS findings in it -- can still be on
 # disk. Reporting only "no review" buries it, the same way the .failed path was
@@ -2911,6 +2915,249 @@ RT=$(ls "$DT/home"/report-*.md | head -1)
 check "cov e2e: 2-pass mean is 75% (per-pass, not pooled 83%)" \
   "grep -qF 'changed-file coverage (mean over 2 keyed pass(es)): **75%**' '$RT'"
 check "cov e2e: names thinnest as pA at 50%"    "grep -q 'thinnest on .pA. at 50%' '$RT'"
+
+
+# ============================================================================
+# #12: a timeout kill, a provider hang and a refusal must not print one line.
+# ============================================================================
+# ★ Measured on the opencode-go sweep, 2026-08-05. `FAILED after Ns (rc=124)`
+# meant three different things and asked for three opposite responses, and the
+# expensive misread is the FIRST one: a live adapter killed by cadre's own clock
+# reads as "the model ignores the review contract" -- a behavioural verdict
+# manufactured out of a harness setting. Raising CADRE_TIMEOUT turned that exact
+# pass into a graded blocking HIT.
+echo "== ★ #12: which nothing =="
+FK=$(mktemp -d -p "$SANDBOX")
+: > "$FK/zero"                                        # 0 bytes
+printf '\n\n' > "$FK/twonl"                           # the measured 2-byte case
+printf '\033[0m\n\033[?25h\033[?2004l\n   \n' > "$FK/chromeonly"
+printf 'findings=0\nVerdict: ship it\n' > "$FK/real"
+
+check "content_empty: 0 bytes"        "content_empty '$FK/zero'"
+check "content_empty: two newlines"   "content_empty '$FK/twonl'"
+check "content_empty: chrome only"    "content_empty '$FK/chromeonly'"
+check "content_empty: real review is NOT empty" "! content_empty '$FK/real'"
+
+# ★ CONTENT-EMPTY WINS over rc=124. The measured hang was BOTH -- two bytes back
+# AND the full timeout burned -- and "raise the timeout" is advice that cannot
+# help a provider that is returning nothing.
+check "kind: empty + rc124 => no-output"  "[ \$(failure_kind '$FK/twonl' 124) = no-output ]"
+check "kind: content + rc124 => timed-out" "[ \$(failure_kind '$FK/real' 124) = timed-out ]"
+# 137 is the -k SIGKILL landing as 128+9 on a child that ignored the TERM;
+# bin/agentcall uses `timeout -k 30`, so it is cadre's clock just the same.
+check "kind: content + rc137 => timed-out" "[ \$(failure_kind '$FK/real' 137) = timed-out ]"
+check "kind: content + rc1 => failed"      "[ \$(failure_kind '$FK/real' 1) = failed ]"
+# ★ `cadre grade` re-reads .failed off disk long after the exit code is gone.
+# With no rc the timeout case must be left UNCLAIMED, not guessed at from bytes:
+# a fabricated "your clock killed it" is the same class of error as the one this
+# whole issue is about, pointed the other way.
+check "kind: content + no rc => failed, not guessed" "[ \$(failure_kind '$FK/real') = failed ]"
+
+# ★ The 72KB case, because it is the one that actually happened: qwen3.8-max
+# wrote its own repro scripts and /proc/self/fd inspection before the clock got
+# it. Run under `set -o pipefail` in a subshell -- the coverage work already ate
+# one SIGPIPE flip where an early-exiting reader turned a large artifact into the
+# opposite answer, and this helper must not repeat it.
+yes 'a reviewer thinking out loud about the diff it was handed' | head -1200 > "$FK/big"
+check "kind: the big artifact really is big" "[ \$(wc -c < '$FK/big') -gt 60000 ]"
+check "kind: 72KB + rc124 => timed-out (pipefail-safe)" \
+  "( set -o pipefail; [ \$(failure_kind '$FK/big' 124) = timed-out ] )"
+
+# ★ The BUCKET must not move. Three call sites string-compare classify_run
+# (`= failed || break` in run-pass.sh and run-review.sh, `!= ok` in bin/cadre);
+# a fourth state here would silently rewire their retry loops. This is the
+# regression guard on that, and it is the reason the split lives in a separate
+# function at all.
+check "classify: no-output still failed" "[ \$(classify_run '$FK/twonl' 124) = failed ]"
+check "classify: timed-out still failed" "[ \$(classify_run '$FK/real' 124) = failed ]"
+check "classify: plain crash still failed" "[ \$(classify_run '$FK/real' 1) = failed ]"
+
+# The operator-facing halves, which is the whole deliverable: three sentences,
+# each naming a different next move.
+CADRE_TIMEOUT=2400
+check "phrase: no-output says the PROVIDER sent nothing" \
+  "failure_phrase '$FK/twonl' 124 30 | grep -q 'NO OUTPUT after 30s (rc=124): the provider returned nothing'"
+check "phrase: and that it burned the whole timeout" \
+  "failure_phrase '$FK/twonl' 124 30 | grep -q 'burning the full 2400s CADRE_TIMEOUT'"
+check "phrase: timeout names CADRE_TIMEOUT and its value" \
+  "failure_phrase '$FK/real' 124 900 | grep -q 'killed at the 2400s CADRE_TIMEOUT'"
+# ★ This clause is the fix. Without it the line is a fact about the run that a
+# reader converts into a verdict about the model.
+check "phrase: timeout disowns the verdict" \
+  "failure_phrase '$FK/real' 124 900 | grep -q \"cadre's clock and not a verdict on the model\""
+check "phrase: plain failure is unchanged" \
+  "failure_phrase '$FK/real' 1 12 | grep -q '^FAILED after 12s (rc=1)$'"
+# ★ rc=0 must NOT appear. An adapter that normalises its exit code produces
+# `FAILED after 30s (rc=0)`, which sends the reader hunting a crash that never
+# happened -- this issue's own disease, one level down.
+check "phrase: rc=0 is not printed" \
+  "! failure_phrase '$FK/real' 0 30 | grep -q 'rc=0'"
+check "phrase: rc=0 still says FAILED after Ns" \
+  "failure_phrase '$FK/real' 0 30 | grep -q '^FAILED after 30s$'"
+
+# ★ THE ADAPTER-NORMALISED TIMEOUT, which is most of the roster and which the
+# rc test cannot see. agents.d/codex.sh:107 prints this line and then returns 0,
+# because the trailing `rm -f` is the last command in the function -- so without
+# the marker check, codex's COMMON timeout (measured on 0.145.0, where -o is
+# written only at final completion) keeps printing the flat FAILED line this
+# whole issue is about.
+printf 'DID NOT COMPLETE, codex was killed at the 900s timeout with no output. Raise CADRE_TIMEOUT.\n' \
+  > "$FK/codextmo"
+check "kind: adapter marker names the clock => timed-out (rc=0)" \
+  "[ \$(failure_kind '$FK/codextmo' 0) = timed-out ]"
+check "phrase: and it tells the operator to raise CADRE_TIMEOUT" \
+  "failure_phrase '$FK/codextmo' 0 900 | grep -q 'raise CADRE_TIMEOUT and re-run'"
+check "classify: adapter-normalised timeout still failed" \
+  "[ \$(classify_run '$FK/codextmo' 0) = failed ]"
+# agy.sh:137 words it differently and must still be read.
+printf 'DID NOT COMPLETE, agy hit the 900s timeout with no text returned.\n' > "$FK/agytmo"
+check "kind: agy wording also reads as timed-out" "[ \$(failure_kind '$FK/agytmo' 0) = timed-out ]"
+# ★ ...and a marker that names no clock is NOT a timeout. agy.sh:139 and
+# grok.sh:73 are ordinary "nothing came back" failures; calling those TIMED OUT
+# would send the operator to raise a ceiling that was never hit.
+printf 'DID NOT COMPLETE, no text returned (stopReason=Error). Raw:\n{"error":"upstream"}\n' \
+  > "$FK/plainmarker"
+check "kind: a marker without a clock stays failed" \
+  "[ \$(failure_kind '$FK/plainmarker' 1) = failed ]"
+# ★ Edge-anchored, like every other marker test in this file. A REVIEW that
+# discusses cadre's own timeout handling -- reviewing this repo is enough --
+# must not be relabelled off a sentence in its body.
+{ printf 'blocking - the retry loop drops a run\n'; printf 'x\n%.0s' $(seq 1 40)
+  printf 'DID NOT COMPLETE, codex was killed at the 900s timeout with no output.\n'; } > "$FK/quoter"
+check "kind: the marker only counts at the edge" "[ \$(failure_kind '$FK/quoter' 1) = failed ]"
+check "phrase: the three are not one string" \
+  "[ \$(for a in \"124 $FK/twonl\" \"124 $FK/real\" \"1 $FK/real\"; do set -- \$a; failure_phrase \$2 \$1 9; done | sort -u | wc -l) -eq 3 ]"
+unset CADRE_TIMEOUT
+# Default mirrors bin/agentcall:33. If that number moves and this does not, the
+# message starts naming a ceiling that is not the one doing the killing.
+check "phrase: default matches bin/agentcall" \
+  "failure_phrase '$FK/real' 124 9 | grep -q \"the \$(grep -oE 'CADRE_TIMEOUT:-[0-9]+' '$ROOT/bin/agentcall' | cut -d- -f2)s CADRE_TIMEOUT\""
+
+# ---- end to end: a candidate that returns only chrome, every run ------------
+# ★ The report said "the adapter failed" for this, which sends the reader to
+# agents.d for a problem that is not there. And a whole SWEEP of it is evidence
+# about the provider: measured when every opencode-go model hung on
+# `Reply with exactly: OK` while a direct-provider model answered instantly.
+# The console half, live: the `chrome` stub is a provider that returns its CLI's
+# banner and nothing else.
+DN=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DN" chrome "$HITBOTH" "$HITBOTH"
+rm -f "$DN/home/p1/$(slug chrome)-run1.md"            # make the agent actually run
+OUTN=$(run_gaunt "$DN" good,good2 chrome || true)
+check "e2e: console says NO OUTPUT, not FAILED" "grep -q 'NO OUTPUT after' <<<\"\$OUTN\""
+check "e2e: console does not say plain FAILED"  "! grep -q 'FAILED after' <<<\"\$OUTN\""
+# ★ `cadre run` is the command an operator actually types, and it ABORTS on a
+# dead pass before grading ever happens -- so a verdict computed only in the
+# grader is one this path can never print. run-pass.sh exit 7 is what carries it
+# across, the same way exit 6 already carries a closed usage window.
+check "e2e: run says the runs came back EMPTY" \
+  "grep -q 'every run came back EMPTY' <<<\"\$OUTN\""
+check "e2e: run does NOT call it a failed measurement" \
+  "! grep -q 'This is a failed measurement' <<<\"\$OUTN\""
+RCN=0; run_gaunt "$DN" good,good2 chrome >/dev/null 2>&1 || RCN=$?
+check "e2e: cadre run exits 7, not 4"  "[ '$RCN' -eq 7 ]"
+RN=$(ls "$DN/home"/report-*.md | head -1)
+check "e2e: and the run's own report says so" \
+  "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RN'"
+
+# ---- and the REPORT half, via `cadre grade` --------------------------------
+# ★ Deliberately the grade path, not the run path. A `cadre run` that produces
+# nothing on its first pass aborts the sweep before grading, so the sweep-wide
+# verdict is reached by re-grading what is on disk -- which is also the shape of
+# the case that prompted this: the artifacts were sitting there, and the report
+# read them as "the adapter failed" every time.
+grade_only() {  # grade_only <dir> <candidate>
+  CADRE_HOME="$1/home" CADRE_WORK="$1/work" CADRE_AGENTS_D="$1/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$1/bin:$PATH" "$ROOT/bin/cadre" grade "$2" 1 p1 2>&1
+}
+DG=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DG" chrome "$HITBOTH" "$HITBOTH"
+SLC=$(slug chrome)
+rm -f "$DG/home/p1/$SLC-run1.md"
+printf '\033[0m\n\033[?25h\033[?2004l\n   \n' > "$DG/home/p1/$SLC-run1.md.failed"
+OUTG=$(grade_only "$DG" chrome || true)
+RG=$(ls "$DG/home"/report-*.md | head -1)
+check "e2e: report states it as the provider"    "grep -q 'the provider returned NOTHING' '$RG'"
+check "e2e: report no longer blames the adapter" "! grep -q 'the adapter failed' '$RG'"
+check "e2e: verdict is about the provider"       "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RG'"
+check "e2e: and refuses to score the candidate"  "! grep -q 'blocking items hit' '$RG'"
+
+# ★ The counter-case, and the one that keeps the verdict honest: an artifact
+# that came back with TEXT is an ordinary failure, not an outage. Blaming the
+# provider there is the same manufactured-verdict error with the sign flipped,
+# so the outage verdict has to require that EVERY failed run was empty.
+DM=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DM" chrome "$HITBOTH" "$HITBOTH"
+rm -f "$DM/home/p1/$SLC-run1.md"
+printf "You've hit your monthly spend limit\n" > "$DM/home/p1/$SLC-run1.md.failed"
+OUTM=$(grade_only "$DM" chrome || true)
+RM=$(ls "$DM/home"/report-*.md | head -1)
+check "e2e: text-bearing failure is NOT an outage" \
+  "! grep -q 'PROVIDER RETURNED NOTHING' '$RM'"
+check "e2e: it says output-but-no-review instead" \
+  "grep -q 'produced output but no usable review' '$RM'"
+
+# ★ The verdict's own exit code, because a driver piping stdout to /dev/null
+# sees nothing else -- and "wait for the provider" is a different instruction
+# from 4's "fix the cause". This is the assertion that makes the split reach a
+# machine, not just a reader.
+RCG=0; grade_only "$DG" chrome >/dev/null 2>&1 || RCG=$?
+check "e2e: outage exits 7, not 4"  "[ '$RCG' -eq 7 ]"
+RCM=0; grade_only "$DM" chrome >/dev/null 2>&1 || RCM=$?
+check "e2e: ordinary failure still exits 4" "[ '$RCM' -eq 4 ]"
+
+# ★ THE false-outage guard, and the reason the denominator is every UNUSABLE run
+# rather than every FAILED one. Two runs: one empty artifact, one that answered
+# and never reviewed. Counted against the failed runs alone that reads 1-of-1
+# empty and blames the provider -- for a run that came back with text. It is a
+# roster problem, and the outage verdict must not claim it.
+DX=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DX" chrome "$HITBOTH" "$HITBOTH"
+rm -f "$DX/home/p1/$SLC-run1.md"
+printf '\033[0m\n   \n' > "$DX/home/p1/$SLC-run1.md.failed"
+printf 'A thoughtful essay about this codebase that never reviews anything.\n' \
+  > "$DX/home/p1/$SLC-run2.md.inconclusive"
+OUTX=$(CADRE_HOME="$DX/home" CADRE_WORK="$DX/work" CADRE_AGENTS_D="$DX/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$DX/bin:$PATH" "$ROOT/bin/cadre" grade chrome 2 p1 2>&1 || true)
+RX=$(ls "$DX/home"/report-*.md | head -1)
+check "e2e: mixed nothings are NOT an outage" "! grep -q 'PROVIDER RETURNED NOTHING' '$RX'"
+check "e2e: both nothings still named"        "grep -q 'provider returned NOTHING' '$RX' && grep -q 'returned no review' '$RX'"
+
+# ★ ZERO BYTES, which is the truest form of "the provider returned nothing" and
+# was the one shape that could not reach the verdict: the branch that counts it
+# was gated on `-s`, so a 0-byte artifact skipped it entirely and a sweep of
+# pure silence graded as an ordinary failed measurement. A provider that hangs
+# without writing to stdout OR stderr leaves exactly this.
+DZ=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DZ" chrome "$HITBOTH" "$HITBOTH"
+rm -f "$DZ/home/p1/$SLC-run1.md"
+: > "$DZ/home/p1/$SLC-run1.md.failed"                  # 0 bytes, not 2
+OUTZ=$(grade_only "$DZ" chrome || true)
+RZ=$(ls "$DZ/home"/report-*.md | head -1)
+check "e2e: 0-byte .failed is counted as no-output" "grep -q 'the provider returned NOTHING' '$RZ'"
+check "e2e: 0-byte sweep reaches the outage verdict" \
+  "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RZ'"
+RCZ=0; grade_only "$DZ" chrome >/dev/null 2>&1 || RCZ=$?
+check "e2e: 0-byte sweep exits 7"  "[ '$RCZ' -eq 7 ]"
+
+# ★ The outage verdict must never appear over a sweep that MEASURED something.
+# `provider_empty` is sticky once set and the pass loop keeps going, so the only
+# thing standing between a half-dead sweep and "NOT MEASURED -- PROVIDER
+# RETURNED NOTHING" printed above a real score is the `graded_passes -le 0`
+# guard the whole verdict block sits inside. That guard is not mine and could be
+# widened by someone with no reason to think about this; the test is here so it
+# cannot be, quietly.
+DQ=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DQ" chrome "$HITBOTH" "$HITBOTH"
+QSHA=$(git -C "$DQ/checkout" rev-parse HEAD); mkdir -p "$DQ/home/p2"
+printf 'p2|%s|%s|%s|%s\n' "$QSHA" "$DQ/checkout" "$QSHA" "$DQ/home/k.md" >> "$DQ/home/passes.conf"
+# ★ `cadre run`, not `cadre grade`. Grade means RE-grade -- it re-runs the
+# judges and ignores the seeded grade files -- so under that command the pass
+# that is supposed to SCORE here cannot, and the test would be measuring its own
+# fixture. The run path is also the one that matters: it is where exit 7 fires.
+RCQ=0
+OUTQ=$(run_gaunt_all "$DQ" good,good2 chrome) || RCQ=$?
+RQ=$(ls "$DQ/home"/report-*.md | head -1)
+check "e2e: a graded pass blocks the outage verdict" \
+  "! grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RQ'"
+check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY' <<<\"\$OUTQ\""
+check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
+check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
+check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
 
 echo
 echo "$PASS passed, $FAIL failed"

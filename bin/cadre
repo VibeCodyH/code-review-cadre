@@ -1100,7 +1100,13 @@ and declined to flag it, which is exactly backwards.
   printf '%s' "$raw" > "$out/.synth-tmp"
   if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" != ok ]; then
     mv "$out/.synth-tmp" "$out/synthesis.md.failed"
-    echo "synthesis FAILED (rc=$rc), kept as synthesis.md.failed." >&2
+    # ★ Third consumer of the same split (#12). The synthesizer is a model and
+    # fails like one, so "the provider returned nothing" and "cadre's clock cut
+    # a live merge short" are as distinguishable here as on a review -- and the
+    # second one is fixable by re-running with a bigger CADRE_TIMEOUT, which the
+    # old flat message never suggested. No elapsed time is tracked on this path,
+    # so the phrase is asked for without one rather than handed a made-up number.
+    echo "synthesis $(failure_phrase "$out/synthesis.md.failed" "$rc"), kept as synthesis.md.failed." >&2
     echo "The individual reviews are intact in $out." >&2
     return 0
   fi

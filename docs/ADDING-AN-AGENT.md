@@ -62,6 +62,16 @@ an empty failure.
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
 
+**If the clock is what stopped you, say so on that marker line, with the number:**
+`DID NOT COMPLETE, <agent> was killed at the ${TIMEOUT}s timeout`. It does not
+change your state — you are still `failed` — it changes what the operator is
+told. Cadre reports a clock kill and a provider that returned nothing as two
+different things, because they call for opposite responses, and the exit code is
+not enough to tell them apart: most adapters here normalise theirs to 0 on a
+kill, so the marker line is the only place the fact survives. Leave the number
+out and your timeout prints as a flat `FAILED`, which reads as a verdict on the
+model.
+
 There is a fourth state, `inconclusive`, and **it is not yours to emit.** Cadre
 decides it by reading the artifact: a run that exited cleanly and stated neither a
 finding nor a bottom line never reviewed anything, whatever else it printed. You
