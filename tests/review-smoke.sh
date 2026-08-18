@@ -1633,6 +1633,58 @@ check "receipt caveat is explicit" "grep -qF '> Estimated as bytes/4 of what the
 # counting -- the panel would report three seats and the dataset two.
 check "no seat vanishes"            "[ \$(cut -f2 '$R/slots.tsv' | sort -u | wc -l) -eq 2 ]"
 
+# ---- record writer/reader units (#2) ----------------------------------------
+# ★ Hand-rolled JSON, so the escaping is the risk. Every one of these is a way a
+# single malformed line silently becomes a wrong FIELD rather than a parse
+# error -- which is worse than the prose-grepping it replaced, because a wrong
+# field looks measured.
+RJ=$(mktemp -d -p "$SANDBOX"); RL="$RJ/runs.jsonl"
+record_event "$RL" event=complete seat='codex:gpt-5.5' "secs#=12" "rc#=0"
+check "rec: seat with a colon survives" \
+  "[ \"\$(record_rows '$RL' complete seat)\" = 'codex:gpt-5.5' ]"
+check "rec: numeric field is bare"    "grep -q '\"secs\":12' '$RL'"
+check "rec: string field is quoted"   "grep -q '\"seat\":\"codex:gpt-5.5\"' '$RL'"
+
+# ★ EMPTY NUMBER is null; EMPTY STRING stays "". This is the distinction that
+# made it JSONL, and collapsing the two is the bug the format was chosen to
+# prevent -- an unmeasured second and a measured zero are not the same fact.
+: > "$RL"; record_event "$RL" event=complete seat=x "secs#=" note=
+check "rec: unmeasured number is null" "grep -q '\"secs\":null' '$RL'"
+check "rec: empty string stays a string" "grep -q '\"note\":\"\"' '$RL'"
+check "rec: reader gives EMPTY for null" \
+  "[ -z \"\$(record_rows '$RL' complete secs)\" ]"
+check "rec: reader never prints the word null" \
+  "! record_rows '$RL' complete secs | grep -q null"
+
+# ★ A quote or a backslash in a value must not end the string early or escape
+# the closing quote. Backslash has to be escaped BEFORE the quote, or the escape
+# this adds is itself re-escaped.
+: > "$RL"; record_event "$RL" event=complete seat='a"b\c' "secs#=3"
+check "rec: quote and backslash escaped" 'grep -q "\\\\\"b\\\\\\\\c" '"'$RL'"
+check "rec: and read back verbatim" \
+  "[ \"\$(record_rows '$RL' complete seat)\" = 'a\"b\\c' ]"
+check "rec: a later field still parses" \
+  "[ \"\$(record_rows '$RL' complete secs)\" = 3 ]"
+
+# ★ One event is one LINE. A newline inside a value would split the record into
+# two malformed ones, so control characters are dropped rather than encoded.
+: > "$RL"; record_event "$RL" event=complete seat="$(printf 'a\nb')" "secs#=1"
+check "rec: newline cannot split a record" "[ \$(wc -l < '$RL') -eq 1 ]"
+check "rec: the value is still readable"   "[ \"\$(record_rows '$RL' complete seat)\" = ab ]"
+
+# The reader filters by event and returns fields in the order asked, so a
+# renderer's column order is its own business.
+: > "$RL"
+record_event "$RL" event=dispatch seat=one
+record_event "$RL" event=complete seat=two "secs#=9"
+check "rec: filters by event"       "[ \"\$(record_rows '$RL' dispatch seat)\" = one ]"
+check "rec: keys come back in order" \
+  "[ \"\$(record_rows '$RL' complete secs seat)\" = \"\$(printf '9\ttwo')\" ]"
+check "rec: a missing key is EMPTY, not an error" \
+  "[ \"\$(record_rows '$RL' dispatch nosuchkey)\" = '' ]"
+check "rec: an absent log is not an error" \
+  "record_rows '$RJ/nope.jsonl' complete seat; [ \$? -eq 0 ]"
+
 # ---- the per-run record (#2) ------------------------------------------------
 # ★ The record is the SOURCE now; slots.tsv and the Receipts table are two
 # renderings of it. These check the source exists, survives, and carries the
