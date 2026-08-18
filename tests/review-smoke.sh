@@ -2984,9 +2984,47 @@ check "phrase: timeout names CADRE_TIMEOUT and its value" \
 # ★ This clause is the fix. Without it the line is a fact about the run that a
 # reader converts into a verdict about the model.
 check "phrase: timeout disowns the verdict" \
-  "failure_phrase '$FK/real' 124 900 | grep -q \"cadre's clock, not a verdict on the model\""
+  "failure_phrase '$FK/real' 124 900 | grep -q \"cadre's clock and not a verdict on the model\""
 check "phrase: plain failure is unchanged" \
   "failure_phrase '$FK/real' 1 12 | grep -q '^FAILED after 12s (rc=1)$'"
+# ★ rc=0 must NOT appear. An adapter that normalises its exit code produces
+# `FAILED after 30s (rc=0)`, which sends the reader hunting a crash that never
+# happened -- this issue's own disease, one level down.
+check "phrase: rc=0 is not printed" \
+  "! failure_phrase '$FK/real' 0 30 | grep -q 'rc=0'"
+check "phrase: rc=0 still says FAILED after Ns" \
+  "failure_phrase '$FK/real' 0 30 | grep -q '^FAILED after 30s$'"
+
+# ★ THE ADAPTER-NORMALISED TIMEOUT, which is most of the roster and which the
+# rc test cannot see. agents.d/codex.sh:107 prints this line and then returns 0,
+# because the trailing `rm -f` is the last command in the function -- so without
+# the marker check, codex's COMMON timeout (measured on 0.145.0, where -o is
+# written only at final completion) keeps printing the flat FAILED line this
+# whole issue is about.
+printf 'DID NOT COMPLETE, codex was killed at the 900s timeout with no output. Raise CADRE_TIMEOUT.\n' \
+  > "$FK/codextmo"
+check "kind: adapter marker names the clock => timed-out (rc=0)" \
+  "[ \$(failure_kind '$FK/codextmo' 0) = timed-out ]"
+check "phrase: and it tells the operator to raise CADRE_TIMEOUT" \
+  "failure_phrase '$FK/codextmo' 0 900 | grep -q 'raise CADRE_TIMEOUT and re-run'"
+check "classify: adapter-normalised timeout still failed" \
+  "[ \$(classify_run '$FK/codextmo' 0) = failed ]"
+# agy.sh:137 words it differently and must still be read.
+printf 'DID NOT COMPLETE, agy hit the 900s timeout with no text returned.\n' > "$FK/agytmo"
+check "kind: agy wording also reads as timed-out" "[ \$(failure_kind '$FK/agytmo' 0) = timed-out ]"
+# ★ ...and a marker that names no clock is NOT a timeout. agy.sh:139 and
+# grok.sh:73 are ordinary "nothing came back" failures; calling those TIMED OUT
+# would send the operator to raise a ceiling that was never hit.
+printf 'DID NOT COMPLETE, no text returned (stopReason=Error). Raw:\n{"error":"upstream"}\n' \
+  > "$FK/plainmarker"
+check "kind: a marker without a clock stays failed" \
+  "[ \$(failure_kind '$FK/plainmarker' 1) = failed ]"
+# ★ Edge-anchored, like every other marker test in this file. A REVIEW that
+# discusses cadre's own timeout handling -- reviewing this repo is enough --
+# must not be relabelled off a sentence in its body.
+{ printf 'blocking - the retry loop drops a run\n'; printf 'x\n%.0s' $(seq 1 40)
+  printf 'DID NOT COMPLETE, codex was killed at the 900s timeout with no output.\n'; } > "$FK/quoter"
+check "kind: the marker only counts at the edge" "[ \$(failure_kind '$FK/quoter' 1) = failed ]"
 check "phrase: the three are not one string" \
   "[ \$(for a in \"124 $FK/twonl\" \"124 $FK/real\" \"1 $FK/real\"; do set -- \$a; failure_phrase \$2 \$1 9; done | sort -u | wc -l) -eq 3 ]"
 unset CADRE_TIMEOUT
@@ -3007,6 +3045,19 @@ rm -f "$DN/home/p1/$(slug chrome)-run1.md"            # make the agent actually 
 OUTN=$(run_gaunt "$DN" good,good2 chrome || true)
 check "e2e: console says NO OUTPUT, not FAILED" "grep -q 'NO OUTPUT after' <<<\"\$OUTN\""
 check "e2e: console does not say plain FAILED"  "! grep -q 'FAILED after' <<<\"\$OUTN\""
+# ★ `cadre run` is the command an operator actually types, and it ABORTS on a
+# dead pass before grading ever happens -- so a verdict computed only in the
+# grader is one this path can never print. run-pass.sh exit 7 is what carries it
+# across, the same way exit 6 already carries a closed usage window.
+check "e2e: run says the runs came back EMPTY" \
+  "grep -q 'every run came back EMPTY' <<<\"\$OUTN\""
+check "e2e: run does NOT call it a failed measurement" \
+  "! grep -q 'This is a failed measurement' <<<\"\$OUTN\""
+RCN=0; run_gaunt "$DN" good,good2 chrome >/dev/null 2>&1 || RCN=$?
+check "e2e: cadre run exits 7, not 4"  "[ '$RCN' -eq 7 ]"
+RN=$(ls "$DN/home"/report-*.md | head -1)
+check "e2e: and the run's own report says so" \
+  "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RN'"
 
 # ---- and the REPORT half, via `cadre grade` --------------------------------
 # ★ Deliberately the grade path, not the run path. A `cadre run` that produces
@@ -3067,6 +3118,22 @@ OUTX=$(CADRE_HOME="$DX/home" CADRE_WORK="$DX/work" CADRE_AGENTS_D="$DX/agents.d"
 RX=$(ls "$DX/home"/report-*.md | head -1)
 check "e2e: mixed nothings are NOT an outage" "! grep -q 'PROVIDER RETURNED NOTHING' '$RX'"
 check "e2e: both nothings still named"        "grep -q 'provider returned NOTHING' '$RX' && grep -q 'returned no review' '$RX'"
+
+# ★ ZERO BYTES, which is the truest form of "the provider returned nothing" and
+# was the one shape that could not reach the verdict: the branch that counts it
+# was gated on `-s`, so a 0-byte artifact skipped it entirely and a sweep of
+# pure silence graded as an ordinary failed measurement. A provider that hangs
+# without writing to stdout OR stderr leaves exactly this.
+DZ=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DZ" chrome "$HITBOTH" "$HITBOTH"
+rm -f "$DZ/home/p1/$SLC-run1.md"
+: > "$DZ/home/p1/$SLC-run1.md.failed"                  # 0 bytes, not 2
+OUTZ=$(grade_only "$DZ" chrome || true)
+RZ=$(ls "$DZ/home"/report-*.md | head -1)
+check "e2e: 0-byte .failed is counted as no-output" "grep -q 'the provider returned NOTHING' '$RZ'"
+check "e2e: 0-byte sweep reaches the outage verdict" \
+  "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RZ'"
+RCZ=0; grade_only "$DZ" chrome >/dev/null 2>&1 || RCZ=$?
+check "e2e: 0-byte sweep exits 7"  "[ '$RCZ' -eq 7 ]"
 
 echo
 echo "$PASS passed, $FAIL failed"

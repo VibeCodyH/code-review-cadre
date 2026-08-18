@@ -836,6 +836,25 @@ content_empty() {  # <file> -> 0 when the file holds no content
 failure_kind() {  # <file> [rc] -> no-output | timed-out | failed
   local f="$1" rc="${2:-}"
   if content_empty "$f"; then echo no-output; return 0; fi
+  # ★ THE ADAPTER'S OWN VERDICT BEFORE THE EXIT CODE, the same rail classify_run
+  # follows and for the same reason: the adapter is the only layer that watched
+  # the run. This is not decoration here, it is most of the roster. Adapters
+  # NORMALISE their exit code on a clock kill -- agents.d/codex.sh:107 prints
+  # "codex was killed at the 900s timeout with no output" and then returns 0,
+  # because the trailing `rm -f` is the last command in the function. So for the
+  # codex family, and for agy.sh:137, the rc test below can NEVER see the
+  # timeout, and the case this whole issue is about would keep printing FAILED.
+  # Measured on codex 0.145.0, where `-o` is written only at final completion:
+  # a mid-turn kill leaves it empty, so this branch is the COMMON codex timeout,
+  # not the rare one.
+  # ★ head -3 for the reason classify_run anchors its markers there: past the
+  # edge, a timeout sentence is the reviewed code or a reviewer quoting one.
+  # Over-claiming here is cheap in a way it is not elsewhere -- failure_phrase
+  # is only ever asked about a run already binned `failed`, so the worst case is
+  # a wording change, never a bucket change and never a score.
+  if head -3 "$f" | grep -qE '^(DID NOT RUN|DID NOT COMPLETE).*[0-9]+s timeout'; then
+    echo timed-out; return 0
+  fi
   # 124 is GNU timeout's "the command timed out"; 137 is the -k SIGKILL landing
   # as 128+9 on a child that ignored the TERM. bin/agentcall wraps every adapter
   # in `timeout -k 30 "$TIMEOUT"`, so both codes are CADRE'S clock, not the
@@ -854,18 +873,30 @@ failure_kind() {  # <file> [rc] -> no-output | timed-out | failed
 # this one.
 # ★ Vocabulary is agents.d/codex.sh's ("killed at the Ns timeout", "with no
 # output", "Raise CADRE_TIMEOUT"), not a third phrasing for the same split.
+# ★ rc=0 is NOT printed. A failure line carrying `(rc=0)` sends an operator
+# hunting for a crash that never happened -- which is this issue's own disease
+# in miniature, and it is not hypothetical: an adapter that normalises its exit
+# code produces exactly that line. No exit code beats a meaningless one.
 failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
-  local f="$1" rc="$2" secs="${3:-}" after="" tmo="${CADRE_TIMEOUT:-900}"
+  local f="$1" rc="$2" secs="${3:-}" after="" rcp="" tmo="${CADRE_TIMEOUT:-900}"
   [ -n "$secs" ] && after=" after ${secs}s"
+  case "$rc" in ''|0) ;; *) rcp=" (rc=$rc)" ;; esac
   case "$(failure_kind "$f" "$rc")" in
     no-output)
       local burned=""
       case "$rc" in 124|137) burned=", burning the full ${tmo}s CADRE_TIMEOUT" ;; esac
-      echo "NO OUTPUT$after (rc=$rc): the provider returned nothing$burned" ;;
+      echo "NO OUTPUT$after$rcp: the provider returned nothing$burned" ;;
+    # ★ Says HOW it ended, and deliberately does not say how much the run had
+    # produced. Both routes into `timed-out` land here and they disagree on
+    # that: an rc=124 kill means the adapter was mid-flight, while the codex
+    # marker means the clock ran out with nothing written yet. The artifact
+    # itself states which, and a phrase that guessed would be a claim about the
+    # model built from a harness setting -- the exact move this issue exists to
+    # stop, one level up.
     timed-out)
-      echo "TIMED OUT$after: killed at the ${tmo}s CADRE_TIMEOUT while still producing output, so this is cadre's clock, not a verdict on the model -- raise CADRE_TIMEOUT and re-run" ;;
+      echo "TIMED OUT$after$rcp: killed at the ${tmo}s CADRE_TIMEOUT, so this is cadre's clock and not a verdict on the model -- raise CADRE_TIMEOUT and re-run" ;;
     *)
-      echo "FAILED$after (rc=$rc)" ;;
+      echo "FAILED$after$rcp" ;;
   esac
 }
 

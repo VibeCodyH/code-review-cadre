@@ -88,7 +88,7 @@ mapfile -t SCRUB < <(scrubbed_env)
 # everything, and the driver above it wrote COMPLETED across a sweep where 27 of
 # 30 requested reviews did not exist. Silence and success must not share an exit
 # code.
-ok_runs=0; bad_runs=0; dead_agents=""; windows=""
+ok_runs=0; bad_runs=0; dead_agents=""; windows=""; no_output_runs=0
 
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
@@ -207,6 +207,10 @@ for r in "${reviewers[@]}"; do
       *)
         mv "$f.part" "$f.failed"
         bad_runs=$((bad_runs + 1))
+        # Counted here so the pass can exit with the provider's cause rather
+        # than a generic 4. See the exit-7 block at the bottom of this file.
+        [ "$(failure_kind "$f.failed" "$rc")" = no-output ] &&
+          no_output_runs=$((no_output_runs + 1))
         echo "    $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed"), not counted as a run" ;;
     esac
 
@@ -270,6 +274,31 @@ if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
       echo "already on disk was lost. Resume after the reset time quoted above."
     } >&2
     exit 6
+  fi
+  # ★ 7 before 4, for the reason 6 comes before both: same "this pass measured
+  # nothing", opposite next move. Every single run came back EMPTY, which is a
+  # statement about the PROVIDER -- measured when every opencode-go model hung on
+  # `Reply with exactly: OK` while a direct-provider model answered instantly.
+  # Reported as 4, the operator goes hunting for a defect in a healthy tool and,
+  # worse, reads "not one usable review" as a property of the candidate.
+  # ★ The whole reason this lives HERE and not only in the grader: `cadre run`
+  # ABORTS on this exit code and never reaches grading, so a verdict computed
+  # downstream is one the common command can never print. 6 already had to solve
+  # exactly this; 7 solves it the same way.
+  # ★ Requires ALL of them. bad_runs also counts agents that were never
+  # installed and runs skipped after a budget stop, neither of which produced an
+  # artifact -- so a partial match here would blame a provider that was, in the
+  # missing-agent case, never called at all.
+  if [ "$no_output_runs" -eq "$bad_runs" ]; then
+    {
+      echo "cadre: pass '$label' measured NOTHING and every run came back EMPTY."
+      echo "$bad_runs of $bad_runs requested run(s) returned no content at all. That is"
+      echo "evidence about the PROVIDER, not about the candidate: a model answering"
+      echo "normally does not return zero bytes to every seat. Check the endpoint is up -- a"
+      echo "trivial prompt against the same route answers instantly when it is -- then"
+      echo "re-run. Nothing here scores the candidate either way."
+    } >&2
+    exit 7
   fi
   {
     echo "cadre: NO usable review on pass '$label'. $bad_runs requested run(s), none produced one."
