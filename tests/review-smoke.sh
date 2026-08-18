@@ -3135,6 +3135,30 @@ check "e2e: 0-byte sweep reaches the outage verdict" \
 RCZ=0; grade_only "$DZ" chrome >/dev/null 2>&1 || RCZ=$?
 check "e2e: 0-byte sweep exits 7"  "[ '$RCZ' -eq 7 ]"
 
+# ★ The outage verdict must never appear over a sweep that MEASURED something.
+# `provider_empty` is sticky once set and the pass loop keeps going, so the only
+# thing standing between a half-dead sweep and "NOT MEASURED -- PROVIDER
+# RETURNED NOTHING" printed above a real score is the `graded_passes -le 0`
+# guard the whole verdict block sits inside. That guard is not mine and could be
+# widened by someone with no reason to think about this; the test is here so it
+# cannot be, quietly.
+DQ=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DQ" chrome "$HITBOTH" "$HITBOTH"
+QSHA=$(git -C "$DQ/checkout" rev-parse HEAD); mkdir -p "$DQ/home/p2"
+printf 'p2|%s|%s|%s|%s\n' "$QSHA" "$DQ/checkout" "$QSHA" "$DQ/home/k.md" >> "$DQ/home/passes.conf"
+# ★ `cadre run`, not `cadre grade`. Grade means RE-grade -- it re-runs the
+# judges and ignores the seeded grade files -- so under that command the pass
+# that is supposed to SCORE here cannot, and the test would be measuring its own
+# fixture. The run path is also the one that matters: it is where exit 7 fires.
+RCQ=0
+OUTQ=$(run_gaunt_all "$DQ" good,good2 chrome) || RCQ=$?
+RQ=$(ls "$DQ/home"/report-*.md | head -1)
+check "e2e: a graded pass blocks the outage verdict" \
+  "! grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RQ'"
+check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY' <<<\"\$OUTQ\""
+check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
+check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
+check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

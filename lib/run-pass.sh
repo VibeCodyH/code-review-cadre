@@ -260,6 +260,11 @@ echo "  $ok_runs usable, $bad_runs not usable, of $((ok_runs + bad_runs)) reques
 # flake. Zero of N is the other case entirely: there is nothing to measure, and
 # the next pass will almost certainly go the same way. 4, because 2 is a usage
 # error and 3 is the credential refusal.
+# ★ 4 is the GENERIC "measured nothing", and two causes are pulled out of it
+# because the operator's next move is different: 6, the provider's usage window
+# closed (wait for the reset), and 7, every run came back empty (check the
+# endpoint is up). Both mean "nothing is wrong here to fix", which 4 does not.
+# This comment is the only table of these codes; add to it when you add one.
 if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
   # ★ 6 before 4. Both mean "this pass measured nothing", and they prescribe
   # opposite next moves: 4 says the cause is a defect to fix, 6 says the cause is
