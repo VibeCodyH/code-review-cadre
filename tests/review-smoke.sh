@@ -3447,8 +3447,7 @@ R=$(ls "$D/home"/report-*.md | head -1)
 check "cost: partial denominator named" \
   "grep -qE 'est\. tokens per blocking item hit: \*\*[0-9]+\*\* \(partial denominator\)' '$R'"
 
-# ============================================================================
-# coverage-per-changeset (#5): what the reviewer never looked at.
+# =====================================================================# coverage-per-changeset (#5): what the reviewer never looked at.
 # ============================================================================
 
 # ---- unit tests on the helpers (grade.sh is already sourced above, line ~542),
@@ -4200,6 +4199,62 @@ FJ="$D/state/reviews/one/findings.json"
 check "one: findings.json written"      "[ -s '$FJ' ]"
 check "one: status says skipped"        "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'skipped' ]"
 check "one: claims survived"            "[ \$(jq '.claims | length' '$FJ') -eq 4 ]"
+=======
+
+# ============================================================================
+# #2: the benchmark path gets the same record the panel path has.
+# ============================================================================
+# ★ grade.sh used to reconstruct every run's state by probing which suffix
+# existed on disk -- a state machine encoded in filenames, which cannot carry a
+# duration, an exit code or a prompt size at all.
+echo "== ★ #2: the benchmark run record =="
+DB=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DB" terse "$HITBOTH" "$HITBOTH"
+SLB2=$(slug terse)
+rm -f "$DB/home/p1/$SLB2-run1.md"            # make the agent actually run
+run_gaunt "$DB" good,good2 terse >/dev/null 2>&1 || true
+BREC="$DB/home/p1/runs.jsonl"
+check "bench: a record is written"     "[ -s '$BREC' ]"
+check "bench: dispatch before complete" \
+  "[ \$(grep -n dispatch '$BREC' | head -1 | cut -d: -f1) -lt \$(grep -n complete '$BREC' | tail -1 | cut -d: -f1) ]"
+check "bench: state is a field"        "grep -q '\"state\":\"ok\"' '$BREC'"
+# ★ `run` is the field the benchmark side needs and the panel side does not: one
+# pass asks the SAME seat for N runs, so seat alone does not identify a row.
+check "bench: the run index is recorded" "grep -q '\"run\":1' '$BREC'"
+check "bench: rc is recorded"          "grep -qE '\"rc\":[0-9]+' '$BREC'"
+check "bench: attempts are recorded"   "grep -qE '\"attempts\":[0-9]+' '$BREC'"
+check "bench: prompt size is recorded, not reconstructed" \
+  "grep -qE '\"prompt_bytes\":[1-9][0-9]*' '$BREC'"
+check "bench: reader round-trips the state" \
+  "[ \"\$(record_rows '$BREC' complete run state | awk -F'\t' '\$1==1{print \$2}')\" = ok ]"
+
+# ★ THE gap #12 had to leave open. At grade time the exit code was gone, so a
+# clock kill and an ordinary crash read identically and #12 deliberately refused
+# to guess one from bytes. The record carries rc, so a pass WITH a record can
+# name the timeout -- and a pass WITHOUT one must still refuse.
+DT2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DT2" terse "$HITBOTH" "$HITBOTH"
+rm -f "$DT2/home/p1/$SLB2-run1.md"
+printf 'a reviewer thinking out loud before the clock got it\n' > "$DT2/home/p1/$SLB2-run1.md.failed"
+printf '{"event":"complete","pass":"p1","seat":"terse","run":1,"state":"failed","rc":124,"secs":900}\n' \
+  > "$DT2/home/p1/runs.jsonl"
+OUTT=$(CADRE_HOME="$DT2/home" CADRE_WORK="$DT2/work" CADRE_AGENTS_D="$DT2/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$DT2/bin:$PATH" "$ROOT/bin/cadre" grade terse 1 p1 2>&1 || true)
+RT2=$(ls "$DT2/home"/report-*.md | head -1)
+check "bench: a recorded rc names the timeout at grade time" \
+  "grep -q 'TIMED OUT' '$RT2'"
+check "bench: and says it is not a verdict on the model" \
+  "grep -q \"cadre's own clock killed it\" '$RT2'"
+
+# ★ The legacy half of the same criterion: a pass with NO record still grades,
+# and still declines to claim a timeout it cannot know about. Identical
+# artifact, no runs.jsonl.
+DL=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DL" terse "$HITBOTH" "$HITBOTH"
+rm -f "$DL/home/p1/$SLB2-run1.md"
+printf 'a reviewer thinking out loud before the clock got it\n' > "$DL/home/p1/$SLB2-run1.md.failed"
+OUTL=$(CADRE_HOME="$DL/home" CADRE_WORK="$DL/work" CADRE_AGENTS_D="$DL/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$DL/bin:$PATH" "$ROOT/bin/cadre" grade terse 1 p1 2>&1 || true)
+RL=$(ls "$DL/home"/report-*.md | head -1)
+check "bench: no record => no timeout claimed"  "! grep -q 'TIMED OUT' '$RL'"
+check "bench: legacy pass still names the run"  "grep -q 'produced output but no usable review' '$RL'"
 
 echo
 echo "$PASS passed, $FAIL failed"

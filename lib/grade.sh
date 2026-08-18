@@ -575,6 +575,13 @@ remove that directory and re-run."
     { echo "## $label${pass_clean:+ (CLEAN - false-positive probe, no planted defects)}"; echo; } >> "$report"
 
     local items; items=$(key_items "$keyfile")
+    # ★ The pass's run record, read ONCE (#2). Empty for a pass graded before
+    # run-pass.sh wrote one, which is the legacy case the suffix-probing below
+    # still exists to serve -- criterion 2's "edge-matching survives only as a
+    # fallback". A pass with a record gets facts; a pass without gets the best
+    # inference from filenames, and the two must not be confused for each other.
+    local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
+    pass_runs=$(record_rows "$pass_record" complete run state rc secs)
     local n
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
@@ -612,10 +619,16 @@ remove that directory and re-run."
         # ★ "the adapter failed" was a claim, not an observation (#12). The same
         # line covered a provider that returned nothing, a live adapter killed
         # by cadre's own clock, and a real adapter crash -- and it sent the
-        # reader to the adapter for all three. The discriminator survives on
-        # disk even though the exit code does not, so failure_kind is asked
-        # WITHOUT an rc here: a no-output artifact is stated as fact, and the
-        # timeout case is left unclaimed rather than guessed at from bytes.
+        # reader to the adapter for all three.
+        # ★ #12 had to leave the TIMEOUT case unclaimed here, because the exit
+        # code was gone by grade time and guessing one from bytes would be the
+        # same manufactured verdict pointed the other way. The record carries
+        # `rc`, so that gap closes: a pass with a record can name a clock kill
+        # at grade time, and a pass without one still declines to guess.
+        local rec_rc=""
+        if [ -n "$pass_runs" ]; then
+          rec_rc=$(printf '%s\n' "$pass_runs" | awk -F '\t' -v r="$n" '$1 == r { print $3; exit }')
+        fi
         # ★ -e, not -s. A hung provider that wrote nothing to stdout OR stderr
         # leaves run-pass.sh a 0-byte `.part` to rename, so the truest form of
         # "the provider returned nothing" is the one a `-s` gate skips entirely:
@@ -624,14 +637,19 @@ remove that directory and re-run."
         # Every other artifact test in this block stays `-s` on purpose -- an
         # empty .partial or .inconclusive really is nothing to report.
         if [ -e "$rf.failed" ]; then
-          if [ "$(failure_kind "$rf.failed")" = misconfigured ]; then
-            why="MISCONFIGURED on this box, the reviewer was never called: $(misconfigured_line "$rf.failed" | cut -c1-120)"
-          elif content_empty "$rf.failed"; then
-            why="the provider returned NOTHING (no content in $sl-run$n.md.failed)"
-            no_output_runs=$((no_output_runs + 1))
-          else
-            why="the run produced output but no usable review, see $sl-run$n.md.failed"
-          fi
+          case "$(failure_kind "$rf.failed" "$rec_rc")" in
+            misconfigured)
+              why="MISCONFIGURED on this box, the reviewer was never called: $(misconfigured_line "$rf.failed" | cut -c1-120)" ;;
+            no-output)
+              why="the provider returned NOTHING (no content in $sl-run$n.md.failed)"
+              no_output_runs=$((no_output_runs + 1)) ;;
+            # Only reachable with a record: `rec_rc` is empty otherwise and
+            # failure_kind declines to claim a timeout without one.
+            timed-out)
+              why="TIMED OUT -- cadre's own clock killed it, not a verdict on the model; raise CADRE_TIMEOUT and re-run (see $sl-run$n.md.failed)" ;;
+            *)
+              why="the run produced output but no usable review, see $sl-run$n.md.failed" ;;
+          esac
           [ -s "$rf.partial" ] && why="$why (an earlier attempt stopped early, see $sl-run$n.md.partial)"
         fi
         echo "- run $n: **UNUSABLE** ($why)" >> "$report"
