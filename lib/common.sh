@@ -900,6 +900,113 @@ failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
   esac
 }
 
+# ---- the per-run record (#2) ------------------------------------------------
+# ★ Why this exists. Every adapter's stdout IS its own format, so status and
+# timing were recovered by grepping prose: run-review.sh reconstructed a seat's
+# elapsed seconds with `sed -n 's/.*in \([0-9]*\)s.*/\1/p'` over its own console
+# log. That is a FIELD being parsed back out of a sentence, and the sentence was
+# written to a scratch file the panel deleted on the way out -- so the first
+# fourteen panels' timings are simply gone, not reconstructible, because no
+# artifact on disk carries them.
+#
+# ★ Written DURING the panel, not assembled after it. That is the whole point of
+# the append-only shape: a panel killed halfway still leaves a record of every
+# seat it dispatched. Assembling at the end means a kill loses everything.
+#
+# ★ EMPTY IS NOT ZERO, and JSON `null` is why this is JSONL rather than another
+# TSV. A seat whose seconds were never measured must not carry a 0 that averages
+# like a real measurement and pulls every mean toward the floor -- the rule
+# aggregate.sh and grade.sh already follow, now with a type that can express it.
+
+# One field value, escaped for JSON. Backslash BEFORE quote, or the escape this
+# adds is itself re-escaped. Control characters are dropped rather than encoded:
+# one event is one LINE, and a stray newline inside a value would split it into
+# two malformed records.
+# ★ No `\t` in the sed script. BSD sed reads it as a literal `t` -- the same trap
+# that silently disarmed the chrome strip on macOS. `tr` handles the whole
+# control range in one pass and is portable.
+json_escape() {
+  printf '%s' "${1:-}" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# record_event <logfile> <name>=<value>...
+#
+# Appends ONE JSON object as ONE line. A name ending in `#` is numeric: it is
+# emitted bare, or as `null` when the value is empty. Every other name is a
+# string, and an empty value stays `""` -- an unmeasured NUMBER and an empty
+# STRING are different facts and the record keeps them apart.
+#
+# ★ Atomic by construction, because seats run in parallel under --jobs and this
+# is the first file in that path two writers touch at once. One event is one
+# `printf` of one short line to a file opened O_APPEND, which is well under the
+# 4KB a write is guaranteed not to be torn at. Anything that built the line in
+# two writes, or seeked, would interleave.
+record_event() {
+  local log="$1"; shift
+  local out="" nv n v sep=""
+  for nv in "$@"; do
+    n=${nv%%=*}; v=${nv#*=}
+    if [ "${n%\#}" != "$n" ]; then
+      n=${n%\#}
+      out="$out$sep\"$(json_escape "$n")\":${v:-null}"
+    else
+      out="$out$sep\"$(json_escape "$n")\":\"$(json_escape "$v")\""
+    fi
+    sep=","
+  done
+  printf '{%s}\n' "$out" >> "$log"
+}
+
+# record_rows <logfile> <event> <key>...
+#
+# One tab-separated row per matching event, in file order, with the requested
+# keys in the order given. A key the record does not carry, or one holding JSON
+# `null`, prints EMPTY -- never 0, never the string "null".
+#
+# ★ Parsing our OWN flat schema, which is the distinction #2 draws: a field read
+# from a record cadre wrote is not the same act as a regex over whatever an
+# adapter chose to print. Values are scanned character by character rather than
+# with a greedy pattern, so an escaped quote inside a spec name cannot end the
+# string early.
+record_rows() {
+  local log="$1" want="$2"; shift 2
+  [ -s "$log" ] || return 0
+  awk -v want="$want" -v keys="$*" '
+    function val(line, key,   i, n, c, out, esc) {
+      i = index(line, "\"" key "\":")
+      if (i == 0) return ""
+      i += length(key) + 3
+      c = substr(line, i, 1)
+      if (c != "\"") {                      # bare token: number, null, bool
+        out = ""
+        while (i <= length(line)) {
+          c = substr(line, i, 1)
+          if (c == "," || c == "}") break
+          out = out c; i++
+        }
+        return (out == "null") ? "" : out
+      }
+      i++; out = ""; esc = 0
+      while (i <= length(line)) {
+        c = substr(line, i, 1)
+        if (esc) { out = out c; esc = 0 }
+        else if (c == "\\") esc = 1
+        else if (c == "\"") break
+        else out = out c
+        i++
+      }
+      return out
+    }
+    BEGIN { nk = split(keys, k, " ") }
+    {
+      if (val($0, "event") != want) next
+      row = ""
+      for (j = 1; j <= nk; j++) row = row (j > 1 ? "\t" : "") val($0, k[j])
+      print row
+    }
+  ' "$log"
+}
+
 # Classify one agent run: ok | degraded | inconclusive | failed. THE one copy of
 # this rule.
 #

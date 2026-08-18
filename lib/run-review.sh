@@ -22,6 +22,12 @@ REPO="${1:?usage: run-review.sh <repo> <base-rev> <out-dir> <jobs> <spec ...>}"
 BASE_REV="${2-}"
 MODE=diff; [ -n "$BASE_REV" ] || MODE=target
 OUT="${3:?need an out dir}"
+# ★ NOT `.log-*`, `.status-*` or `.len-*`. Those three globs are wiped at the
+# bottom of this file, and a record that a cleanup line can match is a record
+# that will eventually be deleted by someone extending that line. The name is
+# the enforcement. Per-panel and under $OUT, because `cadre receipts` finds
+# records by walking panel roots.
+RUNLOG="$OUT/runs.jsonl"
 JOBS="${4:-1}"
 shift 4 2>/dev/null || shift $#
 reviewers=("$@")
@@ -470,6 +476,28 @@ mapfile -t SCRUB < <(scrubbed_env)
 
 # ---- one reviewer ------------------------------------------------------------
 
+# One completion event per terminal path in run_one. Every `return` in that
+# function pairs with a call to this, so "dispatched but never completed" stays
+# a fact about the run rather than an artefact of where the code exits.
+#
+# ★ secs is passed EMPTY, never 0, for a path that never timed anything -- a
+# roster member that was not installed did not take zero seconds, it was never
+# measured, and record_event turns an empty numeric into `null`. Bytes come from
+# the artifact rather than any log line, so the number always describes the file
+# that is actually on disk.
+record_complete() {  # <slug> <spec> <state> [rc] [secs]
+  local sl="$1" spec="$2" state="$3" rc="${4:-}" secs="${5:-}" art bytes
+  art="$OUT/$sl.md"
+  [ -s "$art" ] || art="$OUT/$sl.md.partial"
+  [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
+  [ -s "$art" ] || art="$OUT/$sl.md.failed"
+  bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
+  record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
+    seat="$spec" family="$(spec_family "$spec")" slug="$sl" \
+    state="$state" "rc#=$rc" "secs#=$secs" "bytes#=${bytes:-0}" \
+    "prompt_bytes#=$(cat "$OUT/.len-$sl" 2>/dev/null)" "ts#=$(date +%s)"
+}
+
 run_one() {
   local spec="$1" idx="$2"
   local sl; sl=$(slug "$spec")
@@ -482,6 +510,13 @@ run_one() {
   # prompt. Overwrite it at the dispatch site so adapter failures still retain
   # the exact prompt size after the scratch files disappear.
   echo 0 > "$len"
+  # ★ Recorded BEFORE anything can go wrong, which is the entire reason the log
+  # is append-only rather than assembled at the end: a panel killed here leaves
+  # proof this seat was dispatched. Every `return` below has a matching
+  # `complete`, so a dispatch with no completion IS the signal that a seat was
+  # cut off mid-flight -- not a gap to be guessed at later.
+  record_event "$RUNLOG" event=dispatch panel="$(basename "$OUT")" \
+    seat="$spec" family="$(spec_family "$spec")" slug="$sl" "ts#=$(date +%s)"
   # ★ A roster member that is not installed is a FAILURE, not a skip. run-pass
   # prints "skipping" and moves on, which in a live review is indistinguishable
   # from a reviewer that ran and found nothing.
@@ -491,13 +526,18 @@ run_one() {
     echo "NOT INSTALLED: $agent is not on PATH" > "$f.failed"
     echo "failed" > "$st"
     echo "  $spec: NOT INSTALLED" >> "$log"
+    record_complete "$sl" "$spec" failed
     return 0
   fi
 
   # Its own pristine checkout. Reviewers never share a tree, so nothing needs
   # resetting between them and --jobs is safe by construction.
   dir="$WORKDIR/r$idx"
-  cp -a "$TPL" "$dir" || { echo "checkout copy failed" > "$f.failed"; echo failed > "$st"; return 0; }
+  cp -a "$TPL" "$dir" || {
+    echo "checkout copy failed" > "$f.failed"; echo failed > "$st"
+    record_complete "$sl" "$spec" failed
+    return 0
+  }
 
   local m=(); [ -n "$model" ] && m=(-M "$model")
   start=$(date +%s)
@@ -566,8 +606,24 @@ run_one() {
       echo failed > "$st"
       echo "  $spec: $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed")" >> "$log" ;;
   esac
+  # After the `mv`, so `bytes` describes the artifact under its final name.
+  record_complete "$sl" "$spec" "$state" "$rc" "$took"
   rm -rf "$dir"
 }
+
+# ★ A gated-off seat is a STATE, not a special case. Recording it as an ordinary
+# completion whose `state` is `skipped` is what lets every downstream renderer
+# read one stream instead of joining the record against a second list -- which
+# is the join that produced slots.tsv's separate skipped block and the Receipts
+# table's dependence on that file. Zero spend is MEASURED here: a seat that
+# never ran sent no prompt and received no bytes, so those are real zeroes.
+# `secs` stays null, because nothing was timed.
+for row in "${skipped_rows[@]}"; do
+  IFS=$'\t' read -r sk_spec _sk_gate _sk_reason <<< "$row"
+  record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
+    seat="$sk_spec" family="$(spec_family "$sk_spec")" slug="$(slug "$sk_spec")" \
+    state=skipped "rc#=" "secs#=" "bytes#=0" "prompt_bytes#=0" "ts#=$(date +%s)"
+done
 
 i=0; running=0
 for spec in "${reviewers[@]}"; do
@@ -694,27 +750,40 @@ done
 # and append-safe. Bytes come from the artifact rather than the log so the
 # number always describes the file that is actually there.
 {
+  # ★ Rendered FROM the record, not reconstructed from prose. This block used to
+  # recover a seat's elapsed seconds with
+  #   sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl"
+  # -- a number parsed back out of the sentence that had printed it, from a
+  # scratch file deleted moments later. Every field below is now read as a field.
+  # Same file, same columns, same order: bin/cadre's `receipts` and
+  # lib/aggregate.sh both parse slots.tsv positionally and must not notice.
+  # ★ The ROSTER drives the rows, not the record. Deriving them from what the
+  # log happens to contain would silently drop a seat that was dispatched and
+  # never completed -- which is exactly the seat worth a row, and the same
+  # reasoning aggregate.sh gives for trusting the roster line over filenames.
+  # A seat with no completion event prints `failed` with EMPTY secs: it did not
+  # take zero seconds, it was never measured.
+  all_complete=$(record_rows "$RUNLOG" complete seat family state bytes secs prompt_bytes)
   for spec in "${reviewers[@]}"; do
-    sl=$(slug "$spec")
-    st=$(cat "$OUT/.status-$sl" 2>/dev/null || echo failed)
-    # The log line is "  <spec>: <n> bytes in <t>s" or a failure sentence; take
-    # the seconds if they are there and leave the field empty if they are not,
-    # rather than inventing a zero that would average like a real measurement.
-    secs=$(sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl" 2>/dev/null | head -1)
-    prompt_bytes=$(cat "$OUT/.len-$sl" 2>/dev/null)
-    art="$OUT/$sl.md"
-    [ -s "$art" ] || art="$OUT/$sl.md.partial"
-    [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
-    [ -s "$art" ] || art="$OUT/$sl.md.failed"
-    bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
+    rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
+    rec_row="${rec_row//$'\t'/$'\034'}"
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt <<< "$rec_row"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$(basename "$OUT")" "$spec" "$(spec_family "$spec")" \
-      "$st" "${bytes:-0}" "${secs:-}" "${prompt_bytes:-}"
+      "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
+      "${r_state:-failed}" "${r_bytes:-0}" "$r_secs" "$r_prompt"
   done
+  # Skipped seats come from the same stream, for the same reason: one source, so
+  # a change to how spend is recorded cannot land in one renderer and not the
+  # other. Still roster-driven, and still `0\t\t0` -- measured zero spend, and
+  # seconds that were never measured at all.
   for row in "${skipped_rows[@]}"; do
     IFS=$'\t' read -r spec _gate _reason <<< "$row"
-    printf '%s\t%s\t%s\tskipped\t0\t\t0\n' \
-      "$(basename "$OUT")" "$spec" "$(spec_family "$spec")"
+    rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
+    rec_row="${rec_row//$'\t'/$'\034'}"
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt <<< "$rec_row"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
+      "${r_state:-skipped}" "${r_bytes:-0}" "$r_secs" "${r_prompt:-0}"
   done
 } > "$OUT/slots.tsv"
 
@@ -725,11 +794,15 @@ done
   echo "| seat | status | secs | prompt KB | review KB | est. tokens |"
   echo "|---|---|---|---|---|---|"
   total_secs=0; have_secs=0; total_prompt=0; have_prompt=0; total_review=0; total_est=0
+  # ★ Reads the RECORD, not slots.tsv. Rendering the report off a file that is
+  # itself a rendering makes the second renderer inherit whatever the first one
+  # decided to drop, and the point of #2 is that every view answers to the same
+  # source. Skipped seats are in this stream too, as `state=skipped`.
   while IFS= read -r slot_row; do
     # Tabs are IFS whitespace, so plain `read` collapses the empty secs field in
     # a skipped row. Translate to a non-whitespace delimiter before splitting.
     slot_row="${slot_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes <<< "$slot_row"
+    IFS=$'\034' read -r spec st bytes secs prompt_bytes <<< "$slot_row"
     prompt_kb=""
     if [ -n "${prompt_bytes:-}" ]; then
       prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
@@ -742,7 +815,7 @@ done
     total_review=$((total_review + ${bytes:-0}))
     printf '| `%s` | %s | %s | %s | %s | %s |\n' \
       "$spec" "$st" "${secs:-}" "$prompt_kb" "$review_kb" "$est_tokens"
-  done < "$OUT/slots.tsv"
+  done < <(record_rows "$RUNLOG" complete seat state bytes secs prompt_bytes)
   total_secs_display=""; [ "$have_secs" -eq 1 ] && total_secs_display="$total_secs"
   total_prompt_kb=""; [ "$have_prompt" -eq 1 ] && \
     total_prompt_kb=$(awk -v n="$total_prompt" 'BEGIN { printf "%.1f", n / 1024 }')
