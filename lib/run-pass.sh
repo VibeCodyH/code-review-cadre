@@ -199,10 +199,15 @@ for r in "${reviewers[@]}"; do
         mv "$f.part" "$f.inconclusive"
         bad_runs=$((bad_runs + 1))
         echo "    INCONCLUSIVE after ${took}s, returned text but no review, kept as $(basename "$f.inconclusive"), not scored" ;;
+      # ★ One bucket, three messages (#12). A clock kill with a live adapter
+      # behind it, a provider that returned nothing, and a refusal all land in
+      # .failed and they call for opposite responses -- raise the timeout, wait
+      # out the outage, drop the seat. failure_phrase reads the discriminator
+      # classify_run already computed; the BUCKET is deliberately unchanged.
       *)
         mv "$f.part" "$f.failed"
         bad_runs=$((bad_runs + 1))
-        echo "    FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed"), not counted as a run" ;;
+        echo "    $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed"), not counted as a run" ;;
     esac
 
     # Out of budget: stop this agent HERE. The remaining runs of this pass, and

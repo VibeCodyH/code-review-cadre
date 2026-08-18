@@ -557,10 +557,14 @@ run_one() {
       mv "$f.part" "$f.inconclusive"
       echo inconclusive > "$st"
       echo "  $spec: INCONCLUSIVE after ${took}s (rc=$rc), returned text but no review, kept as $(basename "$f.inconclusive")" >> "$log" ;;
+    # ★ Same one-bucket-three-messages split as the benchmark path (#12), in the
+    # same function, for the same reason the classification is shared: a panel
+    # operator reading "FAILED (rc=124)" cannot tell a timeout kill from a
+    # provider outage, and the two need opposite responses.
     *)
       mv "$f.part" "$f.failed"
       echo failed > "$st"
-      echo "  $spec: FAILED after ${took}s (rc=$rc), kept as $(basename "$f.failed")" >> "$log" ;;
+      echo "  $spec: $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed")" >> "$log" ;;
   esac
   rm -rf "$dir"
 }
