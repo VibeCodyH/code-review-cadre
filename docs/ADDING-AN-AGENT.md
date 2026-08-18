@@ -82,6 +82,36 @@ wrong, say `DID NOT RUN` and get `failed`, which is stronger information. What
 and the *model* declined the job. One of the three measured examples was an
 unmarked truncation, so no `_TRUNCATED` was ever coming.
 
+### Declaring the state directly, when you know it
+
+The markers above are text, and cadre reads them back out of the artifact. That
+works, and every shipped adapter uses it. It has one weakness: text a *model*
+controls can collide with text the contract reserves. A synthesis asked to say
+which reviewers were truncated quotes `_TRUNCATED` and classifies itself as
+truncated; a short review that merely discusses rate limiting trips the keyword
+scan. No text test can tell those apart, because both are legitimate.
+
+If your adapter *knows* — it read a `stopReason`, it caught its own timeout —
+say so out of band:
+
+```sh
+run_youragent() {
+  ...
+  cadre_state degraded "stopReason=MaxTokens"     # ok | degraded | inconclusive | failed
+}
+```
+
+`cadre_state` outranks the markers, the exit code, and every inference cadre
+would otherwise make. Nothing the model prints can forge one, because printing
+is not calling it.
+
+**It is optional.** Say nothing and the marker contract above is still in
+charge — that is not a deprecated path. Two things it will not do for you: an
+unknown state is ignored rather than believed (a wrong field would outrank the
+text, so falling back is the safe direction), and declaring `ok` will not
+rescue an artifact that came back empty. It is also a no-op when `agentcall`
+runs outside cadre, so it costs a standalone caller nothing.
+
 The one thing this asks of you: **do not append your own trailing summary to a
 review.** The check is edge-anchored, so a "review complete, 0 issues" footer your
 wrapper adds would satisfy it on behalf of a model that said nothing.

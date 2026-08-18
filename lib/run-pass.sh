@@ -147,11 +147,16 @@ for r in "${reviewers[@]}"; do
     # exists to catch. Free tiers are the reason this loop exists, see README.
     attempt=1
     while :; do
+      # Same channel as the panel path, same reason for the temp path: $OUT
+      # holds every other run's output and the adapter must not learn it.
+      meta=$(mktemp); rm -f "$f.part.meta"
       "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
-        CADRE_PASS_BASE="$BASE" \
+        CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
         "$CADRE_ROOT/bin/agentcall" "$agent" -d "$CHECKOUT" -m ro "${m[@]}" \
         < "$PROMPT" > "$f.part" 2>&1
       rc=$?
+      [ -s "$meta" ] && mv "$meta" "$f.part.meta"
+      rm -f "$meta"
       # ★ Same order as the review path, same reason: the adapter's own verdict
       # outranks a keyword scan. A short partial that merely DISCUSSES rate
       # limiting used to drive real retries and then get cadre's own note
@@ -246,6 +251,10 @@ for r in "${reviewers[@]}"; do
       seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
       state="$state" "rc#=$rc" "secs#=$took" "bytes#=${run_bytes:-0}" \
       "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" "ts#=$(date +%s)"
+    # Same rule as the panel path: the declaration is consumed, the state lives
+    # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this
+    # slot by this one's field.
+    rm -f "$f.part.meta"
 
     # Out of budget: stop this agent HERE. The remaining runs of this pass, and
     # every later pass in the sweep, would produce the same refusal. Loud, and

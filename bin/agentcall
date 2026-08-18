@@ -58,6 +58,45 @@ AGENTS=$(printf '%s\n' $AGENTS | sort | tr '\n' ' ')
 export -n CADRE_HOME CADRE_ROOT CADRE_AGENTS_D 2>/dev/null || true
 unset CADRE_JUDGE CADRE_PASS_DIR CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
 
+# ★ An adapter's way to DECLARE what happened, out of band (#2 criterion 2).
+#
+# Until now the only channel was a marker in the review text, which cadre then
+# edge-matched back out -- and text a model controls can collide with text the
+# contract reserves. Both known collisions are that shape: a synthesis asked to
+# discuss which reviewers were truncated quotes `_TRUNCATED` and classifies
+# ITSELF as truncated, and a short review that merely mentions rate limiting
+# trips the keyword scan. A field written by the ADAPTER, on a channel the model
+# never touches, cannot be forged by anything the model says.
+#
+# Optional, and deliberately so. Adapters that say nothing keep working exactly
+# as before: the dispatch layer falls back to the marker contract, which is
+# still the documented way to signal and is what every shipped adapter uses.
+# This is for an adapter that KNOWS -- it read a stopReason, it caught its own
+# timeout -- and should not have to spell that knowledge into prose and hope.
+#
+# ★ No-op when CADRE_RUN_META is unset, which is the case for every direct
+# `agentcall` invocation. agentcall is a standalone tool and must not require
+# cadre to be driving it.
+# ★ export -n, and CADRE_RUN_META is on the scrub list: the path is a file cadre
+# owns, and handing an agent a writable path into cadre's own bookkeeping is
+# exactly the containment the scrub exists to keep. Adapters run as functions in
+# THIS shell, so they can still see it; the spawned CLI cannot.
+export -n CADRE_RUN_META 2>/dev/null || true
+cadre_state() {  # cadre_state <ok|degraded|inconclusive|failed> [note]
+  [ -n "${CADRE_RUN_META:-}" ] || return 0
+  case "${1:-}" in
+    ok|degraded|inconclusive|failed) ;;
+    # A typo must not silently become a state. Refusing leaves the marker
+    # contract in charge, which is the safe direction: a wrong FIELD outranks
+    # the text and would be believed, where a missing one just falls back.
+    *) echo "agentcall: cadre_state got '${1:-}', which is not a state; ignored" >&2
+       return 0 ;;
+  esac
+  printf 'state=%s\n' "$1" >> "$CADRE_RUN_META"
+  [ -n "${2:-}" ] && printf 'note=%s\n' "$(printf '%s' "$2" | tr -d '\000-\037')" >> "$CADRE_RUN_META"
+  return 0
+}
+
 # --print-command: print the native invocation instead of running it.
 DRY="${AGENTCALL_DRY:-}"
 _run() {

@@ -588,11 +588,20 @@ run_one() {
     printf '%s\n%s\n' "$PROMPT_SHA" "$asha" > "$shaf"
   fi
   while :; do
+    # ★ A TEMP path, never "$f.part.meta". The meta file is handed to the
+    # adapter, and $OUT is the directory holding every other reviewer's output --
+    # the exact thing CADRE_WORK was added to the scrub list to protect. A temp
+    # path gives an adapter somewhere to declare its state while telling it
+    # nothing about where the panel lives. Moved next to the artifact afterward,
+    # by cadre, so classify_run can find it by convention.
+    meta=$(mktemp); rm -f "$f.part.meta"
     "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
-      CADRE_PASS_BASE="$BASE" \
+      CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
       "$CADRE_ROOT/bin/agentcall" "$agent" -d "$dir" -m ro "${m[@]}" \
       < "$PROMPT" > "$f.part" 2>&1
     rc=$?
+    [ -s "$meta" ] && mv "$meta" "$f.part.meta"
+    rm -f "$meta"
     # ★ The adapter's own verdict outranks the keyword match HERE too, not only
     # inside classify_run. rate_limited() is a keyword scan over small files, so
     # a short partial review that merely DISCUSSES rate limiting drove three
@@ -670,6 +679,12 @@ run_one() {
   esac
   # After the `mv`, so `bytes` describes the artifact under its final name.
   record_complete "$sl" "$spec" "$state" "$rc" "$took"
+  # ★ The declaration has done its job: classify_run read it, and runs.jsonl is
+  # where the state lives durably now. Leaving it behind would strand a `.meta`
+  # naming an artifact that has since been renamed -- and a stale declaration
+  # that outlives the run it describes is worse than none, because the next
+  # attempt at this slot would be classified by the last one's field.
+  rm -f "$f.part.meta"
   rm -rf "$dir"
 }
 

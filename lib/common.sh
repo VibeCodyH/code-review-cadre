@@ -1343,7 +1343,37 @@ classify_run() {
   # Same rule, one copy; the only difference is whether the truncation MARKER is
   # readable in that context. See the marker check below for why it is not.
   local f="$1" rc="$2" ctx="${3:-run}"
+  # ★ THE ADAPTER'S DECLARED STATE, ahead of every inference below (#2). Found
+  # by CONVENTION at "$f.meta" rather than passed in, because three call sites
+  # string-compare this function's result and a new parameter would have to be
+  # threaded through all of them -- the same signature rail #12 established.
+  #
+  # This is the criterion-2 half: state read as a FIELD, with the marker
+  # edge-matching below surviving as the fallback for adapters that declare
+  # nothing and for legacy artifacts already on disk.
+  #
+  # ★ The field wins over the text, and that is the whole point: text a MODEL
+  # controls can collide with text the contract reserves, and both known
+  # collisions are that shape. A synthesis asked to discuss which reviewers were
+  # truncated quotes `_TRUNCATED` and classified ITSELF as truncated; the ctx
+  # narrowing below relocated that collision onto the exact spot the prompt
+  # drives the model toward and could not remove it, because no text test can.
+  # A declared field can: the adapter writes it on a channel the model never
+  # touches, so nothing the model says can forge one.
+  # ★ ...which is also why this is checked in BOTH contexts. A synthesizer that
+  # quotes a marker still cannot self-classify, because quoting is not writing
+  # to the meta file. The ctx narrowing stays for adapters that declare nothing.
+  # ★ EMPTY still wins. An adapter that declared `ok` and then returned nothing
+  # is describing an intention, not a result, and a chrome-only artifact scored
+  # as a clean review is the worst failure in the system.
   if content_empty "$f"; then echo failed; return 0; fi
+  if [ -s "$f.meta" ]; then
+    local declared
+    declared=$(sed -n 's/^state=//p' "$f.meta" | tail -1)
+    case "$declared" in
+      ok|degraded|inconclusive|failed) echo "$declared"; return 0 ;;
+    esac
+  fi
   # ★ THE ADAPTER'S OWN VERDICT COMES FIRST, both markers together, ahead of
   # anything inferred from the text or the exit code. The adapter is the only
   # layer that watched the run; everything below this is cadre guessing from
@@ -1498,8 +1528,14 @@ retry_wait() {
 # hands each agent its own -d.
 # NOT scrubbed: CADRE_TIMEOUT (agentcall reads it from its own environment to
 # size the timeout) and CADRE_PASS_BASE (adapters need it, it is only a git rev).
+# ★ CADRE_RUN_META is on the list even though the dispatch layer sets it
+# explicitly on the agentcall command line. Scrubbing stops an OUTER environment
+# from supplying one: it names a file cadre will read a state field out of, so a
+# value arriving from outside would let a caller pre-declare the outcome of a
+# run it does not own.
 CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE
                  CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
+                 CADRE_RUN_META
                  CADRE_PASS_DIR CADRE_AGENTS_D CADRE_WORK
                  CADRE_PRERUN CADRE_PRERUN_TIMEOUT
                  CADRE_ADJUDICATOR CADRE_LEDGER CADRE_ROSTER

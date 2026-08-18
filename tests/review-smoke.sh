@@ -4256,6 +4256,110 @@ RL=$(ls "$DL/home"/report-*.md | head -1)
 check "bench: no record => no timeout claimed"  "! grep -q 'TIMED OUT' '$RL'"
 check "bench: legacy pass still names the run"  "grep -q 'produced output but no usable review' '$RL'"
 
+# ============================================================================
+# #2 criterion 2: the adapter DECLARES its state, out of band.
+# ============================================================================
+# ★ The only channel used to be a marker in the review text, which cadre
+# edge-matched back out -- and text a MODEL controls can collide with text the
+# contract reserves. Both known collisions are that shape.
+echo "== ★ #2: state as a declared field =="
+MD=$(mktemp -d -p "$SANDBOX")
+printf 'a fluent review with findings\nVerdict: ship it\n' > "$MD/art"
+
+check "meta: no declaration => the text still decides" \
+  "[ \$(classify_run '$MD/art' 0) = ok ]"
+printf 'state=degraded\n' > "$MD/art.meta"
+check "meta: a declared state outranks the text" \
+  "[ \$(classify_run '$MD/art' 0) = degraded ]"
+# ★ ...including against the EXIT CODE, which is the case the marker contract
+# already privileged: an adapter that stopped early and also exited nonzero.
+check "meta: it outranks a nonzero exit too" \
+  "[ \$(classify_run '$MD/art' 1) = degraded ]"
+
+# ★ THE collision this criterion exists to kill. A synthesis is ASKED to say
+# which reviewers were truncated, so its own text quoting the marker is the most
+# likely legitimate answer in the system -- and no text test can tell that from
+# a real truncation. Quoting is not declaring.
+printf 'The codex seat stopped early:\n_TRUNCATED, it was killed at the timeout._\nVerdict: ship it\n' \
+  > "$MD/quoted"
+check "meta: quoting a marker is not declaring a state" \
+  "[ \$(classify_run '$MD/quoted' 0 synth) = ok ]"
+printf 'state=degraded\n' > "$MD/quoted.meta"
+check "meta: but the adapter can still declare one" \
+  "[ \$(classify_run '$MD/quoted' 0 synth) = degraded ]"
+
+# ★ EMPTY still wins. An adapter that declared `ok` and returned nothing is
+# describing an intention, not a result -- and a chrome-only artifact scored as
+# a clean review is the worst failure in the system.
+printf '\033[0m\n   \n' > "$MD/empty"; printf 'state=ok\n' > "$MD/empty.meta"
+check "meta: a declaration cannot rescue an empty artifact" \
+  "[ \$(classify_run '$MD/empty' 0) = failed ]"
+
+# ★ A typo must not silently become a state. Falling back is the safe direction:
+# a wrong FIELD outranks the text and would be believed.
+printf 'state=nonsense\n' > "$MD/art.meta"
+check "meta: an unknown state falls back to the text" \
+  "[ \$(classify_run '$MD/art' 0) = ok ]"
+# Last declaration wins, so an adapter that revises itself is not ambiguous.
+printf 'state=failed\nstate=degraded\n' > "$MD/art.meta"
+check "meta: the last declaration wins" \
+  "[ \$(classify_run '$MD/art' 0) = degraded ]"
+
+# ---- the channel, end to end -----------------------------------------------
+# ★ An adapter that calls cadre_state must reach classify_run, and the state it
+# declares must be the one recorded. `terse` returns a valid short review, so
+# without the declaration this run would be `ok` -- the assertion is that the
+# declaration, not the text, decided.
+DD=$(case_dir declared)
+cat > "$DD/agents.d/declarer.sh" <<'A'
+run_declarer() {
+  cadre_state degraded "caught its own stopReason"
+  echo "a partial finding, and no marker anywhere in this text"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$DD/bin/declarer"; chmod +x "$DD/bin/declarer"
+git -C "$DD/src" checkout -qb feature
+echo committed >> "$DD/src/app.js"; git -C "$DD/src" commit -qam feat
+OUTD=$(run_cadre "$DD" review --roster declarer --synth none --base main --label dc "$DD/src")
+RD="$DD/state/reviews/dc"
+check "meta: the declared state reaches the record" \
+  "grep -q '\"state\":\"degraded\"' '$RD/runs.jsonl'"
+check "meta: and the artifact is filed as partial" \
+  "ls '$RD'/declarer*.md.partial >/dev/null 2>&1"
+check "meta: text alone would have said ok" \
+  "! grep -q '_TRUNCATED' '$RD'/declarer*.md.partial"
+# ★ Consumed, not left behind. A .meta outliving its run would classify the NEXT
+# attempt at that slot by this one's field.
+check "meta: the declaration does not outlive the run" \
+  "! ls '$RD'/*.meta >/dev/null 2>&1"
+
+# ★ The path handed to the adapter must not be inside the panel directory. $OUT
+# holds every other reviewer's output, which is what CADRE_WORK was added to the
+# scrub list to protect; a writable path into it would route straight around
+# that. The adapter echoes what it was given.
+cat > "$DD/agents.d/peeker.sh" <<'A'
+run_peeker() {
+  echo "META_WAS=${CADRE_RUN_META:-unset}"
+  echo "Verdict: ship it"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$DD/bin/peeker"; chmod +x "$DD/bin/peeker"
+OUTP=$(run_cadre "$DD" review --roster peeker --synth none --base main --label pk "$DD/src")
+RP="$DD/state/reviews/pk"
+check "meta: the adapter does get a channel" \
+  "grep -q 'META_WAS=/' '$RP'/peeker*.md"
+check "meta: and it is NOT inside the panel dir" \
+  "! grep -q \"META_WAS=\$RP\" '$RP'/peeker*.md"
+
+# ★ agentcall standing alone must not require cadre to be driving it. With no
+# CADRE_RUN_META in the environment, cadre_state is a no-op that cannot fail.
+STANDALONE=$(CADRE_AGENTS_D="$DD/agents.d" PATH="$DD/bin:$PATH" \
+  "$ROOT/bin/agentcall" declarer -d "$DD/src" hi 2>&1)
+check "meta: cadre_state is a no-op outside cadre" \
+  "grep -q 'a partial finding' <<<\"\$STANDALONE\""
+check "meta: and it says nothing on the way through" \
+  "! grep -qi 'cadre_state\|CADRE_RUN_META' <<<\"\$STANDALONE\""
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
