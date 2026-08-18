@@ -749,7 +749,13 @@ done
 # One line per reviewer slot, tab-separated, no header: greppable, joinable,
 # and append-safe. Bytes come from the artifact rather than the log so the
 # number always describes the file that is actually there.
-{
+# ★ Built ONCE, then written twice. slots.tsv and the report's Receipts table
+# are the same rows in two shapes, and the first cut of this had them iterating
+# different things -- slots.tsv over the roster, Receipts over the record. That
+# is two views of one panel disagreeing about which seats exist, which is the
+# exact divergence #2 was opened to delete, reintroduced pointing the other way.
+# Sharing the rows makes them identical by construction rather than by care.
+slot_rows=$(
   # ★ Rendered FROM the record, not reconstructed from prose. This block used to
   # recover a seat's elapsed seconds with
   #   sed -n 's/.*in \([0-9][0-9]*\)s.*/\1/p' "$OUT/.log-$sl"
@@ -785,7 +791,8 @@ done
       "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
       "${r_state:-skipped}" "${r_bytes:-0}" "$r_secs" "${r_prompt:-0}"
   done
-} > "$OUT/slots.tsv"
+)
+printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
 
 {
   echo
@@ -794,15 +801,14 @@ done
   echo "| seat | status | secs | prompt KB | review KB | est. tokens |"
   echo "|---|---|---|---|---|---|"
   total_secs=0; have_secs=0; total_prompt=0; have_prompt=0; total_review=0; total_est=0
-  # ★ Reads the RECORD, not slots.tsv. Rendering the report off a file that is
-  # itself a rendering makes the second renderer inherit whatever the first one
-  # decided to drop, and the point of #2 is that every view answers to the same
-  # source. Skipped seats are in this stream too, as `state=skipped`.
+  # ★ The SAME rows slots.tsv got, not a second query against the record. Both
+  # views owe their row set to the roster, so a seat dispatched and never
+  # completed appears in both or neither -- never in one.
   while IFS= read -r slot_row; do
     # Tabs are IFS whitespace, so plain `read` collapses the empty secs field in
     # a skipped row. Translate to a non-whitespace delimiter before splitting.
     slot_row="${slot_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r spec st bytes secs prompt_bytes <<< "$slot_row"
+    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes <<< "$slot_row"
     prompt_kb=""
     if [ -n "${prompt_bytes:-}" ]; then
       prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
@@ -815,7 +821,7 @@ done
     total_review=$((total_review + ${bytes:-0}))
     printf '| `%s` | %s | %s | %s | %s | %s |\n' \
       "$spec" "$st" "${secs:-}" "$prompt_kb" "$review_kb" "$est_tokens"
-  done < <(record_rows "$RUNLOG" complete seat state bytes secs prompt_bytes)
+  done <<< "$slot_rows"
   total_secs_display=""; [ "$have_secs" -eq 1 ] && total_secs_display="$total_secs"
   total_prompt_kb=""; [ "$have_prompt" -eq 1 ] && \
     total_prompt_kb=$(awk -v n="$total_prompt" 'BEGIN { printf "%.1f", n / 1024 }')

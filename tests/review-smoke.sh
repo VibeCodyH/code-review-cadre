@@ -1632,6 +1632,14 @@ check "receipt caveat is explicit" "grep -qF '> Estimated as bytes/4 of what the
 # filenames instead of the roster would silently drop exactly the failure worth
 # counting -- the panel would report three seats and the dataset two.
 check "no seat vanishes"            "[ \$(cut -f2 '$R/slots.tsv' | sort -u | wc -l) -eq 2 ]"
+# ★ ...and the report must not vanish one either. slots.tsv had this assertion
+# and the Receipts table had none, so when the two briefly iterated different
+# things -- the roster vs the record -- nothing caught it. One row per seat plus
+# the totals line.
+check "no seat vanishes from Receipts too" \
+  "[ \$(sed -n '/^| seat |/,/^$/p' '$R/report.md' | grep -c '^| ') -eq 4 ]"
+check "Receipts names the same seats as slots.tsv" \
+  "grep -q '^| .good. |' '$R/report.md' && grep -q '^| .dead. |' '$R/report.md'"
 
 # ---- record writer/reader units (#2) ----------------------------------------
 # ★ Hand-rolled JSON, so the escaping is the risk. Every one of these is a way a
