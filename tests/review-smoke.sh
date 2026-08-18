@@ -22,7 +22,7 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc synthrate synthtiny waffle parrot; do
+           synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -57,6 +57,14 @@ run_dead() {
   echo '{"error":"upstream","detail":"a wall of raw output that is not a review"}'
 }
 A
+  # ★ Never finishes inside the test's patience. Used only to kill a panel
+  # mid-flight: the point of an append-only record is that a run interrupted
+  # here still proves which seats were dispatched, and nothing can demonstrate
+  # that against a seat that had time to complete.
+  cat > "$1/agents.d/slow.sh" <<'A'
+run_slow() { sleep 30; echo "REVIEW by slow"; echo "Verdict: ship it"; }
+A
+  sed 's/slow/slow2/g' "$1/agents.d/slow.sh" > "$1/agents.d/slow2.sh"
   # Echoes the prompt it was handed, so a test can assert on what the
   # synthesizer was actually TOLD rather than on a stub's invented answer.
   cat > "$1/agents.d/echoer.sh" <<'A'
@@ -1607,13 +1615,133 @@ check "one row per roster seat"     "[ \$(wc -l < '$R/slots.tsv') -eq 2 ]"
 check "a good seat is ok"           "grep -qP '\tgood\t.*\tok\t' '$R/slots.tsv'"
 check "a dead seat is failed"       "grep -qP '\tdead\t.*\tfailed\t' '$R/slots.tsv'"
 check "timing and prompt captured"  "grep -qP '\tok\t[0-9]+\t[0-9]+\t[1-9][0-9]*\$' '$R/slots.tsv'"
-check "failed prompt captured too"  "grep -qP '\tfailed\t[0-9]+\t\t[1-9][0-9]*\$' '$R/slots.tsv'"
+# ★ CHANGED with #2, deliberately. A failed seat used to carry EMPTY secs, and
+# not because anything decided it should: the old reconstruction grepped the
+# console log for "in Ns", the failure line says "after Ns", the pattern missed,
+# and the field came out blank. The seat WAS timed. `cadre receipts` sums this
+# column as wall-time spend per family, and a seat that burned the clock and
+# then failed cost exactly that much -- dropping it understated real spend.
+# The empty-is-not-zero rule still holds where it is true; the seat that was
+# never timed at all is asserted below.
+check "failed seat keeps its prompt"  "grep -qP '\tfailed\t[0-9]+\t[0-9]*\t[1-9][0-9]*\$' '$R/slots.tsv'"
+check "failed seat's time is measured, not blank" \
+  "grep -qP '\tfailed\t[0-9]+\t[0-9]+\t[1-9][0-9]*\$' '$R/slots.tsv'"
 check "report has receipt table"    "grep -qF '| seat | status | secs | prompt KB | review KB | est. tokens |' '$R/report.md'"
 check "receipt caveat is explicit" "grep -qF '> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill.' '$R/report.md'"
 # ★ A seat that produced NO artifact must still appear. Deriving rows from
 # filenames instead of the roster would silently drop exactly the failure worth
 # counting -- the panel would report three seats and the dataset two.
 check "no seat vanishes"            "[ \$(cut -f2 '$R/slots.tsv' | sort -u | wc -l) -eq 2 ]"
+# ★ ...and the report must not vanish one either. slots.tsv had this assertion
+# and the Receipts table had none, so when the two briefly iterated different
+# things -- the roster vs the record -- nothing caught it. One row per seat plus
+# the totals line.
+check "no seat vanishes from Receipts too" \
+  "[ \$(sed -n '/^| seat |/,/^$/p' '$R/report.md' | grep -c '^| ') -eq 4 ]"
+check "Receipts names the same seats as slots.tsv" \
+  "grep -q '^| .good. |' '$R/report.md' && grep -q '^| .dead. |' '$R/report.md'"
+
+# ---- record writer/reader units (#2) ----------------------------------------
+# ★ Hand-rolled JSON, so the escaping is the risk. Every one of these is a way a
+# single malformed line silently becomes a wrong FIELD rather than a parse
+# error -- which is worse than the prose-grepping it replaced, because a wrong
+# field looks measured.
+RJ=$(mktemp -d -p "$SANDBOX"); RL="$RJ/runs.jsonl"
+record_event "$RL" event=complete seat='codex:gpt-5.5' "secs#=12" "rc#=0"
+check "rec: seat with a colon survives" \
+  "[ \"\$(record_rows '$RL' complete seat)\" = 'codex:gpt-5.5' ]"
+check "rec: numeric field is bare"    "grep -q '\"secs\":12' '$RL'"
+check "rec: string field is quoted"   "grep -q '\"seat\":\"codex:gpt-5.5\"' '$RL'"
+
+# ★ EMPTY NUMBER is null; EMPTY STRING stays "". This is the distinction that
+# made it JSONL, and collapsing the two is the bug the format was chosen to
+# prevent -- an unmeasured second and a measured zero are not the same fact.
+: > "$RL"; record_event "$RL" event=complete seat=x "secs#=" note=
+check "rec: unmeasured number is null" "grep -q '\"secs\":null' '$RL'"
+check "rec: empty string stays a string" "grep -q '\"note\":\"\"' '$RL'"
+check "rec: reader gives EMPTY for null" \
+  "[ -z \"\$(record_rows '$RL' complete secs)\" ]"
+check "rec: reader never prints the word null" \
+  "! record_rows '$RL' complete secs | grep -q null"
+
+# ★ A quote or a backslash in a value must not end the string early or escape
+# the closing quote. Backslash has to be escaped BEFORE the quote, or the escape
+# this adds is itself re-escaped.
+: > "$RL"; record_event "$RL" event=complete seat='a"b\c' "secs#=3"
+check "rec: quote and backslash escaped" 'grep -q "\\\\\"b\\\\\\\\c" '"'$RL'"
+check "rec: and read back verbatim" \
+  "[ \"\$(record_rows '$RL' complete seat)\" = 'a\"b\\c' ]"
+check "rec: a later field still parses" \
+  "[ \"\$(record_rows '$RL' complete secs)\" = 3 ]"
+
+# ★ One event is one LINE. A newline inside a value would split the record into
+# two malformed ones, so control characters are dropped rather than encoded.
+: > "$RL"; record_event "$RL" event=complete seat="$(printf 'a\nb')" "secs#=1"
+check "rec: newline cannot split a record" "[ \$(wc -l < '$RL') -eq 1 ]"
+check "rec: the value is still readable"   "[ \"\$(record_rows '$RL' complete seat)\" = ab ]"
+
+# The reader filters by event and returns fields in the order asked, so a
+# renderer's column order is its own business.
+: > "$RL"
+record_event "$RL" event=dispatch seat=one
+record_event "$RL" event=complete seat=two "secs#=9"
+check "rec: filters by event"       "[ \"\$(record_rows '$RL' dispatch seat)\" = one ]"
+check "rec: keys come back in order" \
+  "[ \"\$(record_rows '$RL' complete secs seat)\" = \"\$(printf '9\ttwo')\" ]"
+check "rec: a missing key is EMPTY, not an error" \
+  "[ \"\$(record_rows '$RL' dispatch nosuchkey)\" = '' ]"
+check "rec: an absent log is not an error" \
+  "record_rows '$RJ/nope.jsonl' complete seat; [ \$? -eq 0 ]"
+
+# ---- the per-run record (#2) ------------------------------------------------
+# ★ The record is the SOURCE now; slots.tsv and the Receipts table are two
+# renderings of it. These check the source exists, survives, and carries the
+# fields as fields -- the state above was recovered by grepping prose.
+check "record is written"           "[ -s '$R/runs.jsonl' ]"
+# ★ The cleanup line wipes .log-*, .status-* and .len-*. The record's NAME is
+# what keeps it out of that glob, so this asserts the name as much as the file.
+check "record survives the cleanup" "[ -s '$R/runs.jsonl' ] && [ ! -e '$R/.log-good' ]"
+check "record has one dispatch per seat" \
+  "[ \$(grep -c '\"event\":\"dispatch\"' '$R/runs.jsonl') -eq 2 ]"
+check "record has one completion per seat" \
+  "[ \$(grep -c '\"event\":\"complete\"' '$R/runs.jsonl') -eq 2 ]"
+check "dispatch precedes completion" \
+  "[ \$(grep -n '\"event\":\"dispatch\"' '$R/runs.jsonl' | head -1 | cut -d: -f1) -lt \$(grep -n '\"event\":\"complete\"' '$R/runs.jsonl' | tail -1 | cut -d: -f1) ]"
+# State is a FIELD. This is the line that would have had to be a marker grep.
+check "state is a field, not a grep"  "grep -q '\"state\":\"ok\"' '$R/runs.jsonl'"
+check "and the failure is one too"    "grep -q '\"state\":\"failed\"' '$R/runs.jsonl'"
+# ★ Numbers are JSON numbers, not strings. A quoted \"secs\":\"12\" would still
+# render fine in slots.tsv and quietly break any consumer that does arithmetic.
+check "secs is a number"            "grep -qE '\"secs\":[0-9]+' '$R/runs.jsonl'"
+check "bytes is a number"           "grep -qE '\"bytes\":[0-9]+' '$R/runs.jsonl'"
+# The reader round-trips: what slots.tsv shows is what the record holds.
+RECSTATE=$(record_rows "$R/runs.jsonl" complete seat state | awk -F'\t' '$1=="good"{print $2}')
+check "reader returns the good state" "[ '$RECSTATE' = ok ]"
+check "renderer agrees with the record" \
+  "grep -qP '\tgood\t.*\t$RECSTATE\t' '$R/slots.tsv'"
+
+# ★ THE test for an append-only record, and the one that fails by construction
+# against a record assembled at the end: kill a panel mid-flight and the log
+# still names every seat it dispatched. Fourteen panels' timings were lost to
+# scratch files deleted at panel end, and this is the shape that stops the
+# fifteenth from joining them. Two slow seats under --jobs 2 so both are in
+# flight when the clock cuts them off.
+DK=$(case_dir killpanel); SK="$DK/src"
+git -C "$SK" checkout -qb feature
+echo committed >> "$SK/app.js"; git -C "$SK" commit -qam feat
+timeout 6 env CADRE_HOME="$DK/state" CADRE_WORK="$DK/work" CADRE_AGENTS_D="$DK/agents.d" \
+  PATH="$DK/bin:$PATH" "$ROOT/bin/cadre" review --roster slow,slow2 --jobs 2 \
+  --synth none --base main --label kp "$SK" >/dev/null 2>&1 || true
+RK="$DK/state/reviews/kp"
+check "killed panel still left a record"  "[ -s '$RK/runs.jsonl' ]"
+check "it names every seat dispatched"    "[ \$(grep -c '\"event\":\"dispatch\"' '$RK/runs.jsonl') -eq 2 ]"
+# ★ The other half, and the one that makes the first half mean something: no
+# seat claims a completion it never reached. A record that guessed at the
+# missing rows would be worse than no record.
+check "no seat claims a completion"       "! grep -q '\"event\":\"complete\"' '$RK/runs.jsonl'"
+# The panel never got to its own cleanup, so the proof is that the record does
+# not depend on that cleanup having run.
+check "and slots.tsv was never written"   "[ ! -s '$RK/slots.tsv' ]"
 
 # The aggregator reads both shapes: rows recorded live, and older panels
 # rebuilt from artifacts. A reconstructed row has no timing, and that field
