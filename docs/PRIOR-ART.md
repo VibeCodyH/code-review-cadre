@@ -40,6 +40,16 @@ naming what we did not invent.
   programming (1971) are the same principle without the GPUs. In tooling the
   pattern already ships as Claude Code's built-in `/code-review` and
   [fresh-eyes-review](https://github.com/eai-org/agent-toolkit/blob/main/skills/fresh-eyes-review/SKILL.md).
+- **Greppable check tables as reviewer input.**
+  [goshipit](https://github.com/Capta1nRaj/goshipit) (Apache-2.0) writes its
+  checks as literal patterns to look for rather than as topics —
+  `findById(req.params.id)` with no ownership filter, not "check authorization"
+  — and resolves framework-specific names once per project instead of
+  hardcoding a framework list.
+  [CHECKS-SECURITY-RELIABILITY.md](CHECKS-SECURITY-RELIABILITY.md) is adapted
+  from its category C and F tables, with severities reassigned to the rubric
+  here. That file is a reading list; it is not wired into any prompt, because
+  the review brief has to stay identical across passes to be comparable.
 - There is a whole [survey of code-review
   benchmarks](https://arxiv.org/html/2602.13377v1). Read it before believing
   anyone's novelty claim, including this one.
