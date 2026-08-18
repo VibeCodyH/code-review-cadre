@@ -581,7 +581,7 @@ remove that directory and re-run."
     # fallback". A pass with a record gets facts; a pass without gets the best
     # inference from filenames, and the two must not be confused for each other.
     local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
-    pass_runs=$(record_rows "$pass_record" complete run state rc secs)
+    pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
     local n
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
@@ -625,9 +625,24 @@ remove that directory and re-run."
         # same manufactured verdict pointed the other way. The record carries
         # `rc`, so that gap closes: a pass with a record can name a clock kill
         # at grade time, and a pass without one still declines to guess.
+        # ★ Keyed on SEAT AND RUN, and taking the LAST match. Both halves are
+        # required and each was a way to describe this artifact with somebody
+        # else's exit code:
+        #  - `runs.jsonl` lives at $CADRE_HOME/$label/ and is SHARED BY EVERY
+        #    CANDIDATE on that pass, so `run == 1` alone matches run 1 of every
+        #    seat ever benchmarked there. Grading `waffle` would read `terse`'s
+        #    rc, with no re-run involved at all.
+        #  - the record is append-only and `cadre run` re-dispatches any slot
+        #    whose .md is missing, so one seat's run 1 can hold several
+        #    completions. The artifact on disk is the LAST attempt's.
+        # Either mistake reports "TIMED OUT -- cadre's own clock killed it"
+        # about a run that simply crashed, which is the manufactured verdict #12
+        # exists to kill, arriving through the record instead of through prose.
+        # Same last-wins rail as `.meta`, for the same reason.
         local rec_rc=""
         if [ -n "$pass_runs" ]; then
-          rec_rc=$(printf '%s\n' "$pass_runs" | awk -F '\t' -v r="$n" '$1 == r { print $3; exit }')
+          rec_rc=$(printf '%s\n' "$pass_runs" |
+            awk -F '\t' -v s="$sl" -v r="$n" '$1 == s && $2 == r { v = $4 } END { print v }')
         fi
         # ★ -e, not -s. A hung provider that wrote nothing to stdout OR stderr
         # leaves run-pass.sh a 0-byte `.part` to rename, so the truest form of

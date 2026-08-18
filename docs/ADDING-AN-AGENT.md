@@ -105,6 +105,19 @@ run_youragent() {
 would otherwise make. Nothing the model prints can forge one, because printing
 is not calling it.
 
+**How far to trust it.** A declaration is trusted exactly as much as the
+*adapter* is, and no further. Cadre hands the adapter a path and believes what
+it finds there; it cannot tell your `cadre_state` call from anything else that
+wrote to the same file. The agent CLI you spawn runs as the same uid as cadre,
+and several of them will run a shell on request — so a model that goes looking
+can reach that file, and a declared `ok` outranks a `_TRUNCATED` marker and a
+nonzero exit. The path is a private temp directory rather than a bare temp file,
+which stops the blind `for f in /tmp/tmp.*` version, and that is a speed bump,
+not a boundary. Same posture as the rest of the environment scrub:
+mitigation, not a sandbox, docs/METHOD.md §5. The marker contract is the more
+conservative channel precisely because the adapter, not the model, appends it
+after the CLI has already exited.
+
 **It is optional.** Say nothing and the marker contract above is still in
 charge — that is not a deprecated path. Two things it will not do for you: an
 unknown state is ignored rather than believed (a wrong field would outrank the

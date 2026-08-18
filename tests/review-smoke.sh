@@ -4234,7 +4234,7 @@ check "bench: reader round-trips the state" \
 DT2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DT2" terse "$HITBOTH" "$HITBOTH"
 rm -f "$DT2/home/p1/$SLB2-run1.md"
 printf 'a reviewer thinking out loud before the clock got it\n' > "$DT2/home/p1/$SLB2-run1.md.failed"
-printf '{"event":"complete","pass":"p1","seat":"terse","run":1,"state":"failed","rc":124,"secs":900}\n' \
+printf '{"event":"complete","pass":"p1","seat":"terse","slug":"%s","run":1,"state":"failed","rc":124,"secs":900}\n' "$SLB2" \
   > "$DT2/home/p1/runs.jsonl"
 OUTT=$(CADRE_HOME="$DT2/home" CADRE_WORK="$DT2/work" CADRE_AGENTS_D="$DT2/agents.d" \
   CADRE_JUDGE=good,good2 PATH="$DT2/bin:$PATH" "$ROOT/bin/cadre" grade terse 1 p1 2>&1 || true)
@@ -4255,6 +4255,42 @@ OUTL=$(CADRE_HOME="$DL/home" CADRE_WORK="$DL/work" CADRE_AGENTS_D="$DL/agents.d"
 RL=$(ls "$DL/home"/report-*.md | head -1)
 check "bench: no record => no timeout claimed"  "! grep -q 'TIMED OUT' '$RL'"
 check "bench: legacy pass still names the run"  "grep -q 'produced output but no usable review' '$RL'"
+
+# ★ The record is APPEND-ONLY and `cadre run` re-dispatches a run whose .md is
+# missing, so two invocations of the same failing run leave TWO completions for
+# it. Taking the first would describe the artifact on disk with an earlier
+# attempt's exit code -- a run that timed out once and crashed the next time
+# would be reported "TIMED OUT, cadre's own clock killed it" about the crash.
+# The manufactured verdict #12 exists to kill, arriving through the record.
+DS=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DS" terse "$HITBOTH" "$HITBOTH"
+rm -f "$DS/home/p1/$SLB2-run1.md"
+printf 'a reviewer that crashed outright\n' > "$DS/home/p1/$SLB2-run1.md.failed"
+{ printf '{"event":"complete","pass":"p1","seat":"terse","slug":"%s","run":1,"state":"failed","rc":124,"secs":900}\n' "$SLB2"
+  printf '{"event":"complete","pass":"p1","seat":"terse","slug":"%s","run":1,"state":"failed","rc":1,"secs":3}\n' "$SLB2"
+} > "$DS/home/p1/runs.jsonl"
+OUTS=$(CADRE_HOME="$DS/home" CADRE_WORK="$DS/work" CADRE_AGENTS_D="$DS/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$DS/bin:$PATH" "$ROOT/bin/cadre" grade terse 1 p1 2>&1 || true)
+RS2=$(ls "$DS/home"/report-*.md | head -1)
+check "bench: the LAST completion wins, not the first" "! grep -q 'TIMED OUT' '$RS2'"
+check "bench: and the crash is described as one" \
+  "grep -q 'produced output but no usable review' '$RS2'"
+
+# ★ The half that last-match does NOT fix, and the worse one: runs.jsonl lives
+# at $CADRE_HOME/<label>/ and is SHARED BY EVERY CANDIDATE benchmarked on that
+# pass. Keyed on run index alone, `run == 1` matches run 1 of every seat that
+# ever ran there -- so grading one candidate reads another's exit code, with no
+# re-run involved at all. Here the OTHER seat's row is the last one in the file,
+# so a last-match-without-a-seat-filter still gets it wrong.
+DX2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DX2" terse "$HITBOTH" "$HITBOTH"
+rm -f "$DX2/home/p1/$SLB2-run1.md"
+printf 'this seat crashed outright\n' > "$DX2/home/p1/$SLB2-run1.md.failed"
+{ printf '{"event":"complete","pass":"p1","seat":"terse","slug":"%s","run":1,"state":"failed","rc":1,"secs":3}\n' "$SLB2"
+  printf '{"event":"complete","pass":"p1","seat":"waffle","slug":"%s","run":1,"state":"failed","rc":124,"secs":900}\n' "$(slug waffle)"
+} > "$DX2/home/p1/runs.jsonl"
+OUTX2=$(CADRE_HOME="$DX2/home" CADRE_WORK="$DX2/work" CADRE_AGENTS_D="$DX2/agents.d" \
+  CADRE_JUDGE=good,good2 PATH="$DX2/bin:$PATH" "$ROOT/bin/cadre" grade terse 1 p1 2>&1 || true)
+RX2=$(ls "$DX2/home"/report-*.md | head -1)
+check "bench: another seat's rc is not borrowed" "! grep -q 'TIMED OUT' '$RX2'"
 
 # ============================================================================
 # #2 criterion 2: the adapter DECLARES its state, out of band.
@@ -4326,8 +4362,15 @@ check "meta: the declared state reaches the record" \
   "grep -q '\"state\":\"degraded\"' '$RD/runs.jsonl'"
 check "meta: and the artifact is filed as partial" \
   "ls '$RD'/declarer*.md.partial >/dev/null 2>&1"
-check "meta: text alone would have said ok" \
+# ★ Names the ACTUAL baseline. This asserted "text alone would have said ok",
+# which was wrong: that artifact states no findings and no verdict, so without
+# the declaration classify_run would have called it `inconclusive`. Either way
+# the declaration decided -- but a test that misnames what it is comparing
+# against is a test nobody can check.
+check "meta: no marker in the text at all" \
   "! grep -q '_TRUNCATED' '$RD'/declarer*.md.partial"
+check "meta: and without the .meta that text is inconclusive, not degraded" \
+  "[ \$(classify_run '$RD'/declarer*.md.partial 0) = inconclusive ]"
 # ★ Consumed, not left behind. A .meta outliving its run would classify the NEXT
 # attempt at that slot by this one's field.
 check "meta: the declaration does not outlive the run" \
@@ -4350,6 +4393,52 @@ check "meta: the adapter does get a channel" \
   "grep -q 'META_WAS=/' '$RP'/peeker*.md"
 check "meta: and it is NOT inside the panel dir" \
   "! grep -q \"META_WAS=\$RP\" '$RP'/peeker*.md"
+
+# ★ THE containment claim, which the peeker above cannot make: an adapter is a
+# function inside agentcall, so it is on the ALLOWED side of the boundary. What
+# must not see CADRE_RUN_META is the CLI the adapter spawns. This stub binary
+# prints its own environment, which is the only place that boundary is visible.
+cat > "$DD/bin/envdump" <<'B'
+#!/bin/sh
+env | grep -c '^CADRE_RUN_META=' || true
+B
+chmod +x "$DD/bin/envdump"
+cat > "$DD/agents.d/envdump.sh" <<'A'
+run_envdump() {
+  echo "SPAWNED_SAW=$(envdump)"
+  echo "ADAPTER_SAW=${CADRE_RUN_META:+yes}"
+  echo "Verdict: ship it"
+}
+A
+OUTE=$(run_cadre "$DD" review --roster envdump --synth none --base main --label ev "$DD/src")
+RE2="$DD/state/reviews/ev"
+# Guards the assertion itself: if the adapter never saw it either, the next
+# check would pass while proving nothing about the boundary.
+check "meta: the adapter itself DOES see it"   "grep -q 'ADAPTER_SAW=yes' '$RE2'/envdump*.md"
+check "meta: the spawned CLI does NOT"         "grep -q 'SPAWNED_SAW=0' '$RE2'/envdump*.md"
+
+# ★ The synth slot gets the channel too, and it is the slot the doc uses as its
+# motivating example: a synthesis quoting `_TRUNCATED` cannot be told from a
+# real truncation by any text test, which is why ctx=synth ignores the marker.
+# Without this wiring `cadre_state` would be a no-op in exactly the seat that
+# needs it most.
+cat > "$DD/agents.d/synthdecl.sh" <<'A'
+run_synthdecl() {
+  cadre_state failed "the merge never completed"
+  echo "a merged review that looks perfectly fine"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$DD/bin/synthdecl"; chmod +x "$DD/bin/synthdecl"
+# Two seats: a synthesis of one review is skipped as pointless, so a one-seat
+# roster would leave the synth adapter never dispatched.
+OUTSD=$(run_cadre "$DD" review --roster good,good2 --synth synthdecl --base main --label sd "$DD/src" 2>&1)
+RSD="$DD/state/reviews/sd"
+check "meta: a synth adapter can declare failure" \
+  "grep -q 'synthesis' <<<\"\$OUTSD\" && [ ! -s '$RSD/synthesis.md' ]"
+check "meta: the declared failure is kept as .failed" \
+  "[ -s '$RSD/synthesis.md.failed' ]"
+check "meta: and the declaration does not outlive it" \
+  "[ ! -e '$RSD/.synth-tmp.meta' ]"
 
 # ★ agentcall standing alone must not require cadre to be driving it. With no
 # CADRE_RUN_META in the environment, cadre_state is a no-op that cannot fail.

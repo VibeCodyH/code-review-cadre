@@ -594,14 +594,23 @@ run_one() {
     # path gives an adapter somewhere to declare its state while telling it
     # nothing about where the panel lives. Moved next to the artifact afterward,
     # by cadre, so classify_run can find it by convention.
-    meta=$(mktemp); rm -f "$f.part.meta"
+    # ★ A private DIRECTORY, not a bare mktemp file. The declaration is trusted
+    # over the artifact's own text, so who can write it matters. A model with a
+    # shell runs as the SAME UID as cadre -- grok's ro mode allows bash -- and
+    # the cheap attack is a blind spray: `for f in /tmp/tmp.*; [ -w "$f" ] &&
+    # echo state=ok >> "$f"`, which upgrades a truncated review to a complete
+    # one. A directory does not match that `[ -f ]`. It is a speed bump, not a
+    # boundary: same-uid means no filesystem barrier, and a child that walks
+    # /proc/<pid>/environ can still find the path. See docs/ADDING-AN-AGENT.md --
+    # a declaration is trusted exactly as much as the adapter is.
+    metad=$(mktemp -d); meta="$metad/state"; rm -f "$f.part.meta"
     "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
       CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
       "$CADRE_ROOT/bin/agentcall" "$agent" -d "$dir" -m ro "${m[@]}" \
       < "$PROMPT" > "$f.part" 2>&1
     rc=$?
     [ -s "$meta" ] && mv "$meta" "$f.part.meta"
-    rm -f "$meta"
+    rm -rf "$metad"
     # ★ The adapter's own verdict outranks the keyword match HERE too, not only
     # inside classify_run. rate_limited() is a keyword scan over small files, so
     # a short partial review that merely DISCUSSES rate limiting drove three

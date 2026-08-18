@@ -149,14 +149,15 @@ for r in "${reviewers[@]}"; do
     while :; do
       # Same channel as the panel path, same reason for the temp path: $OUT
       # holds every other run's output and the adapter must not learn it.
-      meta=$(mktemp); rm -f "$f.part.meta"
+      # Private dir, not a bare temp file: see the note in lib/run-review.sh.
+      metad=$(mktemp -d); meta="$metad/state"; rm -f "$f.part.meta"
       "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
         CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
         "$CADRE_ROOT/bin/agentcall" "$agent" -d "$CHECKOUT" -m ro "${m[@]}" \
         < "$PROMPT" > "$f.part" 2>&1
       rc=$?
       [ -s "$meta" ] && mv "$meta" "$f.part.meta"
-      rm -f "$meta"
+      rm -rf "$metad"
       # ★ Same order as the review path, same reason: the adapter's own verdict
       # outranks a keyword scan. A short partial that merely DISCUSSES rate
       # limiting used to drive real retries and then get cadre's own note

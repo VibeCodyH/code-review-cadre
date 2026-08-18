@@ -173,7 +173,19 @@ and declined to flag it, which is exactly backwards.
   fi
   local rc=0
   while :; do
-    raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
+    # ★ The synth slot gets the declaration channel too, and it is the slot that
+    # needs it MOST (#2). A synthesis is ASKED to report which reviewers were
+    # truncated, so its own text quoting `_TRUNCATED` is the most likely
+    # legitimate answer in the system -- which is why classify_run's `ctx=synth`
+    # narrowing ignores the marker here and falls back to the exit status. That
+    # narrowing relocated the collision rather than removing it; no text test
+    # can remove it. A field the ADAPTER writes can, because quoting a marker is
+    # not calling cadre_state. Temp path for the same reason the run paths use
+    # one: $out holds every reviewer's output.
+    smetad=$(mktemp -d); smeta="$smetad/state"; rm -f "$out/.synth-tmp.meta"
+    raw=$(CADRE_RUN_META="$smeta" "$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
+    [ -s "$smeta" ] && mv "$smeta" "$out/.synth-tmp.meta"
+    rm -rf "$smetad"
     printf '%s' "$raw" > "$out/.synth-tmp"
     # ★ The THIRD retry loop. The commit that taught the two reviewer loops to
     # stop trusting a keyword scan over the adapter left this one asking the old
@@ -198,6 +210,12 @@ and declined to flag it, which is exactly backwards.
   printf '%s' "$raw" > "$out/.synth-tmp"
   if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" != ok ]; then
     mv "$out/.synth-tmp" "$out/synthesis.md.failed"
+    # ★ Cleared only HERE and on the success path, never inside the loop. The
+    # loop deletes and re-creates .synth-tmp around the retry check, so a meta
+    # removed there would be gone before classify_run above ever read it. A
+    # stale one is prevented at the other end instead: each attempt clears it
+    # before dispatch.
+    rm -f "$out/.synth-tmp.meta"
     # ★ Third consumer of the same split (#12). The synthesizer is a model and
     # fails like one, so "the provider returned nothing" and "cadre's clock cut
     # a live merge short" are as distinguishable here as on a review -- and the
@@ -208,7 +226,7 @@ and declined to flag it, which is exactly backwards.
     echo "The individual reviews are intact in $out." >&2
     return 0
   fi
-  rm -f "$out/.synth-tmp"
+  rm -f "$out/.synth-tmp" "$out/.synth-tmp.meta"
   { echo "# Synthesis ($synth)"; echo
     echo "_Model-produced and unverified. It merges what the reviewers said; it has"
     echo "not seen the code. Read the individual reviews before acting._"; echo
