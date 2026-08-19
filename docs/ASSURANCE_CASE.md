@@ -2,7 +2,7 @@
 
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
-`tests/review-smoke.sh` and run the suite. Anything backed only by a design
+`tests/review-smoke.sh` or `tests/engine-seam.sh` and run that suite. Anything backed only by a design
 description belongs under non-goals instead — naming what this does NOT
 protect against is half the point of the file.
 
@@ -58,6 +58,29 @@ that mattered are pinned by tests.
 Tests: "docs say the adapter wins", "preflight claim corrected", "but still
 says what it misses".
 
+**7. A reviewer is scored on what it wrote, not on what survived the merge.**
+`claims[]` in `findings.json` is extracted from each reviewer's own file by
+grep, with no model in the path. The merge is lossy on purpose — it truncates
+an over-long review to fit the synthesizer's budget and leaves a dead reviewer
+out entirely — so a projection built from the synthesis would mark a reviewer
+as having missed a bug it actually reported.
+Tests: "cap: the finding is NOT in the merge", "cap: but it IS claimed".
+
+**8. Nothing downstream of the reviewers can write to the graded layer.**
+Verification, synthesis and `settle` all produce opinions about findings, and
+all three write `findings[]` only. A `status`, `ledger_id` or verify verdict on
+a claim would make a reviewer's score a function of a later model's quality
+while still looking like a score.
+Tests: "fj: claims carry no settle/verify fields", "engine_claims writes no
+status field", "engine_claims writes no ledger_id".
+
+**9. A panel that degraded still leaves a record.** `findings.json` is written
+whether the merge succeeded, failed, was skipped by the capability preflight,
+or was never asked for — a run with one usable review still made claims, and
+the degraded runs are the ones a benchmark most needs to see.
+Tests: "ns: findings.json still written", "one: findings.json written",
+"one: claims survived".
+
 ## Non-goals, named
 
 - **The preflight reads filenames, plus content for exactly four config
@@ -88,3 +111,11 @@ says what it misses".
   exhaustive.** An undeclared quirk costs one wasted paid call, not a lost
   review — loose is safe, and a declaration earns its place from an observed
   refusal, never a guess. docs/ADDING-AN-AGENT.md has the contract.
+- **The engine/benchmark seam is checked in the source, not enforced at
+  runtime.** `bin/cadre` is one binary that sources both halves, so every
+  function is in scope regardless of which side owns it;
+  `tests/engine-seam.sh` reads the code for a crossing rather than observing a
+  refusal, and it cannot see one made through a variable or an `eval`. Real
+  isolation arrives with the two-binary split. Claim 8 is the part that IS
+  enforced in the output: the assertions there run against a findings.json
+  produced by a real panel.

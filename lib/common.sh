@@ -540,8 +540,23 @@ review_findings() {
   # number, or one short label, and the severity has to arrive immediately after
   # it. Probed against `**Overall:** no critical problems` and `*not a nit* but
   # worth noting` -- both stay zero, as does the whole corpus.
-  grep -cEi '^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+  grep -cEi "$SEVERITY_RE" "$1"
 }
+
+# ★ ONE definition, two callers, and that is a correctness rail rather than
+# tidiness. This function COUNTS severity lines; lib/engine/ EXTRACTS them for
+# claims[]. A second copy of the pattern over there would drift the moment either
+# side is tuned -- and drift silently, because nothing in cadre compares the two
+# numbers: a review counted at 13 findings and projected as 4 both look fine
+# alone. Same pattern, `-c` here and `-n` there.
+#
+# SEVERITY_WORDS is split out for the same reason. The extractor needs the
+# vocabulary alternation on its own to pull the severity back off a matched line,
+# and spelling that list twice is how the two ends stop agreeing about what a
+# severity is. Every documented near-miss above is a change to the PREFIX; the
+# vocabulary itself has been stable, which is exactly why it is safe to share.
+SEVERITY_WORDS='blocking|should[ -]fix|must[ -]fix|nit|critical|major'
+SEVERITY_RE='^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*('"$SEVERITY_WORDS"')\**'
 
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
 # reviewer answered the question it was asked. Two legal forms, both already in

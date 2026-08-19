@@ -22,7 +22,8 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2; do
+           synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
+           finder bigfinder; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -69,6 +70,36 @@ A
   # synthesizer was actually TOLD rather than on a stub's invented answer.
   cat > "$1/agents.d/echoer.sh" <<'A'
 run_echoer() { printf '%s\n' "$prompt"; }
+A
+  # ★ Actually states severities, which every stub above this line does not. A
+  # claims projection cannot be demonstrated by a panel that found nothing: the
+  # empty array is also what a broken extractor returns. Each line here is one of
+  # the shapes review_findings() is anchored to and paid for -- a bare list item,
+  # a labelled field, a bolded numbered heading -- plus the two that must stay
+  # OUT, which is the half of the assertion that a looser pattern breaks.
+  cat > "$1/agents.d/finder.sh" <<'A'
+run_finder() {
+  echo "- blocking: the retry loop deletes the partial it is retrying"
+  echo "* **Severity**: should-fix"
+  echo "#### **1. \`nit\`** name the variable"
+  echo "* **Critical:** should-fix"
+  echo "This is not blocking, and no major issues remain in the helper."
+  echo "Verdict: blocking"
+}
+A
+  # ★ A review whose LAST line is its only severity, padded past any sane
+  # CADRE_SYNTH_MAX. cmd_synthesize hands the synthesizer `head -c $per` of this,
+  # so that finding is not in the merge -- and it must still be in claims[],
+  # because claims are extracted from the file. This stub is the whole argument
+  # for why the projection re-reads disk instead of parsing the synthesis.
+  cat > "$1/agents.d/bigfinder.sh" <<'A'
+run_bigfinder() {
+  local i
+  echo "REVIEW by bigfinder"
+  for i in $(seq 1 400); do echo "Padding line $i, ordinary prose, no severity."; done
+  echo "- blocking: PAST_THE_CAP the token is logged in cleartext"
+  echo "Verdict: blocking"
+}
 A
   # ★ Returns NO review, only the CLI's own chrome. Measured with opencode,
   # which prints colour escapes and a banner around the model's text: the file
@@ -1401,11 +1432,19 @@ echo "== ★ the prompt must name the delimiters the harness actually emits =="
 # longer bound to anything in the body. The suite asserted the emitted string
 # and the prompt's text separately, and neither noticed they had stopped
 # matching. Assert the SAME literal against both, so a rename must touch both.
+#
+# ★ Searched across bin/ and lib/ rather than at bin/cadre, because the thing
+# being asserted is the PAIRING and the emitting file is allowed to move. It
+# already has: cmd_synthesize now lives in lib/engine/synthesize.sh, and pinning
+# the path failed these two checks on a pure relocation while the prompt and the
+# harness still agreed perfectly -- a false alarm that teaches the next person to
+# edit the test instead of reading it. Recursive is also what the \x1b ban above
+# does, for the same reason.
 P_PARTIAL='===== REVIEWER (PARTIAL, THIS REVIEWER STOPPED EARLY):'
 P_CAPPED='===== REVIEWER (COMPLETE, BUT CADRE SENT ONLY ITS FIRST'
-check "harness emits the partial delimiter" "grep -qF '$P_PARTIAL' $ROOT/bin/cadre"
+check "harness emits the partial delimiter" "grep -rqF '$P_PARTIAL' $ROOT/bin $ROOT/lib"
 check "prompt teaches the partial delimiter" "grep -qF '$P_PARTIAL' $ROOT/lib/prompts/synthesize.md"
-check "harness emits the capped delimiter"  "grep -qF '$P_CAPPED' $ROOT/bin/cadre"
+check "harness emits the capped delimiter"  "grep -rqF '$P_CAPPED' $ROOT/bin $ROOT/lib"
 check "prompt teaches the capped delimiter" "grep -qF '$P_CAPPED' $ROOT/lib/prompts/synthesize.md"
 
 echo "== ★ a retry must not destroy the partial it is retrying =="
@@ -3286,6 +3325,104 @@ check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY
 check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
 check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
 check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
+
+echo "== ★ findings.json: the engine's output, and what it must never lose =="
+# The engine/benchmark seam (#25). findings.json is what a consumer grades, so
+# every assertion here is about a way the file could look right and be wrong.
+D=$(case_dir engine_out); S="$D/src"
+git -C "$S" checkout -qb feature; echo change >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster finder,good,dead --base main --synth echoer --label fj "$S")
+FJ="$D/state/reviews/fj/findings.json"
+check "fj: findings.json is written"   "[ -s '$FJ' ]"
+check "fj: it is valid json"           "jq -e . '$FJ' >/dev/null"
+check "fj: schema is declared"         "[ \"\$(jq -r .schema '$FJ')\" = 'cadre/findings@1' ]"
+
+# ★ Content-addressed, per run-review.sh: the snapshot COMMIT is an unreferenced
+# stash that `git gc` reclaims, so a consumer holding a commit sha cannot prove
+# later what was reviewed. The tree ids can.
+check "fj: base_tree recorded"     "jq -e '.target.base_tree | test(\"^[0-9a-f]{7,}\$\")' '$FJ' >/dev/null"
+check "fj: reviewed_tree recorded" "jq -e '.target.reviewed_tree | test(\"^[0-9a-f]{7,}\$\")' '$FJ' >/dev/null"
+
+# The four shapes the anchor is built for, and the two that must stay out.
+check "fj: every stated severity is claimed" \
+  "[ \$(jq '[.claims[] | select(.reviewer | startswith(\"finder\"))] | length' '$FJ') -eq 4 ]"
+check "fj: prose about blocking is NOT a claim" \
+  "! jq -e '.claims[] | select(.source_text | test(\"This is not blocking\"))' '$FJ' >/dev/null"
+check "fj: the verdict line is NOT a claim" \
+  "! jq -e '.claims[] | select(.source_text | test(\"^Verdict\"))' '$FJ' >/dev/null"
+# ★ The severity is the tail of the anchored match, not the leftmost vocabulary
+# word on the line. `**Critical:** should-fix` is a real shape and the leftmost
+# word is in the LABEL, so a bare word scan records the wrong severity -- and
+# records it confidently, in the layer a reviewer is scored from.
+check "fj: a label does not steal the severity" \
+  "[ \"\$(jq -r '.claims[] | select(.source_text | test(\"Critical:\")) | .severity_stated' '$FJ')\" = 'should-fix' ]"
+check "fj: severity_stated is verbatim, not mapped" \
+  "jq -e '[.claims[].severity_stated] | index(\"nit\")' '$FJ' >/dev/null"
+check "fj: a claim cites its own file and line" \
+  "jq -e '.claims[] | select(.source.file | startswith(\"finder\")) | .source.line > 0' '$FJ' >/dev/null"
+check "fj: location is null, never guessed" \
+  "[ \$(jq '[.claims[] | select(.location != null)] | length' '$FJ') -eq 0 ]"
+
+# ★ THE RAIL. Nothing downstream may reach the graded layer: no verify verdict,
+# no settle disposition, no ledger id. If one of those keys ever appears on a
+# claim, a reviewer's score has quietly become a function of a later model's
+# quality -- and it will still look like a score, which is why this is asserted
+# rather than commented.
+check "fj: claims carry no settle/verify fields" \
+  "[ \$(jq '[.claims[] | keys[] | select(. == \"status\" or . == \"ledger_id\" or . == \"verdict\")] | length' '$FJ') -eq 0 ]"
+check "fj: verify is off by default"   "[ \"\$(jq -r .verify.ran '$FJ')\" = 'false' ]"
+check "fj: findings carry the settle slots" \
+  "jq -e '.findings | length == 0 or (.[0] | has(\"status\") and has(\"ledger_id\"))' '$FJ' >/dev/null"
+
+# ★ A reviewer that produced nothing is IN the panel as absent. Dropping it would
+# leave a consumer computing denominators over survivors only, which is the
+# false-clearance shape the NO USABLE REVIEW block in the merge exists to stop --
+# there is no point fixing it in the prose and losing it in the JSON.
+check "fj: the dead reviewer is in the panel" \
+  "[ \"\$(jq -r '.panel[] | select(.reviewer | startswith(\"dead\")) | .state' '$FJ')\" = 'absent' ]"
+check "fj: and it contributes no claims" \
+  "[ \$(jq '[.claims[] | select(.reviewer | startswith(\"dead\"))] | length' '$FJ') -eq 0 ]"
+check "fj: synthesis status is recorded" "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'ok' ]"
+
+# ★ CLAIMS COME FROM DISK, NOT FROM THE MERGE, and this is the test that proves
+# it rather than the comment that claims it. bigfinder's only severity is its
+# LAST line and the cap cuts the review well before it, so the synthesizer never
+# saw that finding. A projection built by parsing synthesis.md would score this
+# reviewer as having missed a cleartext-token bug it actually reported.
+export CADRE_SYNTH_MAX=300
+D=$(case_dir engine_cap); S="$D/src"
+git -C "$S" checkout -qb feature; echo change >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster bigfinder,good --base main --synth echoer --label cap "$S")
+unset CADRE_SYNTH_MAX
+FJ="$D/state/reviews/cap/findings.json"
+check "cap: the merge was truncated"   "grep -q 'CADRE SENT ONLY ITS FIRST' '$D/state/reviews/cap/synthesis.md'"
+check "cap: the finding is NOT in the merge" \
+  "! grep -q 'PAST_THE_CAP' '$D/state/reviews/cap/synthesis.md'"
+check "cap: but it IS claimed"          \
+  "[ \$(jq '[.claims[] | select(.source_text | test(\"PAST_THE_CAP\"))] | length' '$FJ') -eq 1 ]"
+
+# ★ Written when no merge happened at all. A degraded panel is exactly the one a
+# benchmark most needs to see, and hanging the write off cmd_synthesize's success
+# path would delete it from the record instead -- absence read as nothing, one
+# layer above the block that already fixed this inside the merge.
+D=$(case_dir engine_nosynth); S="$D/src"
+git -C "$S" checkout -qb feature; echo change >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster finder,good --base main --synth none --label ns "$S")
+FJ="$D/state/reviews/ns/findings.json"
+check "ns: no synthesis ran"            "[ ! -e '$D/state/reviews/ns/synthesis.md' ]"
+check "ns: findings.json still written" "[ -s '$FJ' ]"
+check "ns: status says not_run"         "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'not_run' ]"
+check "ns: the claims survived anyway"  "[ \$(jq '.claims | length' '$FJ') -eq 4 ]"
+check "ns: and findings[] is empty"     "[ \$(jq '.findings | length' '$FJ') -eq 0 ]"
+
+# A single-reviewer panel has nothing to merge, and still made claims.
+D=$(case_dir engine_one); S="$D/src"
+git -C "$S" checkout -qb feature; echo change >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster finder --base main --synth echoer --label one "$S")
+FJ="$D/state/reviews/one/findings.json"
+check "one: findings.json written"      "[ -s '$FJ' ]"
+check "one: status says skipped"        "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'skipped' ]"
+check "one: claims survived"            "[ \$(jq '.claims | length' '$FJ') -eq 4 ]"
 
 echo
 echo "$PASS passed, $FAIL failed"

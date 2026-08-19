@@ -1,0 +1,32 @@
+{
+  "schema": "cadre/findings@1",
+  "_note": "NOT produced by cadre. A CodeRabbit run, mapped by hand into the contract, so tests/engine-seam.sh can prove the format is consumable without any cadre engine code. Deliberately carries an extra key and omits every optional one.",
+  "target": {
+    "base_tree": "9f637265ab1c0d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+    "reviewed_tree": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+  },
+  "panel": [
+    { "reviewer": "coderabbit", "state": "ok" }
+  ],
+  "synthesis": { "status": "not_run", "agent": null },
+  "verify": { "ran": false },
+  "claims": [
+    {
+      "reviewer": "coderabbit",
+      "reviewer_state": "ok",
+      "severity_stated": "major",
+      "source": { "file": "coderabbit.md", "line": 12 },
+      "source_text": "major: the session token is written to the request log",
+      "location": null
+    },
+    {
+      "reviewer": "coderabbit",
+      "reviewer_state": "ok",
+      "severity_stated": "nit",
+      "source": { "file": "coderabbit.md", "line": 41 },
+      "source_text": "nit: prefer a named constant for the retry ceiling",
+      "location": null
+    }
+  ],
+  "findings": []
+}

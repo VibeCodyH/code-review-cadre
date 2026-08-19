@@ -34,6 +34,10 @@ export CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
 . "$CADRE_ROOT/lib/grade.sh"
 # shellcheck source=lib/adjudicate.sh
 . "$CADRE_ROOT/lib/adjudicate.sh"
+# The engine. It produces findings.json; the benchmark half of cadre only ever
+# consumes it. lib/engine/README.md draws the line, tests/engine-seam.sh holds it.
+# shellcheck source=lib/engine/synthesize.sh
+. "$CADRE_ROOT/lib/engine/synthesize.sh"
 
 PASSES="$CADRE_HOME/passes.conf"
 
@@ -924,199 +928,13 @@ cmd_review() {
   fi
 
   [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
+  # ★ UNCONDITIONAL, and deliberately outside the `&&` chain above. findings.json
+  # is the engine's output for this panel, and a panel that produced reviews
+  # produced claims whether or not a merge ran, succeeded, or was even asked for.
+  # Hanging it off the synthesize call would erase every degraded run from the
+  # benchmark's view -- see the comment on engine_write_findings.
+  engine_write_findings "$out" "${synth:-none}" "${specs[@]}"
   return 0
-}
-
-# Merge the reviews. A model too, so the same rate-limit rule applies, and a
-# failure here must not cost the individual reviews: they are already on disk.
-cmd_synthesize() {
-  local out="$1" synth="$2"; shift 2
-  local specs=("$@") sl body="" cap="${CADRE_SYNTH_MAX:-200000}"
-  local dead=() srcspec=() srcfile=() srcstate=() total=0
-  for sp in "${specs[@]}"; do
-    sl=$(slug "$sp")
-    if [ -s "$out/$sl.md" ];           then srcspec+=("$sp"); srcfile+=("$out/$sl.md");         srcstate+=(ok)
-    elif [ -s "$out/$sl.md.partial" ]; then srcspec+=("$sp"); srcfile+=("$out/$sl.md.partial"); srcstate+=(degraded)
-    else dead+=("$sp"); fi
-  done
-  local usable=${#srcspec[@]} i
-  # Partials count toward having something to merge. One full review plus one
-  # partial is still two independent looks at the diff.
-  [ "$usable" -ge 2 ] || { echo "only $usable usable review(s); nothing to synthesize."; return 0; }
-  for i in "${!srcfile[@]}"; do total=$((total + $(wc -c < "${srcfile[$i]}"))); done
-
-  # Over budget, every review gets the same byte share. ★ head -c MAKES a review
-  # partial: a full review cut at 40KB is silent about everything after 40KB for
-  # exactly the reason a truncated one is. Re-label it degraded here or the
-  # silence rule below skips the reviews this function itself just truncated.
-  local per=0
-  if [ "$total" -gt "$cap" ]; then
-    per=$(( cap / usable ))
-    # A share of 0 would announce a truncation and then perform none, quietly
-    # sending the whole oversized body anyway.
-    [ "$per" -lt 1 ] && per=1
-    echo "⚠ reviews total $total bytes, over CADRE_SYNTH_MAX ($cap). Truncating each to $per."
-  fi
-
-  # ★ TWO different facts, kept apart. "The reviewer stopped early" is a fact
-  # about the reviewer's health. "Cadre sent only the first N bytes" is a fact
-  # about what this function did to a reviewer that finished perfectly well.
-  # Both mean the silence that follows proves nothing, so both get the silence
-  # rule -- but telling the synthesizer a healthy reviewer "stopped early" is
-  # simply false, and it is the kind of false that ends up quoted in a report.
-  local partial=() capped=() n=0 text cut
-  for i in "${!srcspec[@]}"; do
-    cut=0
-    if [ "$per" -gt 0 ] && [ "$(wc -c < "${srcfile[$i]}")" -gt "$per" ]; then
-      text=$(head -c "$per" "${srcfile[$i]}"); cut=1
-    else
-      text=$(cat "${srcfile[$i]}")
-    fi
-    # A DIFFERENT delimiter, not just different prose. Under the same delimiter
-    # as a full review the synthesizer has no handle to apply a different rule
-    # to, however carefully the instructions are worded.
-    if [ "${srcstate[$i]}" = degraded ]; then
-      body="$body===== REVIEWER (PARTIAL, THIS REVIEWER STOPPED EARLY): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      partial+=("${srcspec[$i]}")
-    elif [ "$cut" = 1 ]; then
-      body="$body===== REVIEWER (COMPLETE, BUT CADRE SENT ONLY ITS FIRST $per BYTES): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      capped+=("${srcspec[$i]}")
-    else
-      body="$body===== REVIEWER: ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      n=$((n + 1))
-    fi
-  done
-  local short=("${partial[@]}" "${capped[@]}")
-  # ★ Two different counts, and conflating them made cadre lie in prose while
-  # the arithmetic stayed right. $n is "full text in front of the synthesizer",
-  # which is the correct denominator floor for a finding only the full reviews
-  # could have named. It is NOT the number of reviewers who finished: a capped
-  # reviewer reviewed the whole diff and returned a complete review, cadre just
-  # sent part of it. Reporting $n as "returned a complete review" understates a
-  # healthy panel, and when every survivor was capped the console announced
-  # "synthesizing 0 review(s)" for a run that was about to synthesize several.
-  local completed=$((n + ${#capped[@]}))
-
-  # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
-  # "2/2 agree", and the reader concludes the panel was unanimous when a third
-  # of it never returned. The header line the prompt asks for is what carries
-  # that; these members are NOT in the tags, because a reviewer that never ran
-  # has no opinion to count either way.
-  #
-  # ★ dead[] is anything that is neither .md nor .md.partial, which is what
-  # makes an INCONCLUSIVE run safe by construction: it lands here, and this
-  # block already keeps it out of every denominator. That is the whole fix for
-  # the false green -- no third delimiter, no new counting rule. The delimiter
-  # says NO REVIEW rather than FAILED because a run that exited 0 and wrote 40KB
-  # did not fail, and the prompt asks the synthesizer to describe these members
-  # in the verdict spread.
-  if [ ${#dead[@]} -gt 0 ]; then
-    body="$body===== NO USABLE REVIEW: ${dead[*]} =====
-These roster members produced no usable review. Say so in the verdict spread and
-in the header line. Keep them out of every agreement tag: they neither agree nor
-disagree with anything. This panel was ${#specs[@]} reviewers, of whom $completed
-returned a complete review.
-
-"
-  fi
-  # ★ Incomplete coverage breaks the agreement MATH, not just the prose, and in
-  # the direction nobody checks. Tagging a finding [1/4] when two of the four
-  # never reached that file reads as three dissents; it is one reviewer and two
-  # absences. One rule for both causes, since the consequence is identical, but
-  # each reviewer is listed under the cause that is actually true of it.
-  if [ ${#short[@]} -gt 0 ]; then
-    body="$body===== REVIEWERS WITH INCOMPLETE COVERAGE: ${short[*]} ====="$'\n'
-    [ ${#partial[@]} -gt 0 ] && body="$body\
-  ${partial[*]} -- stopped partway through, out of tokens or time.
-"
-    [ ${#capped[@]} -gt 0 ] && body="$body\
-  ${capped[*]} -- reviewed the whole diff, but their review was too long for
-  this synthesis and CADRE cut it. The reviewer is healthy; the copy you were
-  given is not the whole of what it wrote. Do not say it stopped early.
-"
-    body="$body
-Their text is a real review of the part you can see. Rules for them, unlike a
-review you have in full:
-  - On a finding one of them RAISED, it counts in both the numerator and the
-    denominator, exactly like a complete review.
-  - On a finding it never mentioned, it counts in NEITHER. That code is outside
-    what you were given, so its silence is not agreement, disagreement, or
-    clearance, and the denominator for that finding is smaller. Never list one
-    under Disagreements for something it simply does not mention.
-  - Give no overall verdict on behalf of a reviewer that stopped early.
-
-Do the arithmetic for THIS panel. You have $n review(s) in full and ${#short[@]} with
-incomplete coverage (${short[*]}). For each finding: denominator = $n, plus one
-for EACH of those ${#short[@]} that raised that finding. So it is $n when none of them
-raised it, and at most $((n + ${#short[@]})) when all of them did.
-
-The low end is the case that gets written wrong. A defect only the full reviews
-named is tagged [x/$n]. A bigger number there claims someone looked at that code
-and declined to flag it, which is exactly backwards.
-
-"
-  fi
-
-  local pf="$out/.synth-prompt" raw attempt=1 w
-  { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
-  local pcount=""
-  [ ${#capped[@]} -gt 0 ] && pcount="$pcount, ${#capped[@]} sent short"
-  [ ${#partial[@]} -gt 0 ] && pcount="$pcount, ${#partial[@]} partial"
-  echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
-  local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
-  [ -n "$m" ] && mm=(-M "$m")
-  # Capability preflight: a doomed synthesizer must not burn the merge call.
-  local sblock sdecl sreason
-  if sblock=$(capability_block "$synth" synth); then
-    IFS=$'\t' read -r sdecl sreason <<< "$sblock"
-    echo "synthesis SKIPPED by capability preflight ($sdecl: $sreason). Individual reviews are intact in $out." >&2
-    rm -f "$pf"
-    return 0
-  fi
-  local rc=0
-  while :; do
-    raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
-    printf '%s' "$raw" > "$out/.synth-tmp"
-    # ★ The THIRD retry loop. The commit that taught the two reviewer loops to
-    # stop trusting a keyword scan over the adapter left this one asking the old
-    # question, so a healthy short merge that discussed rate limiting burned
-    # three retries and then got filed failed. Same principle, different test,
-    # because a synthesis has no marker to be rescued by. See provider_refused.
-    provider_refused "$out/.synth-tmp" "$rc" || { rm -f "$out/.synth-tmp"; break; }
-    rm -f "$out/.synth-tmp"
-    [ "$attempt" -ge "${CADRE_RETRIES:-3}" ] && break
-    w=$(retry_wait "$attempt")
-    echo "  synthesis rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})"
-    sleep "$w"; attempt=$((attempt + 1))
-  done
-  rm -f "$pf"
-  # ★ Same classifier the reviewers get. An auth error or an exhausted retry is
-  # NON-EMPTY text, so testing only for emptiness filed the error itself as
-  # synthesis.md and the reader saw a merged review that was really a 429. The
-  # synthesizer is a model; it fails like one.
-  # ★ Deliberately NOT three-state: only `ok` survives here. A partial merge is
-  # worthless in a way a partial review is not, because the reviews it was
-  # merging are already on disk and complete. Fail closed and keep them.
-  printf '%s' "$raw" > "$out/.synth-tmp"
-  if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" != ok ]; then
-    mv "$out/.synth-tmp" "$out/synthesis.md.failed"
-    # ★ Third consumer of the same split (#12). The synthesizer is a model and
-    # fails like one, so "the provider returned nothing" and "cadre's clock cut
-    # a live merge short" are as distinguishable here as on a review -- and the
-    # second one is fixable by re-running with a bigger CADRE_TIMEOUT, which the
-    # old flat message never suggested. No elapsed time is tracked on this path,
-    # so the phrase is asked for without one rather than handed a made-up number.
-    echo "synthesis $(failure_phrase "$out/synthesis.md.failed" "$rc"), kept as synthesis.md.failed." >&2
-    echo "The individual reviews are intact in $out." >&2
-    return 0
-  fi
-  rm -f "$out/.synth-tmp"
-  { echo "# Synthesis ($synth)"; echo
-    echo "_Model-produced and unverified. It merges what the reviewers said; it has"
-    echo "not seen the code. Read the individual reviews before acting._"; echo
-    printf '%s\n' "$raw"
-  } > "$out/synthesis.md"
-  echo "saved: $out/synthesis.md"
 }
 
 # ---- the settled-decisions ledger --------------------------------------------
