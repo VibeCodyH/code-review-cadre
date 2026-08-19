@@ -62,3 +62,4 @@ parsing `synthesis.md` would mark a reviewer as having missed a bug it reported.
 | file | what it owns |
 | --- | --- |
 | `synthesize.sh` | the merge (`cmd_synthesize`), the claims projection, `findings.json` |
+| `settle.sh` | the human-written ledger, and splitting a review into NEW vs settled |

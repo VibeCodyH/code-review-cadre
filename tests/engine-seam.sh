@@ -38,6 +38,13 @@ for f in $BENCH; do
     "! code_only < '$f' | grep -qE '\bengine_[a-z_]+'"
   check "$(basename "$f") does not call cmd_synthesize" \
     "! code_only < '$f' | grep -q 'cmd_synthesize'"
+  # ★ settle and the ledger are engine too, and this is the direction that would
+  # actually be tempting: a grading run that filtered out findings the human had
+  # already dismissed would score reviewers against one person's ledger, and the
+  # scores would still look like scores. grade.sh mentions cmd_settle in a
+  # comment, which is why code_only exists.
+  check "$(basename "$f") does not call settle or the ledger" \
+    "! code_only < '$f' | grep -qE 'cmd_settle|cmd_ledger|ledger_path'"
   check "$(basename "$f") sources nothing from lib/engine" \
     "! code_only < '$f' | grep -q 'lib/engine'"
 done
@@ -69,6 +76,17 @@ FINDS=$(sed -n '/^engine_findings()/,/^}/p' "$ROOT/lib/engine/synthesize.sh")
 check "engine_findings keeps the settle slots" \
   "grep -q 'status:' <<<\"\$FINDS\" && grep -q 'ledger_id' <<<\"\$FINDS\""
 check "verify defaults to off"  "grep -q 'ran: false' '$ROOT/lib/engine/synthesize.sh'"
+# ★ settle is the concrete case, and the one folding it into the engine created:
+# it now sits beside the projection, so reaching claims[] is a two-line change
+# nobody would notice. It reads the ledger and the review; it writes neither
+# layer today, and when it starts writing it is findings[] it may write.
+check "settle never mentions claims" \
+  "! code_only < '$ROOT/lib/engine/settle.sh' | grep -q 'claims'"
+# ★ And it still does not write the ledger. The file is human-authored on
+# purpose: a tool that files its own dismissals eventually dismisses something
+# real. `cadre settle` only READS it, and that has to survive the move.
+check "settle does not write the ledger" \
+  "! code_only < '$ROOT/lib/engine/settle.sh' | grep -qE '>+[[:space:]]*\"?\\\$lp|tee.*\\\$lp'"
 
 echo "== one severity pattern, not two =="
 # ★ The extraction pattern is shared with review_findings() out of a single
