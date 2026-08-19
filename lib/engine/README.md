@@ -71,8 +71,12 @@ parsing `synthesis.md` would mark a reviewer as having missed a bug it reported.
   grep call the file binary and suppress every line **on stderr**, which silently
   empties that reviewer's claims — a reviewer that reported a blocking bug
   reading as one that found nothing.
-- It is written on **every** path, including the ones where no merge happened.
-  A missing `findings.json` must never be read as a clean panel.
+- It is written **whenever a review directory survives** — including every path
+  where no merge happened: preflight skip, a rate-limited merge, one usable
+  review, `--synth none`, and a panel down to a single truncated review. The one
+  case with no file is a run where *every* reviewer failed, which leaves an empty
+  review dir that `cmd_review` removes. So a missing `findings.json` means "no
+  panel output exists", and must never be read as a clean panel.
 
 ## Files
 

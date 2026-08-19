@@ -3483,6 +3483,30 @@ check "by: the finding after the bad byte is claimed" \
 check "by: and so is the one below it" \
   "jq -e '.claims[] | select(.source_text | test(\"trailing finding\"))' '$BJ' >/dev/null"
 
+# ★ The most degraded panel that still leaves a record: ONE truncated review and
+# one reviewer that never returned. This is the shape the "written on every path"
+# claim is really about, and cmd_review has an early return above the projection
+# (`rmdir "$out"; return "$rrc"`) that could plausibly have skipped it. Measured:
+# a surviving .partial keeps the run at rc 0, so the projection does run.
+D=$(case_dir engine_degraded); S="$D/src"
+git -C "$S" checkout -qb feature; echo one >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster trunc,dead --base main --synth none --label dg "$S")
+DJ="$D/state/reviews/dg/findings.json"
+check "dg: a partial-only panel is recorded" "[ -s '$DJ' ]"
+check "dg: the truncated seat is degraded" \
+  "[ \"\$(jq -r '.panel[] | select(.reviewer | startswith(\"trunc\")) | .state' '$DJ')\" = 'degraded' ]"
+check "dg: the failed seat is absent"       \
+  "[ \"\$(jq -r '.panel[] | select(.reviewer | startswith(\"dead\")) | .state' '$DJ')\" = 'absent' ]"
+# ★ And the case that legitimately has NO findings.json: every reviewer failed, so
+# cmd_review rmdirs an empty review dir and there is nothing to project. The file
+# being absent is correct here -- which is exactly why a missing findings.json must
+# never be read as a clean panel.
+D=$(case_dir engine_allfail); S="$D/src"
+git -C "$S" checkout -qb feature; echo one >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster dead,dead --base main --synth none --label af "$S"); RC=$?
+check "af: an all-failed panel exits nonzero" "[ '$RC' -ne 0 ]"
+check "af: and leaves no review dir at all"   "[ ! -d '$D/state/reviews/af' ]"
+
 # ★ CLAIMS COME FROM DISK, NOT FROM THE MERGE, and this is the test that proves
 # it rather than the comment that claims it. bigfinder's only severity is its
 # LAST line and the cap cuts the review well before it, so the synthesizer never
