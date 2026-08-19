@@ -23,7 +23,7 @@ setup_agents() {
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
-           finder bigfinder; do
+           finder bigfinder synthmerge; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -98,6 +98,18 @@ run_bigfinder() {
   echo "REVIEW by bigfinder"
   for i in $(seq 1 400); do echo "Padding line $i, ordinary prose, no severity."; done
   echo "- blocking: PAST_THE_CAP the token is logged in cleartext"
+  echo "Verdict: blocking"
+}
+A
+  # A synthesizer that returns a real MERGED shape: severities carrying the
+  # [n/d] quorum the prompt asks for, and one deliberately without a tag.
+  # echoer cannot stand in for this -- it returns the prompt, so a test using it
+  # asserts against cadre's own instructions rather than against a merge.
+  cat > "$1/agents.d/synthmerge.sh" <<'A'
+run_synthmerge() {
+  echo "- blocking [2/3]: the session token is logged in cleartext"
+  echo "* **Severity**: nit [1/3]"
+  echo "- should-fix: no quorum tag on this one"
   echo "Verdict: blocking"
 }
 A
@@ -3371,8 +3383,7 @@ check "fj: location is null, never guessed" \
 check "fj: claims carry no settle/verify fields" \
   "[ \$(jq '[.claims[] | keys[] | select(. == \"status\" or . == \"ledger_id\" or . == \"verdict\")] | length' '$FJ') -eq 0 ]"
 check "fj: verify is off by default"   "[ \"\$(jq -r .verify.ran '$FJ')\" = 'false' ]"
-check "fj: findings carry the settle slots" \
-  "jq -e '.findings | length == 0 or (.[0] | has(\"status\") and has(\"ledger_id\"))' '$FJ' >/dev/null"
+
 
 # ★ A reviewer that produced nothing is IN the panel as absent. Dropping it would
 # leave a consumer computing denominators over survivors only, which is the
@@ -3383,6 +3394,94 @@ check "fj: the dead reviewer is in the panel" \
 check "fj: and it contributes no claims" \
   "[ \$(jq '[.claims[] | select(.reviewer | startswith(\"dead\"))] | length' '$FJ') -eq 0 ]"
 check "fj: synthesis status is recorded" "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'ok' ]"
+
+# ★ findings[] asserted NON-EMPTY, and the count named. The first version of
+# this check was `length == 0 or (has the slots)`, which is true of an empty
+# array -- so it passed while engine_findings was reading the wrong path and
+# emitting nothing at all, for an entire commit. A test with an `or length == 0`
+# escape hatch on the thing it is measuring measures nothing.
+D=$(case_dir engine_merge); S="$D/src"
+git -C "$S" checkout -qb feature; echo change >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster finder,good --base main --synth synthmerge --label mg "$S")
+MJ="$D/state/reviews/mg/findings.json"
+check "mg: the merge produced findings"  "[ \$(jq '.findings | length' '$MJ') -eq 3 ]"
+check "mg: findings carry the settle slots" \
+  "jq -e '[.findings[] | select(has(\"status\") and has(\"ledger_id\"))] | length == 3' '$MJ' >/dev/null"
+check "mg: the settle slots start null" \
+  "[ \$(jq '[.findings[] | select(.status != null or .ledger_id != null)] | length' '$MJ') -eq 0 ]"
+# ★ agreement is COPIED from the synthesizer's own [n/d], never recomputed. A
+# denominator derived here from a count of files would restore the bug the merge
+# already fixed: an absent reviewer read as a dissent.
+check "mg: the quorum is copied verbatim" \
+  "[ \"\$(jq -c '.findings[] | select(.source_text | test(\"session token\")) | .agreement' '$MJ')\" = '{\"numerator\":2,\"denominator\":3}' ]"
+check "mg: a second tag is read too" \
+  "[ \"\$(jq -c '.findings[] | select(.severity == \"nit\") | .agreement' '$MJ')\" = '{\"numerator\":1,\"denominator\":3}' ]"
+# ★ No tag means null, NOT [n/1]. Inventing a denominator is how a lone finding
+# starts looking like a finding the panel considered and declined to back.
+check "mg: an untagged finding gets null, not a guess" \
+  "[ \"\$(jq -r '.findings[] | select(.source_text | test(\"no quorum tag\")) | .agreement' '$MJ')\" = 'null' ]"
+# The claims layer is untouched by any of it.
+check "mg: claims are unaffected by the merge" \
+  "[ \$(jq '.claims | length' '$MJ') -eq 4 ]"
+
+# ★ A GATE-SKIPPED seat is still in the panel, and `skipped` is not `absent`.
+# cmd_review filters a failed-gate seat out of $specs before dispatch, so a panel
+# built from $specs alone reports a roster of one where the user asked for two --
+# the same panel-reads-cleaner-than-it-was shape as losing a dead reviewer, just
+# sourced from config rather than from a failure. Found by a cross-model review.
+D=$(case_dir engine_gate); S="$D/src"
+git -C "$S" checkout -qb feature; echo one >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster 'finder,good2 ?min-lines=999' --base main --synth none --label gt "$S")
+GJ="$D/state/reviews/gt/findings.json"
+check "gt: the gated seat is in the panel" \
+  "[ \$(jq '[.panel[] | select(.state == \"skipped\")] | length' '$GJ') -eq 1 ]"
+check "gt: it is skipped, NOT absent" \
+  "! jq -e '.panel[] | select(.reviewer | startswith(\"good2\")) | select(.state == \"absent\")' '$GJ' >/dev/null"
+check "gt: the gate that stopped it is named" \
+  "jq -e '.panel[] | select(.state == \"skipped\") | .skipped_gate | test(\"min-lines\")' '$GJ' >/dev/null"
+check "gt: and the reason is kept"  \
+  "jq -e '.panel[] | select(.state == \"skipped\") | .skipped_reason | test(\"lines\")' '$GJ' >/dev/null"
+check "gt: the roster size is honest" "[ \$(jq '.panel | length' '$GJ') -eq 2 ]"
+check "gt: a skipped seat contributes no claims" \
+  "[ \$(jq '[.claims[] | select(.reviewer | startswith(\"good2\"))] | length' '$GJ') -eq 0 ]"
+
+# ★ ONE BAD BYTE MUST NOT ERASE A REVIEW, and `-a` on the extraction grep is the
+# whole defence. Measured here, GNU grep 3.12: a NUL byte anywhere in the file
+# makes it binary, and the entire output collapses to one "binary file matches"
+# line -- ON STDERR, so it never even enters the pipeline. Every finding in that
+# review disappears from claims[] and the reviewer reads as having found nothing.
+# There is no diagnostic to notice and the digit guard never fires; without -a it
+# is completely silent, in the direction that clears a reviewer that did its job.
+#
+# A NUL is not exotic in this corpus: an adapter that dumps a provider's raw
+# bytes on a failure is a shape cadre already models (see the `dead` stub, which
+# prints a wall of raw output). Other greps draw the binary line elsewhere --
+# ugrep treats invalid UTF-8 as binary too -- which is the argument for forcing
+# text mode rather than reasoning about any one implementation's heuristic.
+D=$(case_dir engine_bytes); S="$D/src"
+git -C "$S" checkout -qb feature; echo one >> "$S/app.js"; git -C "$S" commit -qam feat
+OUT=$(run_cadre "$D" review --roster finder,good --base main --synth none --label by "$S")
+BJ="$D/state/reviews/by/findings.json"
+FR=$(ls "$D/state/reviews/by"/finder-*.md | head -1)
+# A NUL mid-review, on a line that is NOT itself a finding.
+printf -- '- blocking: a genuine defect after the bad byte\n' >> "$FR"
+printf -- 'chatter carrying a NUL: \000 here\n' >> "$FR"
+printf -- '* **Severity**: nit trailing finding\n' >> "$FR"
+# Both halves, or the test proves nothing about which flag does the work.
+check "by: without -a the whole review is suppressed" \
+  "[ \$(grep -nEi 'blocking|nit' '$FR' 2>/dev/null | wc -l) -eq 0 ]"
+check "by: with -a every line comes back" \
+  "[ \$(grep -anEi 'blocking|nit' '$FR' 2>/dev/null | wc -l) -ge 2 ]"
+# Re-project over the mutated file: same code path cmd_review uses.
+( set -uo pipefail; export CADRE_ROOT="$ROOT"
+  . "$ROOT/lib/common.sh"; . "$ROOT/lib/engine/synthesize.sh"
+  engine_write_findings "$D/state/reviews/by" none "" finder good >/dev/null 2>&1 )
+check "by: the pre-existing claims survive" \
+  "[ \$(jq '[.claims[] | select(.reviewer | startswith(\"finder\"))] | length' '$BJ') -eq 6 ]"
+check "by: the finding after the bad byte is claimed" \
+  "jq -e '.claims[] | select(.source_text | test(\"genuine defect\"))' '$BJ' >/dev/null"
+check "by: and so is the one below it" \
+  "jq -e '.claims[] | select(.source_text | test(\"trailing finding\"))' '$BJ' >/dev/null"
 
 # ★ CLAIMS COME FROM DISK, NOT FROM THE MERGE, and this is the test that proves
 # it rather than the comment that claims it. bigfinder's only severity is its

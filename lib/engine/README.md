@@ -54,6 +54,23 @@ parsing `synthesis.md` would mark a reviewer as having missed a bug it reported.
   already fixed: an absent reviewer read as a dissent. No tag means `null`.
 - `findings.json` is a **lossy view**. `runs.jsonl` and `slots.tsv` remain the
   durable per-seat record, and `synthesis.md` remains the thing a human reads.
+- `panel[]` carries **every roster member**, in one of four states, and the
+  distinctions matter more than they look:
+
+  | state | meaning |
+  | --- | --- |
+  | `ok` | returned a complete review |
+  | `degraded` | stopped partway; kept, and excluded from denominators it did not raise |
+  | `absent` | asked, never answered — its silence proves **nothing** |
+  | `skipped` | never asked, on purpose; `skipped_gate`/`skipped_reason` say why |
+
+  `absent` and `skipped` are deliberately not merged. Collapsing them turns a
+  config decision into a reviewer failure, and dropping either makes the panel
+  read cleaner than it was.
+- The extraction grep runs with `-a`. One NUL byte in a review otherwise makes
+  grep call the file binary and suppress every line **on stderr**, which silently
+  empties that reviewer's claims — a reviewer that reported a blocking bug
+  reading as one that found nothing.
 - It is written on **every** path, including the ones where no merge happened.
   A missing `findings.json` must never be read as a clean panel.
 

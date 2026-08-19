@@ -34,8 +34,15 @@ echo "== the benchmark must not call into the engine =="
 # stops being possible and nobody finds out until they try.
 BENCH="$ROOT/lib/grade.sh $ROOT/lib/adjudicate.sh $ROOT/lib/run-pass.sh $ROOT/lib/aggregate.sh"
 for f in $BENCH; do
+  # ★ NO `\b`. It is a GNU grep extension and BSD grep -- what macOS ships --
+  # reads it as a literal `b`, so `\bengine_` searches for `bengine_` and matches
+  # nothing. This check would then pass on an entire platform no matter how many
+  # engine calls the benchmark had grown, which is the worst failure a test can
+  # have. common.sh's has_verdict carries the same ban for the same reason.
+  # Dropping it only makes the pattern looser, and loose is the safe direction
+  # here: a false alarm is read once, a silent pass is trusted forever.
   check "$(basename "$f") calls no engine_* function" \
-    "! code_only < '$f' | grep -qE '\bengine_[a-z_]+'"
+    "! code_only < '$f' | grep -qE 'engine_[a-z_]+'"
   check "$(basename "$f") does not call cmd_synthesize" \
     "! code_only < '$f' | grep -q 'cmd_synthesize'"
   # ★ settle and the ledger are engine too, and this is the direction that would

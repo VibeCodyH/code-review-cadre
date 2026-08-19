@@ -81,6 +81,23 @@ the degraded runs are the ones a benchmark most needs to see.
 Tests: "ns: findings.json still written", "one: findings.json written",
 "one: claims survived".
 
+**10. The recorded panel is the panel that was asked for.** Every roster member
+appears in `panel[]`, and the four states are kept apart: `ok`, `degraded`,
+`absent` (asked, never answered — silence proves nothing) and `skipped` (never
+asked, on purpose, with the gate and reason recorded). A seat filtered out by a
+`?min-lines` gate is not in the dispatch list, so a panel derived from that list
+alone reports a smaller roster than the user configured.
+Tests: "gt: the gated seat is in the panel", "gt: it is skipped, NOT absent",
+"gt: the roster size is honest".
+
+**11. One stray byte cannot empty a reviewer's claims.** A NUL byte anywhere in
+a review makes grep treat the file as binary and collapse its whole output to a
+diagnostic on stderr. Without `-a` on the extraction grep, every finding in that
+review vanishes and the reviewer scores as having found nothing — silently, with
+no diagnostic in the pipeline.
+Tests: "by: without -a the whole review is suppressed", "by: the pre-existing
+claims survive", "by: the finding after the bad byte is claimed".
+
 ## Non-goals, named
 
 - **The preflight reads filenames, plus content for exactly four config

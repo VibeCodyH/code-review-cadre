@@ -298,9 +298,28 @@ engine_claims() {
 # Same shape as agent_installed's SIGPIPE bug and the same lesson: under
 # `pipefail`, a `grep` whose no-match is a legitimate answer must have its status
 # discarded on purpose, at the point where the meaning is known.
+#
+# ★ `-a` IS NOT OPTIONAL. One invalid byte anywhere in a review makes grep call
+# the whole file binary: it prints "Binary file ... matches" and NOT ONE line
+# number, so every finding in that review silently disappears from claims[] and
+# the reviewer reads as having found nothing. Reviewers emit stray bytes for dull
+# reasons -- a CLI's cursor escapes, a latin-1 quote, a truncated multi-byte
+# character at a token boundary -- and this is the graded layer, so the loss lands
+# in the direction that clears a reviewer that did its job. `-a` is in both GNU
+# and BSD grep. Found by a cross-model review of this commit.
+#
+# ★ The digit guard is the belt to that braces, and it WARNS rather than dropping
+# quietly. Anything that is not `<digits>:<text>` is not a grep -n line, so the
+# claim cannot be trusted -- but a claim silently missing from the graded layer is
+# exactly the failure being defended against, so it has to be said out loud.
 engine_severity_lines() {
   local f="$1" ln text sev
-  grep -nEi "$SEVERITY_RE" "$f" 2>/dev/null | while IFS=: read -r ln text; do
+  grep -anEi "$SEVERITY_RE" "$f" 2>/dev/null | while IFS=: read -r ln text; do
+    case "$ln" in
+      ''|*[!0-9]*)
+        echo "cadre: ⚠ unparsable match in $f (\"$ln\"); that line is NOT in findings.json." >&2
+        continue ;;
+    esac
     sev=$(printf '%s' "$text" | grep -m1 -oEi "$SEVERITY_RE" \
           | grep -oEi "$SEVERITY_WORDS" | tail -1)
     printf '%s\t%s\t%s\n' "$ln" "$sev" "$text"
@@ -325,7 +344,18 @@ engine_severity_lines() {
 # status/ledger_id start null and are the slots `cadre settle` fills in. They sit
 # on findings[] and there is no equivalent on claims[] -- see the header.
 engine_findings() {
-  local out="$1" f="$out/synthesis.md" q num den
+  # ★ SEPARATE STATEMENTS, the same rule case_dir() in the smoke suite carries.
+  # bash expands every word of a `local` line before any of its assignments take
+  # effect, so `local out="$1" f="$out/synthesis.md"` sets f to "/synthesis.md".
+  # This function shipped that way for one commit and WORKED, which is the part
+  # worth remembering: dynamic scoping meant `$out` resolved to the caller's
+  # variable of the same name, and engine_write_findings' `out` happens to hold
+  # the identical value. Correct output, by coincidence, from a line that is
+  # wrong -- and it fails the moment the caller renames its local or anything
+  # calls this directly.
+  local out="$1"
+  local f="$out/synthesis.md"
+  local q num den
   [ -s "$f" ] || return 0
   engine_severity_lines "$f" | while IFS=$'\t' read -r ln sev text; do
     q=$(printf '%s' "$text" | grep -m1 -oE '\[[0-9]+/[0-9]+\]')
@@ -344,17 +374,39 @@ engine_findings() {
 }
 
 # Every roster member with the state its artifacts prove, absent ones included.
+#
+# ★ GATE-SKIPPED SEATS ARE IN HERE TOO, and they arrive by a separate channel
+# because cmd_review never puts them in `specs` -- a seat whose `?min-lines` gate
+# failed is filtered out before dispatch, so a panel built from `specs` alone
+# reports a roster of two where the user asked for three. That is the same
+# false-clearance shape as dropping a dead reviewer, just sourced from config
+# instead of from a failure: the panel reads cleaner than it was. Found by a
+# cross-model review of this commit.
+#
+# `skipped` is DISTINCT from `absent` and the difference is the whole point.
+# absent = it was asked and did not answer, so its silence proves nothing.
+# skipped = it was never asked, on purpose, and the reason is recorded.
+# Collapsing them would turn a deliberate config choice into a reviewer failure.
 engine_panel() {
-  local out="$1"; shift
-  local sp sl state
+  local out="$1" skipped_env="$2"; shift 2
+  local sp sl state gate reason
   for sp in "$@"; do
     sl=$(slug "$sp")
     if   [ -s "$out/$sl.md" ];         then state=ok
     elif [ -s "$out/$sl.md.partial" ]; then state=degraded
     else state=absent
     fi
-    jq -cn --arg r "$sp" --arg st "$state" '{reviewer: $r, state: $st}'
+    jq -cn --arg r "$sp" --arg st "$state" \
+      '{reviewer: $r, state: $st, skipped_gate: null, skipped_reason: null}'
   done
+  # Same tab-separated `spec<TAB>gate<TAB>reason` rows cmd_review already builds
+  # for CADRE_SKIPPED, so there is one format for a skip rather than two.
+  [ -n "$skipped_env" ] || return 0
+  while IFS=$'\t' read -r sp gate reason; do
+    [ -n "$sp" ] || continue
+    jq -cn --arg r "$sp" --arg g "$gate" --arg rs "$reason" \
+      '{reviewer: $r, state: "skipped", skipped_gate: $g, skipped_reason: $rs}'
+  done <<< "$skipped_env"
   return 0
 }
 
@@ -378,8 +430,9 @@ engine_panel() {
 # read yields null and says so on stderr -- writing an invented tree id into the
 # graded layer is the one outcome worse than admitting the gap.
 engine_write_findings() {
-  local out="$1" synth="$2"; shift 2
-  local specs=("$@") mf="$out/manifest.txt" base="" rev="" sstatus
+  local out="$1" synth="$2" skipped_env="$3"; shift 3
+  local specs=("$@")
+  local mf="$out/manifest.txt" base="" rev="" sstatus
   [ -d "$out" ] || return 0
 
   if [ -s "$mf" ]; then
@@ -411,7 +464,7 @@ engine_write_findings() {
   local claims findings panel
   claims=$(engine_claims     "$out" "${specs[@]}" | jq -s .)
   findings=$(engine_findings "$out"               | jq -s .)
-  panel=$(engine_panel       "$out" "${specs[@]}" | jq -s .)
+  panel=$(engine_panel       "$out" "$skipped_env" "${specs[@]}" | jq -s .)
   if [ -z "$claims" ] || [ -z "$findings" ] || [ -z "$panel" ]; then
     echo "cadre: ⚠ the findings projection failed; no findings.json written for $out." >&2
     echo "     The reviews themselves are intact. Do not read a missing file as a clean panel." >&2

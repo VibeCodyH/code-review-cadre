@@ -136,16 +136,6 @@ init_home() {
   [ -f "$PASSES" ] || cp "$CADRE_ROOT/templates/passes.conf" "$PASSES"
 }
 
-# The judge is a model too. Default to the first installed candidate and SAY
-# which one, because a silently-chosen judge is a silently-chosen bias.
-pick_judge() {
-  [ -n "$CADRE_JUDGE" ] && return 0
-  local a
-  for a in claude codex grok opencode; do
-    agent_installed "$a" && { CADRE_JUDGE="$a"; return 0; }
-  done
-  return 1
-}
 need_judge() {
   pick_judge || die "no judge available, set CADRE_JUDGE to an agent agentcall can run"
   # Catch a typo or a missing CLI here. Otherwise every call fails and the whole
@@ -935,7 +925,10 @@ cmd_review() {
   # produced claims whether or not a merge ran, succeeded, or was even asked for.
   # Hanging it off the synthesize call would erase every degraded run from the
   # benchmark's view -- see the comment on engine_write_findings.
-  engine_write_findings "$out" "${synth:-none}" "${specs[@]}"
+  # $skipped_env carries the gate-skipped seats, which are NOT in $specs: they
+  # were filtered out before dispatch, and a panel built from $specs alone would
+  # report a smaller roster than the user asked for.
+  engine_write_findings "$out" "${synth:-none}" "$skipped_env" "${specs[@]}"
   return 0
 }
 
