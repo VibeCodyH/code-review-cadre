@@ -1595,6 +1595,13 @@ OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
       "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
 check "a real error stays nonzero"    "[ $RC -ne 0 ]"
 check "and keeps the provider text"   "grep -q '400: model not found' <<<\"\$OUT\""
+# ★ issue #33: run_pi's stdin pipe carries the prompt PLUS the format contract,
+# and the contract must carry the two hooks the classifier actually reads -- a
+# bold severity label and a closing Verdict: line. pi_output_contract alone, in
+# a subshell: no run_pi, no pi binary, no network.
+contract=$( . "$ROOT/agents.d/pi.sh" >/dev/null 2>&1; pi_output_contract )
+check "pi adapter appends output contract (issue #33)" \
+  "grep -q 'Verdict:' <<<\"\$contract\" && grep -qF -- '**blocking**' <<<\"\$contract\""
 
 echo "== ★ the run dataset =="
 # ★ The record has to be written BEFORE the scratch files it is built from are
