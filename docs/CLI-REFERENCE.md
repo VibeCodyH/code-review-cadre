@@ -94,6 +94,9 @@ the last argv word.
 ```
 claude       claude -p --strict-mcp-config --settings '{"advisorModel":""}' \
                   --disallowedTools $CLAUDE_DENY                          [prompt on stdin]
+claudecr     claude -p "/code-review <level>" --strict-mcp-config \
+                  --settings '{"advisorModel":""}' --disallowedTools $CLAUDE_DENY
+                  (level = the model slot: claudecr:low|medium|high|xhigh)  [takes no prompt]
 coderabbit   coderabbit review --committed --base $CADRE_PASS_BASE --agent     [takes no prompt]
 codex        codex exec -s read-only --ignore-user-config \
                   --skip-git-repo-check -C . -o OUTFILE -                  [prompt on stdin]
