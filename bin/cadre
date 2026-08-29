@@ -118,6 +118,11 @@ Environment:
   CADRE_TEST_CMD  override the detected test command
   CADRE_RETRIES     attempts when a call comes back rate limited (default 3)
   CADRE_RETRY_WAIT  first backoff in seconds, doubling, capped at 600 (default 60)
+  CADRE_PANEL_MIN   `cadre review` exits 10 when fewer usable seats than this
+                    came back (checked after synthesis; every artifact is
+                    intact). Off by default. A runner reads the exit code, not
+                    the report, and should alert rather than post a thin panel
+                    as if it were the one asked for.
 EOF
 }
 
@@ -959,6 +964,25 @@ cmd_review() {
     esac
     is_promptless "$sa" && die "--synth cannot be '$sa': that adapter ignores the prompt and
      ships its own review contract, so it cannot merge reviews."
+    # ★ The synthesizer's own seat runs LAST (#29). On a single-lane runner
+    # the next review starts seconds after this one's synthesize call, and a
+    # roster that lists that account first fires its seat straight into the
+    # provider's burst window: measured 2026-08-25, five runs back to back,
+    # the claude SEAT produced zero reviews while claude-as-synthesizer
+    # worked in every one of them. Every other seat's wall time is the
+    # backoff that seat never got. Stable partition, roster order otherwise.
+    local head_specs=() tail_specs=() moved="" sp
+    for sp in "${specs[@]}"; do
+      if [ "$(spec_agent "$sp")" = "$sa" ]; then
+        tail_specs+=("$sp"); moved="${moved:+$moved, }$sp"
+      else
+        head_specs+=("$sp")
+      fi
+    done
+    if [ -n "$moved" ] && [ "${#head_specs[@]}" -gt 0 ]; then
+      specs=("${head_specs[@]}" "${tail_specs[@]}")
+      echo "  seat order: $moved moved last, it shares the synthesizer's account"
+    fi
   fi
 
   # Single-use labels. Reusing one would hand back the previous review of
@@ -1071,11 +1095,36 @@ cmd_review() {
   # that parked the directory here would have this process finish its merge
   # inside the replacement run's directory.
   [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
+  # ★ Panel floor (#29). The report is honest about a shrunken panel, but a
+  # runner posting the synthesis never reads the report; it reads the exit
+  # code. Below the floor the artifacts are all real and all on disk -- this
+  # is not a failed measurement, so it runs AFTER synthesis -- and 10 says
+  # "you got less than you asked for" in a channel a runner can act on.
+  # Off unless CADRE_PANEL_MIN is set: a floor is a property of a roster.
+  # ★ Still under the claim: this writes report.md, and a --force parking the
+  # directory here would land the note in the replacement run.
+  # ★ A malformed floor is refused, not coerced to "off": CADRE_PANEL_MIN=3x
+  # silently posting a two-seat panel as healthy is the exact failure the
+  # floor exists to stop. Found by the codex review of this change.
+  local floor="${CADRE_PANEL_MIN:-0}" usable=0 sl frc=0
+  local requested=$(( ${#specs[@]} + ${#skipped[@]} ))
+  case "$floor" in *[!0-9]*) rm -f "$out/.claim"; die "CADRE_PANEL_MIN must be a whole number, got '$floor'" ;; esac
+  if [ "${floor:-0}" -gt 0 ]; then
+    for sp in "${specs[@]}"; do
+      sl=$(slug "$sp")
+      { [ -s "$out/$sl.md" ] || [ -s "$out/$sl.md.partial" ]; } && usable=$((usable + 1))
+    done
+    if [ "$usable" -lt "$floor" ]; then
+      echo "> ⚠ **Panel below floor**: $usable of $requested requested seat(s) usable; CADRE_PANEL_MIN is $floor. The reviews above are real; there are fewer of them than the roster asked for." >> "$out/report.md"
+      echo "cadre: PANEL BELOW FLOOR: $usable of $requested requested seat(s) usable, floor $floor (CADRE_PANEL_MIN). Everything on disk is intact; the panel is thinner than you asked for. Exit 10." >&2
+      frc=10
+    fi
+  fi
   # Released on every path. Left behind, a finished run reads as a claim with
   # a dead pid -- reclaimable, so not fatal, but it would park a completed
   # review on the next call instead of refusing to re-measure it.
   rm -f "$out/.claim"
-  return 0
+  return "$frc"
 }
 
 # Merge the reviews. A model too, so the same rate-limit rule applies, and a
