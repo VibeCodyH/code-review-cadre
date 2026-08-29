@@ -61,6 +61,7 @@ an empty failure.
 | a complete review | the review, nothing else | `ok` |
 | review text, cut short | the text, then a line starting `_TRUNCATED` | `degraded` |
 | no review at all | a line starting `DID NOT RUN` or `DID NOT COMPLETE`, then any raw output that helps diagnose it | `failed` |
+| your CLI refused for a reason that is the OPERATOR's to fix (a model the vendor does not serve, a flag this build lacks) | `DID NOT RUN, misconfigured: <why>` | `failed`, reported as MISCONFIGURED rather than as a reviewer failure |
 
 **If the clock is what stopped you, say so on that marker line, with the number:**
 `DID NOT COMPLETE, <agent> was killed at the ${TIMEOUT}s timeout`. It does not

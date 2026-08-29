@@ -866,8 +866,30 @@ content_empty() {  # <file> -> 0 when the file holds no content
 # rc is OPTIONAL. `cadre grade` re-reads .failed artifacts off disk long after
 # the exit code is gone, and the content discriminator still works there -- so
 # with no rc the timeout case is simply not claimed rather than guessed at.
-failure_kind() {  # <file> [rc] -> no-output | timed-out | failed
+# The one copy of the misconfiguration markers, and the line that matched --
+# the renderers quote it, so a marker on line 2 or 3 is quoted, not line 1.
+CADRE_MISCONF_RE="^(NOT INSTALLED: [^ ]+ is not on PATH|agentcall: (unknown agent '|[^ ]+ takes no model, drop|no such directory: |mode must be ro or rw|no prompt \\()|DID NOT RUN, misconfigured: )"
+misconfigured_line() {  # <file> -> the matching marker line, or ""
+  head -3 "$1" 2>/dev/null | grep -E -m1 "$CADRE_MISCONF_RE"
+}
+
+failure_kind() {  # <file> [rc] -> misconfigured | no-output | timed-out | failed
   local f="$1" rc="${2:-}"
+  # ★ FIRST, ahead of every provider-shaped answer (#31): these are things the
+  # OPERATOR did, and they are fixed on this box -- a roster member not on
+  # PATH, a spec with a model on an adapter that takes none, a seat with no
+  # adapter file at all. None of it is evidence about a reviewer, and a sweep
+  # that files it as a reviewer failure manufactures a verdict on a model that
+  # was never called. Every marker here is one the HARNESS writes (run-review
+  # / run-pass's NOT INSTALLED line, agentcall's own die), plus one an adapter
+  # may opt into when its CLI reports a fault it can attribute to configuration
+  # rather than the provider: `DID NOT RUN, misconfigured: <why>`.
+  # Same rails as the other kinds: renderer layer only, classify_run's four
+  # states untouched, so the retry loops keep string-comparing `failed`.
+  # ★ Whole harness sentences, not their first words: a reviewer of THIS repo
+  # opening with "NOT INSTALLED handling is too broad" is a review, and the
+  # first draft of this check filed it as a seat that never ran.
+  if [ -n "$(misconfigured_line "$f")" ]; then echo misconfigured; return 0; fi
   if content_empty "$f"; then echo no-output; return 0; fi
   # ★ THE ADAPTER'S OWN VERDICT BEFORE THE EXIT CODE, the same rail classify_run
   # follows and for the same reason: the adapter is the only layer that watched
@@ -928,6 +950,11 @@ failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
     # stop, one level up.
     timed-out)
       echo "TIMED OUT$after$rcp: killed at the ${tmo}s CADRE_TIMEOUT, so this is cadre's clock and not a verdict on the model -- raise CADRE_TIMEOUT and re-run" ;;
+    # ★ Quotes the harness's own line, because it already names the fix (the
+    # binary, the spec, the adapter). No rc: the seat never ran, so there is
+    # no exit status that means anything about it.
+    misconfigured)
+      echo "MISCONFIGURED$after: $(misconfigured_line "$f" | cut -c1-160) -- a fault on this box, not a verdict on the model; fix the roster or the install and re-run" ;;
     *)
       echo "FAILED$after$rcp" ;;
   esac

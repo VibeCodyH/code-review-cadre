@@ -422,7 +422,7 @@ remove that directory and re-run."
   # the silent-denominator bug the nskipped guard was written for, still live on
   # the one path where it costs most: 11 of 12 passes producing nothing scored
   # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
-  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed=""
+  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed="" misconfigured_seat=""
   # ★ Sweep-wide tally behind the fourth "nothing" verdict (#12). A NO OUTPUT
   # streak across every seat of a sweep is evidence about the PROVIDER, not the
   # candidate -- measured when every opencode-go model hung on `Reply with
@@ -551,6 +551,12 @@ remove that directory and re-run."
         elif [ "$prc" -eq 7 ]; then
           skipped="$skipped- $label: NOT MEASURED, every run came back empty (suspect a provider outage)"$'\n'
           provider_empty=1
+        # ★ 9 IS a failed measurement, unlike 6 and 7, because nothing clears
+        # it but the operator -- but the sentence must send them to the roster
+        # or the install, not to the candidate (#31).
+        elif [ "$prc" -eq 9 ]; then
+          skipped="$skipped- $label: NOT MEASURED, the seat is MISCONFIGURED on this box (not installed, bad spec, or no adapter); the reviewer was never called"$'\n'
+          measurement_failed=1; misconfigured_seat=1
         else
           skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
           measurement_failed=1
@@ -627,7 +633,9 @@ remove that directory and re-run."
         # Every other artifact test in this block stays `-s` on purpose -- an
         # empty .partial or .inconclusive really is nothing to report.
         if [ -e "$rf.failed" ]; then
-          if content_empty "$rf.failed"; then
+          if [ "$(failure_kind "$rf.failed")" = misconfigured ]; then
+            why="MISCONFIGURED on this box, the reviewer was never called: $(misconfigured_line "$rf.failed" | cut -c1-120)"
+          elif content_empty "$rf.failed"; then
             why="the provider returned NOTHING (no content in $sl-run$n.md.failed)"
             no_output_runs=$((no_output_runs + 1))
           else
@@ -976,6 +984,18 @@ here -- but nothing expensive was lost, and \`cadre grade $spec $runs\` re-runs
 the judge over what is already on disk. Do not re-review."
       fi
       local tail1="Fix the cause and re-run. Do not quote a number from this file."
+      # ★ The operator's own fault outranks every provider-shaped verdict below
+      # (#31): a seat that is not installed will not come back after a reset
+      # or an outage, and 4's "fix the cause" sends the reader to the tool.
+      # Exit 9, matching run-pass.sh, so a driver can tell "install it" from
+      # "file a bug" without reading the report.
+      if [ -n "$misconfigured_seat" ] && [ -z "$grading_failed" ]; then
+        head1="NOT MEASURED -- SEAT MISCONFIGURED"; rc1=9
+        body1="The seat for \`$spec\` never ran on this box: not installed, a bad spec, or no
+adapter. Nothing about the candidate was observed, so this says nothing about it."
+        tail1="Fix the roster entry or the install, then re-run. Do not quote a number from
+this file, and do not record a verdict about the candidate from it."
+      fi
       # ★ A fourth nothing (#12), and it is a statement about the PROVIDER. Fires
       # only when EVERY failed run of the sweep came back content-empty: one
       # empty artifact is an ordinary failure, a clean sweep of them is an
