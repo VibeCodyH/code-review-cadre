@@ -23,7 +23,7 @@ setup_agents() {
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
-           blocked permquote; do
+           blocked permquote ratereview budget window; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -144,6 +144,32 @@ A
   # A GENUINE rate limit, no review at all: the case the retry loop is for.
   cat > "$1/agents.d/ratelim.sh" <<'A'
 run_ratelim() { printf 'Error: 429 too many requests.\n'; }
+A
+  # ★ A short CLEAN review of throttle code, verbatim shape from the live
+  # runner (2026-08-29): findings=0, the words "429" and "rate limited" in the
+  # body, a verdict at the end. The keyword scan binned it and burned three
+  # retries. A refusal never states a bottom line; this does.
+  # ★ Verbatim shapes from the live runner. A budget refusal and a closed usage
+  # window both match the rate scan; neither is cleared by backoff.
+  cat > "$1/agents.d/budget.sh" <<'A'
+run_budget() { printf 'You have exceeded your monthly quota (Request ID: F443:1788AA:4F7ACB)\n'; }
+A
+  cat > "$1/agents.d/window.sh" <<'A'
+# Nonzero like the real claude CLI: with exit 0 this text is `inconclusive`
+# (no rate keyword, no findings, no verdict) and never reaches the retry loop.
+run_window() { printf "You've hit your session limit · resets 5am (UTC)\n"; return 1; }
+A
+  # Unquoted heredoc on purpose: the call counter's path is baked in, because
+  # the adapter runs under a scrubbed environment and cannot be told it.
+  cat > "$1/agents.d/ratereview.sh" <<A
+run_ratereview() {
+  echo x >> "$1/ratereview.calls"
+  echo "Comment-only diff. The old comment claimed the in-app 429 was the only throttle,"
+  echo "but there is no rate-limit check anywhere in this route; the new comment says so."
+  echo "No behavior changed, so nothing is rate limited differently. No new defects."
+  echo
+  echo "Verdict: ship it"
+}
 A
   # ★ #28, verbatim from a live panel (codex, 2026-08-24). The sandbox broke
   # before the model could look; it said so, stated NO findings, and then wrote
@@ -1565,6 +1591,34 @@ R="$D/state/reviews/ratelim"
 check "a real rate limit still fails"   "ls '$R'/ratelim-*.md.failed >/dev/null 2>&1"
 check "give-up note leads the file"     "head -1 '$R'/ratelim-*.md.failed | grep -q '^DID NOT COMPLETE, rate limited'"
 check "and the error text is kept"      "grep -q '429 too many requests' '$R'/ratelim-*.md.failed"
+# ★ The verdict is the discriminator. Same words, zero findings, a bottom line:
+# a review, filed ok, and NOT retried -- the retries are the expensive half.
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster ratereview --synth none \
+      --base main --label ratereview "$S")
+R="$D/state/reviews/ratereview"
+check "clean review of throttle code is ok"  "ls '$R'/ratereview-*.md >/dev/null 2>&1"
+check "and not filed failed"                 "! ls '$R'/ratereview-*.md.failed >/dev/null 2>&1"
+check "and was never retried"                "! grep -q 'rate limited, waiting' <<<\"\$OUT\""
+check "and the adapter was called exactly once" "[ \$(wc -l < '$D/ratereview.calls') -eq 1 ]"
+# The refusal shapes has_verdict would have let through.
+printf 'Request not approved: 429 rate limit exceeded.\n' > "$D/notapproved.txt"
+check "unit: 'not approved: 429' is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$D/notapproved.txt' 0) = failed ]\""
+printf 'Error: rate limit exceeded.\nRecommendation: retry after 60 seconds.\n' > "$D/recommend.txt"
+check "unit: 'Recommendation: retry' is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$D/recommend.txt' 0) = failed ]\""
+# ★ Budget and window refusals: filed failed, NOT retried. The retries were
+# 8.7 hours of a single-lane queue on the live runner.
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster budget,window,good --synth none \
+      --base main --label budget "$S")
+R="$D/state/reviews/budget"
+check "budget refusal is failed"             "ls '$R'/budget-*.md.failed >/dev/null 2>&1"
+check "budget refusal is not retried"        "! grep -q 'rate limited, waiting' <<<\"\$OUT\""
+check "budget refusal is named"              "grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
+check "budget banner leads the artifact"     "head -1 '$R'/budget-*.md.failed | grep -q 'out of budget, not retried'"
+check "window refusal is failed"             "ls '$R'/window-*.md.failed >/dev/null 2>&1"
+check "window refusal is named"              "grep -q 'usage window CLOSED' <<<\"\$OUT\""
+check "window banner leads the artifact"     "head -1 '$R'/window-*.md.failed | grep -q 'usage window closed, not retried'"
+check "the rest of the panel still ran"      "ls '$R'/good-*.md >/dev/null 2>&1"
+check "unit: a refusal with no verdict is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$R'/../ratelim/ratelim-*.md.failed 0) = failed ]\""
 
 echo "== ★ a synthesis QUOTING a marker is not a truncated synthesis =="
 # The synthesis prompt asks the model to report which reviewers were cut off, so

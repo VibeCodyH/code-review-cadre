@@ -560,6 +560,25 @@ run_one() {
     # classify_run left both halves alive; a test on the end-to-end path is what
     # found them, after the unit-level order was already correct.
     [ "$(classify_run "$f.part" "$rc")" = failed ] || break
+    # ★ The benchmark path's three refusals, in the benchmark path's order, and
+    # this path never had them. Measured on the live runner, 2026-08-29: the
+    # copilot seat's "You have exceeded your monthly quota" matched the rate
+    # scan below and was retried three times at 60/120/240s -- on 164 reviews,
+    # 31,322 seconds of a single-lane queue waiting on an account that no
+    # backoff could refill. A usage window is the same waste with a reset time
+    # attached. Neither is a throughput ceiling; neither gets a retry.
+    if provider_window_closed "$f.part"; then
+      { echo "DID NOT COMPLETE, provider usage window closed, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
+        cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
+      echo "  $spec: ⏸ usage window CLOSED, not a rate limit; not retried" >> "$log"
+      break
+    fi
+    if quota_exhausted "$f.part"; then
+      { echo "DID NOT COMPLETE, out of budget, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
+        cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
+      echo "  $spec: ⛔ OUT OF BUDGET, not a rate limit; not retried" >> "$log"
+      break
+    fi
     rate_limited "$f.part" || break
     if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
       # ★ PREPENDED, in the documented contract shape. Appending is the one

@@ -644,6 +644,16 @@ has_verdict() {
   tail -12 "$1" | sed "$strip" | grep -qiE '(ship[ -]it|lgtm|looks good|approved?|no (defects|issues|problems|concerns|bugs|blockers)|nothing (worth )?(to )?(flag|report|fix|filing|flagging|flagged)|all (good|clear)|(safe|ready|ok) to merge|recommend merging|^[-*_#> `]*((overall +)?verdict|conclusion|recommendation)|no (blocking|defects)[a-z ]*(found|here)?)'
 }
 
+# The NARROW form of has_verdict, for exempting a short zero-finding review
+# from the rate-limit scan: a labelled verdict line, or one of the unambiguous
+# bottom-line idioms. Deliberately without has_verdict's bare `approved?`,
+# `looks good`, `conclusion` and `recommendation`, each of which a refusal can
+# say ("Request not approved: 429", "Recommendation: retry after 60s").
+explicit_verdict() {
+  local strip='s/^[[:space:]]*//;s/[[:space:]]*$//'
+  tail -12 "$1" | sed "$strip" | grep -qiE '(^[-*_#> `]*(overall +)?verdict[: *_]|\b(ship[ -]it|lgtm|safe to merge|recommend merging|no (defects|issues|problems|bugs|blockers) (found|here))\b)'
+}
+
 # Does this output look like a rate-limit refusal rather than a review?
 # ★ Length-guarded on purpose. A genuine review OF a rate limiter says "rate
 # limit exceeded" while quoting the code, and misreading that as a refusal would
@@ -1151,7 +1161,19 @@ classify_run() {
     # length-guard claim was only true above 2KB. A refusal that happens to
     # open with "critical:" slips through here and lands on the judge instead,
     # which is the cheaper direction: a destroyed real review is unrecoverable.
-    if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
+    # ★ ...and never states a BOTTOM LINE either. Measured 2026-08-29 on the
+    # live runner: a 1.4KB clean review of a comment-only diff about a 429
+    # throttle -- "there is no rate-limit check ... Verdict: ship it" -- had
+    # findings=0, matched the scan, was retried three times over 250s of the
+    # seat's quota, and was filed failed under a DID NOT COMPLETE banner. The
+    # discriminator provider_refused() already names: a refusal is something
+    # the CLI RETURNS, a verdict is something the model WRITES. A refusal
+    # that happens to say "ship it" lands on the judge, the cheap direction.
+    # ★ explicit_verdict, not has_verdict: the broad gate accepts a bare
+    # "approved" or a leading "Recommendation:", and "Request not approved:
+    # 429" / "Recommendation: retry after 60s" are refusal shapes. Found by
+    # the codex review of this change.
+    if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! explicit_verdict "$f"; then echo failed; return 0; fi
     # ★ #28. A seat whose sandbox broke before the model could look wrote a
     # short apology, no findings, and a verdict of its own -- and that verdict
     # carried it past the inconclusive test below into `ok`. Checked here with
