@@ -1727,6 +1727,74 @@ contract=$( . "$ROOT/agents.d/pi.sh" >/dev/null 2>&1; pi_output_contract )
 check "pi adapter appends output contract (issue #33)" \
   "grep -q 'Verdict:' <<<\"\$contract\" && grep -qF -- '**blocking**' <<<\"\$contract\""
 
+echo "== ★ claudecr: /code-review per level as a seat (#42) =="
+# Stub `claude` on PATH; the adapter's own contract logic is what is under test.
+CD=$(case_dir claudecr); cp "$ROOT/agents.d/claudecr.sh" "$ROOT/agents.d/claude.sh" "$CD/agents.d/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/claude.argv"\necho "**blocking**"\necho "src/x.js:3 -- missing await"\necho "Verdict: blocking"\n' "$CD" > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: review passes through"          "grep -q 'missing await' <<<\"\$OUT\" && [ $RC -eq 0 ]"
+check "claudecr: argv leads with the slash command" "head -2 '$CD/claude.argv' | grep -q '^/code-review low'"
+check "claudecr: and appends the format contract"  "grep -q 'Verdict:' '$CD/claude.argv' && grep -qF -- '**blocking**' '$CD/claude.argv'"
+check "claudecr: ro carries the claude deny list"  "grep -q -- '--disallowedTools' '$CD/claude.argv' && grep -qw 'Workflow' '$CD/claude.argv'"
+# ★ Never a base target: probed, it makes the skill review nothing.
+check "claudecr: no base commit in the argv"       "! grep -qE '^[0-9a-f]{40}$' '$CD/claude.argv'"
+# A level is required, and a bad one is refused -- both as misconfiguration,
+# the operator's fault, never a verdict on the model.
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro 2>&1 </dev/null)
+check "claudecr: no level -> DID NOT RUN, misconfigured" "grep -q '^DID NOT RUN, misconfigured: claudecr needs a level' <<<\"\$OUT\""
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M ultra 2>&1 </dev/null)
+check "claudecr: ultra is refused"                 "grep -q \"^DID NOT RUN, misconfigured: claudecr level 'ultra'\" <<<\"\$OUT\""
+printf 'DID NOT RUN, misconfigured: claudecr level x\n' > "$CD/lvl.txt"
+check "claudecr: and files as misconfigured"       "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$CD/lvl.txt' 0) = misconfigured ]\""
+# Silence is not a clean pass.
+printf '#!/bin/sh\nexit 0\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M medium 2>&1 </dev/null); RC=$?
+check "claudecr: silent run is DID NOT COMPLETE"   "grep -q '^DID NOT COMPLETE, claudecr:medium printed no review' <<<\"\$OUT\" && [ $RC -ne 0 ]"
+# Nonzero WITH text keeps both: the text is a review, the status is the CLI's.
+printf '#!/bin/sh\necho "**should-fix**"\necho "x.js:1 -- thing"\necho "Verdict: should-fix"\nexit 3\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: nonzero with text keeps both"     "grep -q 'x.js:1' <<<\"\$OUT\" && [ $RC -eq 3 ]"
+# A clock kill with text on the way is a partial review, not nothing.
+printf '#!/bin/sh\necho "**blocking**"\necho "x.js:1 -- partial"\nexit 124\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: timeout with text -> _TRUNCATED"  "grep -q 'x.js:1 -- partial' <<<\"\$OUT\" && tail -1 <<<\"\$OUT\" | grep -q '^_TRUNCATED' && [ $RC -ne 0 ]"
+printf '#!/bin/sh\nexit 124\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: timeout with nothing -> DID NOT COMPLETE" "grep -q '^DID NOT COMPLETE.*timeout with no output' <<<\"\$OUT\" && [ $RC -ne 0 ]"
+# ★ ro must not fail open when claude.sh is not loaded. agentcall always
+# sources the shipped agents.d first, so the only way to test the guard is to
+# source the adapter alone and call run_claudecr with the locals it expects.
+printf '#!/bin/sh\necho "should not run"\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(PATH="$CD/bin:$PATH" bash -c 'unset CLAUDE_DENY; . "$1"; dir=/tmp mode=ro model=low prompt="" TIMEOUT=5 DRY=""; run_claudecr' _ "$ROOT/agents.d/claudecr.sh" 2>&1 </dev/null)
+check "claudecr: ro without CLAUDE_DENY refuses"   "grep -q 'misconfigured: CLAUDE_DENY is unset' <<<\"\$OUT\" && ! grep -q 'should not run' <<<\"\$OUT\""
+# Dry run shows the real argv, contract included.
+OUT=$(echo hi | CADRE_AGENTS_D="$CD/agents.d" "$ROOT/bin/agentcall" --print-command claudecr -d /tmp -m ro -M xhigh 2>&1)
+check "claudecr: dry run carries the contract"     "grep -q 'code-review' <<<\"\$OUT\" && grep -q 'Verdict' <<<\"\$OUT\""
+# ★ The three-commit checkout: the skill must see base..HEAD, not the last
+# commit alone. The stub records what HEAD^ was when claude ran.
+TR=$(mktemp -d -p "$SANDBOX"); git -C "$TR" init -q; git -C "$TR" -c user.name=c -c user.email=c@x commit -q --allow-empty -m base
+TB=$(git -C "$TR" rev-parse HEAD); echo a > "$TR/a"; git -C "$TR" add a; git -C "$TR" -c user.name=c -c user.email=c@x commit -qm tracked
+echo u > "$TR/u"; git -C "$TR" add u; git -C "$TR" -c user.name=c -c user.email=c@x commit -qm untracked; TH=$(git -C "$TR" rev-parse HEAD)
+printf '#!/bin/sh\ngit rev-parse HEAD^ > "%s/parent.txt"; git diff --name-only HEAD^ HEAD > "%s/files.txt"\necho "**nit**"\necho "a:1 -- x"\necho "Verdict: no defects found"\n' "$CD" "$CD" > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" CADRE_PASS_BASE="$TB" "$ROOT/bin/agentcall" claudecr -d "$TR" -m ro -M low 2>&1 </dev/null)
+check "claudecr: squashed view has the base as parent" "[ \"\$(cat '$CD/parent.txt')\" = '$TB' ]"
+check "claudecr: and the diff carries BOTH commits"    "grep -qx a '$CD/files.txt' && grep -qx u '$CD/files.txt'"
+check "claudecr: and HEAD is restored after"           "[ \"\$(git -C '$TR' rev-parse HEAD)\" = '$TH' ]"
+# Declarations: it cannot merge, grade, or take a security brief.
+DECL=$( . "$ROOT/agents.d/claudecr.sh" >/dev/null 2>&1; cannot_claudecr )
+check "claudecr: declares role:synth + role:judge" "grep -q '^role:synth$' <<<\"\$DECL\" && grep -q '^role:judge$' <<<\"\$DECL\" && grep -q '^prompt:security-audit$' <<<\"\$DECL\""
+check "claudecr: is promptless"                    "bash -c \"source '$ROOT/lib/common.sh'; CADRE_AGENTS_D='$ROOT/agents.d' is_promptless claudecr\""
+check "claudecr: documented in CLI-REFERENCE"      "grep -q 'claudecr' '$ROOT/docs/CLI-REFERENCE.md'"
+# ★ Installed means `claude` is on PATH, not `claudecr`. Without bin_claudecr
+# the real end-to-end run dispatched the seat as NOT INSTALLED.
+printf '#!/bin/sh\nexit 0\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+# ★ grep -x, not -qx: under this suite's pipefail a -q that exits on the first
+# match leaves agentcall writing into a closed pipe, and the pipeline reports
+# SIGPIPE (141) for a check that actually matched.
+check "claudecr: installed when claude is"         "CADRE_AGENTS_D='$CD/agents.d' PATH='$CD/bin:$PATH' '$ROOT/bin/agentcall' --installed 2>/dev/null | grep -x claudecr >/dev/null"
+NOCL=$(mktemp -d -p "$SANDBOX"); mkdir -p "$NOCL/bin"
+check "claudecr: not installed without claude"     "! env -i PATH='$NOCL/bin:/usr/bin:/bin' HOME='$HOME' CADRE_AGENTS_D='$CD/agents.d' '$ROOT/bin/agentcall' --installed 2>/dev/null | grep -x claudecr >/dev/null"
+
 echo "== ★ the run dataset =="
 # ★ The record has to be written BEFORE the scratch files it is built from are
 # deleted. It was not, for fourteen panels: status and timing lived only in
