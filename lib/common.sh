@@ -658,6 +658,39 @@ rate_limited() {
   grep -qiE '(\b(429|529)\b|too many requests|rate[ _-]?limit[a-z]*([ _-](exceeded|reached|hit|error))?|quota (exceeded|exhausted)|exceeded your [a-z ]{0,20}quota|resource[ _-]exhausted|retry[- ]after|slow down|overloaded|capacity constraints|AI_RetryError)' "$f"
 }
 
+# Did the reviewer's ENVIRONMENT stop it before it reviewed? #28. Measured
+# 2026-08-24 on a live panel: codex's shell tool died under bwrap
+# (`loopback: Failed RTM_NEWADDR: Operation not permitted`), the model wrote
+# 334 bytes saying it could not inspect the diff, added "Overall verdict:
+# should-fix" of its own accord, and exited 0. No adapter marker, no rate-limit
+# keyword, and has_verdict rescued it from `inconclusive` -- so a seat that
+# reviewed nothing was counted `ok` and its silence cleared the whole diff.
+#
+# ★ Same guards as rate_limited and for the same reason: a small file, and the
+# caller also demands findings=0. A real review that quotes "permission denied"
+# from the diff states findings, and a real review is not this short. The
+# model's own verdict line does NOT rescue it: a verdict on a review that never
+# happened is the exact fabrication this exists to catch.
+# ★ Two halves, both required: a tool/sandbox error signature AND the model
+# saying it could not look. Either alone is too loose -- a reviewer of sandbox
+# code quotes bwrap, and "unable to access" alone is the request-for-
+# clarification shape that already lands in `inconclusive`.
+env_blocked() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 2000 ] || return 1
+  grep -qiE '(bwrap:|sandbox|operation not permitted|permission denied|EPERM|EACCES|execution environment|tool call(s)? (failed|error)|command(s)? failed)' "$f" || return 1
+  # ★ The second half names the DIFF as the thing it could not reach, never a
+  # test run. Measured on the bot box's 758 artifacts: "could not execute the
+  # tests in the sandbox" is a routine caveat in five genuine clean reviews, and
+  # a looser "could not (run|execute)" binned every one of them.
+  # ★ And FIRST PERSON. "the diagnostic reports permission denied when the
+  # sandbox cannot access the repository" is a clean review OF such code, not a
+  # reviewer that was stopped; "I could not inspect the diff" is. Found by the
+  # codex review of this change.
+  grep -qiE "\bI (could ?n[o']t|was unable to|am unable to|cannot|can ?not) (review|inspect|read|access|open|examine|see) (the |this |any )?(change|changes|diff|code|files?|source|repo|repository)|(^|\bI am |\bI was )unable to (complete|perform|do) (the |a |this )?review|\b(my |this |the )review (was |is )?blocked|failed before execution" "$f"
+}
+
 # ★ A BUDGET refusal, which is a different animal from a rate limit, and telling
 # them apart is worth a function. Both look like "the provider said no". The
 # difference is whether waiting inside this sweep can clear it:
@@ -1092,6 +1125,14 @@ classify_run() {
     # open with "critical:" slips through here and lands on the judge instead,
     # which is the cheaper direction: a destroyed real review is unrecoverable.
     if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
+    # ★ #28. A seat whose sandbox broke before the model could look wrote a
+    # short apology, no findings, and a verdict of its own -- and that verdict
+    # carried it past the inconclusive test below into `ok`. Checked here with
+    # the same findings=0 gate as the rate-limit scan, and ahead of has_verdict
+    # on purpose: a bottom line on a review that never happened is not a
+    # bottom line. `failed`, not `inconclusive`: the report must send the
+    # operator to the box, not to the roster.
+    if env_blocked "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
   fi

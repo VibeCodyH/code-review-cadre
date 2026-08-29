@@ -22,7 +22,8 @@ setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
-           synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2; do
+           synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
+           blocked permquote; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -143,6 +144,31 @@ A
   # A GENUINE rate limit, no review at all: the case the retry loop is for.
   cat > "$1/agents.d/ratelim.sh" <<'A'
 run_ratelim() { printf 'Error: 429 too many requests.\n'; }
+A
+  # ★ #28, verbatim from a live panel (codex, 2026-08-24). The sandbox broke
+  # before the model could look; it said so, stated NO findings, and then wrote
+  # a verdict of its own. Exit 0, no adapter marker. has_verdict rescued it from
+  # `inconclusive` and it was counted `ok` -- a seat that reviewed nothing,
+  # clearing the diff by silence.
+  cat > "$1/agents.d/blocked.sh" <<'A'
+run_blocked() {
+  echo "I couldn't review the change because every filesystem command failed before execution with:"
+  echo
+  echo '`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`'
+  echo
+  echo "I therefore could not inspect the diff or run tests, and won't claim findings without evidence."
+  echo
+  echo "Overall verdict: should-fix — review blocked by the execution environment."
+}
+A
+  # The control: a SHORT real review whose one finding is about a permission
+  # error in the diff. Same words, but it states a finding, so it stays ok.
+  cat > "$1/agents.d/permquote.sh" <<'A'
+run_permquote() {
+  echo "REVIEW by permquote"
+  echo "- should-fix: install.sh swallows 'permission denied' from bwrap: and the sandbox setup reports success anyway. I could not inspect the diff of the generated wrapper without a runtime, but the error path is wrong as written."
+  echo "Verdict: ship it after that fix"
+}
 A
   # ★ A COMPLETE synthesis that ends by QUOTING a reviewer's truncation marker,
   # which the synthesis prompt explicitly asks it to report. Exits 0, because
@@ -1214,6 +1240,30 @@ check "and is not binned as unusable"  "[ ! -e '$RS/synthesis.md.failed' ]"
 # The per-run record has to carry the state too: it is the benchmark row a
 # roster decision gets made on.
 check "slots.tsv records the state"    "grep -qP '\tinconclusive\t' '$R/slots.tsv'"
+
+echo "== ★ a sandbox error with a self-written verdict is not a review (#28) =="
+D=$(case_dir env_blocked); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster blocked,permquote,good --synth echoer --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "blocked seat -> .md.failed"       "ls '$R'/blocked-*.md.failed >/dev/null 2>&1"
+check "and NOT a clean review"           "! ls '$R'/blocked-*.md >/dev/null 2>&1"
+# ★ failed, not inconclusive: the fix is on the box, not in the roster.
+check "and NOT inconclusive"             "! ls '$R'/blocked-*.md.inconclusive >/dev/null 2>&1"
+check "its verdict line did not rescue it" "grep -q 'Overall verdict' '$R'/blocked-*.md.failed"
+check "counts file it as failed"         "grep -q '2 ok, 0 degraded, 0 inconclusive, 1 failed' <<<\"\$OUT\""
+check "excluded from the synthesis"      "! grep -qE '^===== REVIEWER: blocked =====' '$R/synthesis.md'"
+# The control: same vocabulary, one stated finding, stays a review.
+check "short review quoting the error stays ok" "ls '$R'/permquote-*.md >/dev/null 2>&1"
+check "unit: env_blocked matches the artifact" "bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$R'/blocked-*.md.failed\""
+echo 'Error: 429 too many requests.' > "$D/rl.txt"
+# ★ Third person is a review OF sandbox code, not a stopped reviewer.
+printf 'Reviewed the patch. The new diagnostic correctly reports permission denied when the sandbox cannot access the repository. Overall verdict: ship it.\n' > "$D/third.txt"
+check "unit: third-person mention is not env_blocked" "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/third.txt'\""
+# Length guard: the same apology padded past 2KB is not this shape.
+{ cat "$R"/blocked-*.md.failed; head -c 2100 /dev/zero | tr '\0' 'x'; } > "$D/long.txt"
+check "unit: over 2KB is not env_blocked"  "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/long.txt'\""
+check "unit: a 429 is not env_blocked"   "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/rl.txt'\""
 
 echo "== ★ coderabbit's bracket severities are findings =="
 # ★ Measured across three real panels: coderabbit reviews declaring findings=3,
