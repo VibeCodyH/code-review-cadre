@@ -250,6 +250,26 @@ check "gitignored secret excluded"   "! grep -q 'env.local' '$G'"
 check "ignored log excluded"         "! grep -q 'debug.log' '$G'"
 check ".env.example did not refuse"  "[ -n '$G' ]"
 check "missing agent -> FAILED"      "grep -q 'NOT INSTALLED' '$R'/ghost-*.failed"
+# ★ #31: same bucket, different sentence. The operator reads MISCONFIGURED and
+# goes to the roster, not to a reviewer that was never called.
+check "missing agent reads MISCONFIGURED"   "grep -q 'ghost.*MISCONFIGURED' '$R/report.md'"
+check "and not as a reviewer FAILED"        "! grep -qE '^- .ghost. — \*\*FAILED' '$R/report.md'"
+check "report says the panel is smaller"    "grep -q 'never ran' '$R/report.md'"
+check "unit: NOT INSTALLED -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$R'/ghost-*.failed) = misconfigured ]\""
+check "unit: phrase names the box, not the model" "bash -c \"source '$ROOT/lib/common.sh'; failure_phrase '$R'/ghost-*.failed '' 0\" | grep -q 'not a verdict on the model'"
+printf 'agentcall: unknown agent %s (have: good)\n' "'nope'" > "$D/ac.txt"
+check "unit: agentcall die -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/ac.txt' 2) = misconfigured ]\""
+printf 'DID NOT RUN, misconfigured: model gpt-99 is not served by this account\n' > "$D/adm.txt"
+check "unit: adapter opt-in marker -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/adm.txt' 0) = misconfigured ]\""
+# ★ A reviewer OF this repo opens with the marker's first words. Whole
+# sentences only, or a review is filed as a seat that never ran.
+printf 'NOT INSTALLED handling is too broad in run-review.sh.\n- should-fix: the check matches prose.\nVerdict: ship it after that fix\n' > "$D/prose.txt"
+check "unit: prose starting NOT INSTALLED stays failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/prose.txt' 1) = failed ]\""
+# The marker on line 2 is the line that gets quoted, not line 1.
+printf 'cli chrome\nagentcall: unknown agent %s (have: good)\n' "'nope'" > "$D/ac2.txt"
+check "unit: a line-2 marker is the quoted line" "bash -c \"source '$ROOT/lib/common.sh'; failure_phrase '$D/ac2.txt' 2\" | grep -q 'MISCONFIGURED: agentcall: unknown agent'"
+printf 'DID NOT COMPLETE, no text returned (stopReason=Error).\n' > "$D/dnc.txt"
+check "unit: a provider failure stays failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/dnc.txt' 1) = failed ]\""
 check "all 4 roster rows in report"  "[ \$(grep -c '^- \`' '$R/report.md') -eq 4 ]"
 
 # ---- three-state reviewer health ---------------------------------------------
@@ -3343,6 +3363,18 @@ check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY
 check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
 check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
 check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
+
+# ★ #31: a candidate that is not on PATH is the operator's fault. The pass
+# fails CLOSED with its own code, and the report sends the reader to the
+# install, not to a verdict on a model that was never called.
+DM=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DM" ghost "$HITBOTH" "$HITBOTH"
+RCM=0; OUTM=$(run_gaunt_all "$DM" good,good2 ghost) || RCM=$?
+check "e2e: misconfigured seat exits run-pass 9" "grep -q 'run-pass.sh exited 9' <<<\"\$OUTM\""
+check "e2e: and says MISCONFIGURED"             "grep -q 'MISCONFIGURED' <<<\"\$OUTM\""
+check "e2e: and is not the outage verdict"      "! grep -q 'came back EMPTY' <<<\"\$OUTM\""
+check "e2e: and cadre run exits 9 too"          "[ '$RCM' -eq 9 ]"
+RM=$(ls "$DM/home"/report-*.md | head -1)
+check "e2e: verdict names the seat, not the model" "grep -q 'Verdict: NOT MEASURED -- SEAT MISCONFIGURED' '$RM'"
 
 echo "== ★ admission control: one review per label at a time (#32) =="
 # The label is the identity of the measurement, so two callers reaching for it
