@@ -3530,6 +3530,44 @@ check "claim: pid 0 is not a live holder"        "[ '$RC' -eq 0 ] && [ -s '$D/st
 # No sidecar left behind by any path above.
 check "claim: no .taking sidecars remain"        "! ls -d '$D/state/reviews/'*.taking 2>/dev/null | grep -v pr-6 | grep -q ."
 
+echo "== ★ #29: the synthesizer's seat runs last; a thin panel exits 10 =="
+D=$(case_dir seatorder); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good,good2,terse --synth good --base main --label so "$S")
+check "order: synth's seat moved last"      "grep -q 'seat order: good moved last' <<<\"\$OUT\""
+check "order: good2 dispatched before good" "[ \$(grep -n '^  good2: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+check "order: terse dispatched before good" "[ \$(grep -n '^  terse: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+check "order: all three still reviewed"     "grep -q '3 ok, 0 degraded' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster good,good2 --synth none --base main --label so2 "$S")
+check "order: no synth, roster order kept"  "! grep -q 'seat order' <<<\"\$OUT\" && [ \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good2: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+OUT=$(run_cadre "$D" review --roster good --synth good --base main --label so3 "$S")
+check "order: a synth-only roster is not shuffled" "! grep -q 'seat order' <<<\"\$OUT\""
+# The floor: off by default, exit 10 after synthesis when set and unmet.
+OUT=$(run_cadre "$D" review --roster good,dead --synth none --base main --label fl0 "$S"); RC=$?
+check "floor: off by default"               "[ '$RC' -eq 0 ]"
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,good2,dead --synth echoer --base main --label fl1 "$S"); RC=$?
+check "floor: met -> exit 0"                "[ '$RC' -eq 0 ]"
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,dead,chrome --synth none --base main --label fl2 "$S"); RC=$?
+R="$D/state/reviews/fl2"
+check "floor: unmet -> exit 10"             "[ '$RC' -eq 10 ]"
+check "floor: says how thin"                "grep -q 'PANEL BELOW FLOOR: 1 of 3' <<<\"\$OUT\""
+check "floor: the real review survives"     "ls '$R'/good-*.md >/dev/null 2>&1"
+check "floor: report carries the note"      "grep -q 'Panel below floor' '$R/report.md'"
+check "floor: claim released"               "[ ! -e '$R/.claim' ]"
+# Degraded counts as usable: partial findings are still findings.
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,trunc,dead --synth none --base main --label fl3 "$S"); RC=$?
+check "floor: degraded counts as usable"    "[ '$RC' -eq 0 ]"
+# Synthesis still ran on the thin panel: the artifacts are what a runner posts.
+OUT=$(CADRE_PANEL_MIN=3 run_cadre "$D" review --roster good,good2,dead --synth echoer --base main --label fl4 "$S"); RC=$?
+check "floor: synthesis ran before exit 10" "[ '$RC' -eq 10 ] && [ -s '$D/state/reviews/fl4/synthesis.md' ]"
+# ★ A malformed floor is refused, never silently "off".
+OUT=$(CADRE_PANEL_MIN=3x run_cadre "$D" review --roster good,dead --synth none --base main --label fl5 "$S"); RC=$?
+check "floor: malformed value is refused"   "[ '$RC' -eq 2 ] && grep -q 'whole number' <<<\"\$OUT\""
+check "floor: and releases the claim"       "[ ! -e '$D/state/reviews/fl5/.claim' ]"
+# The denominator is the whole roster, gate-skipped seats included.
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster 'good,dead,good2?min-lines=99999' --synth none --base main --label fl6 "$S"); RC=$?
+check "floor: gated seats count as requested" "[ '$RC' -eq 10 ] && grep -q 'PANEL BELOW FLOOR: 1 of 3' <<<\"\$OUT\""
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
