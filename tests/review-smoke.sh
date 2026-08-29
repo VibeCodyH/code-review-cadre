@@ -288,8 +288,8 @@ printf '# good\n' > "$D/state/roster"
 OUT=$(run_cadre "$D" review --base main "$S")
 check "all-commented roster refused"  "grep -q 'commented out' <<<\"\$OUT\""
 OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
-OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
-check "label is single-use"           "grep -q 'already exists' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S"); RC=$?
+check "label is single-use"           "grep -q 'already holds a finished review' <<<\"\$OUT\" && [ '$RC' -eq 2 ]"
 
 echo "== user-declared roster seat gates =="
 # One added line is below the declared threshold. The all-skipped case is still
@@ -3293,6 +3293,106 @@ check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY
 check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
 check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
 check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
+
+echo "== ★ admission control: one review per label at a time (#32) =="
+# The label is the identity of the measurement, so two callers reaching for it
+# compute the same path and `mkdir` decides. The loser has to hear WHY it lost:
+# a live run is "go back to sleep" (exit 8), a finished one is a spent label
+# (refuse, or --force), a dead one is reclaimed with the corpse parked.
+D=$(case_dir claim); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+run_cadre "$D" review --roster good --synth none --base main --label pr-1 "$S" >/dev/null
+L="$D/state/reviews/pr-1"
+check "claim: a finished run leaves no .claim"   "[ -s '$L/report.md' ] && [ ! -e '$L/.claim' ]"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-1 "$S"); RC=$?
+check "claim: a spent label refuses"             "[ '$RC' -eq 2 ]"
+check "claim: and says how to re-measure"        "grep -q -- '--force' <<<\"\$OUT\""
+check "claim: refusing parks nothing"            "! ls -d '$L'.stale.* >/dev/null 2>&1"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-1 --force "$S"); RC=$?
+check "claim: --force re-measures (exit 0)"      "[ '$RC' -eq 0 ]"
+check "claim: --force parked the old review"     "ls -d '$L'.stale.* >/dev/null 2>&1"
+check "claim: --force says it reclaimed"         "grep -q 'reclaimed pr-1' <<<\"\$OUT\""
+check "claim: and the new review is real"        "[ -s '$L/report.md' ]"
+# A LIVE claim: this test shell's own pid, which is certainly alive.
+mkdir -p "$D/state/reviews/pr-2"
+printf '%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-2/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-2 "$S"); RC=$?
+check "claim: a live run exits 8"                "[ '$RC' -eq 8 ]"
+check "claim: and names the holder"              "grep -q \"pid $$\" <<<\"\$OUT\""
+check "claim: and says it is not a failure"      "grep -q 'not a failure' <<<\"\$OUT\""
+check "claim: live dir untouched"                "[ -f '$D/state/reviews/pr-2/.claim' ] && [ ! -e '$D/state/reviews/pr-2/report.md' ]"
+# ★ --force never displaces a live run.
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-2 --force "$S"); RC=$?
+check "claim: --force still exits 8 on a live run" "[ '$RC' -eq 8 ]"
+check "claim: and parked nothing"                "! ls -d '$D/state/reviews/pr-2.stale.'* >/dev/null 2>&1"
+# A DEAD claim: a pid that has already exited, same host.
+( : ) & DEADPID=$!; wait "$DEADPID" 2>/dev/null
+mkdir -p "$D/state/reviews/pr-3"; echo "half-written" > "$D/state/reviews/pr-3/prompt.txt"
+printf '%s\n%s\n%s\n' "$DEADPID" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-3/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-3 "$S"); RC=$?
+check "claim: a dead holder is reclaimed"        "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-3/report.md' ]"
+check "claim: the corpse is parked, not deleted" "grep -q half-written '$D'/state/reviews/pr-3.stale.*/prompt.txt"
+check "claim: reclaim is announced"              "grep -q 'is gone' <<<\"\$OUT\""
+# A claim from ANOTHER host cannot be probed: live inside the TTL, stale past it.
+mkdir -p "$D/state/reviews/pr-4"
+printf '%s\n%s\n%s\n' "1" "some-other-box" "$(( $(date +%s) - 60 ))" > "$D/state/reviews/pr-4/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-4 "$S"); RC=$?
+check "claim: foreign host inside TTL is live"   "[ '$RC' -eq 8 ]"
+OUT=$(CADRE_CLAIM_TTL=30 run_cadre "$D" review --roster good --synth none --base main --label pr-4 "$S"); RC=$?
+check "claim: foreign host past TTL is reclaimed" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-4/report.md' ]"
+# A failed run releases the claim too, and the empty dir is still removed.
+OUT=$(run_cadre "$D" review --roster ghost --synth none --base main --label pr-5 "$S"); RC=$?
+check "claim: a failed run leaves no .claim"     "[ ! -e '$D/state/reviews/pr-5/.claim' ]"
+# ★ Identity, not just a live pid. The claim carries the holder's process
+# start time; a live pid with a different one is a reincarnation.
+mkdir -p "$D/state/reviews/pr-10"
+printf '%s\n%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" "$(ps -o lstart= -p $$ | tr -s ' ' | sed 's/^ //;s/ $//')" > "$D/state/reviews/pr-10/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-10 "$S"); RC=$?
+check "claim: matching start time is live (8)"   "[ '$RC' -eq 8 ]"
+printf '%s\n%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" "Thu Jan  1 00:00:00 1970" > "$D/state/reviews/pr-10/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-10 "$S"); RC=$?
+check "claim: live pid, other start time = dead"  "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-10/report.md' ]"
+# A half-written record (the winner's publication window) is busy, not dead.
+mkdir -p "$D/state/reviews/pr-11"; : > "$D/state/reviews/pr-11/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-11 "$S"); RC=$?
+check "claim: an empty .claim on a fresh dir is busy" "[ '$RC' -eq 8 ]"
+# A sidecar with no owner (older than a minute) is recovered, not obeyed.
+mkdir -p "$D/state/reviews/pr-12.taking"; touch -d '-2 minutes' "$D/state/reviews/pr-12.taking" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-12.taking"
+mkdir -p "$D/state/reviews/pr-12"; touch -d '-2 minutes' "$D/state/reviews/pr-12" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-12"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-12 "$S"); RC=$?
+check "claim: an abandoned sidecar is recovered" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-12/report.md' ] && [ ! -d '$D/state/reviews/pr-12.taking' ]"
+# The claim is held through synthesis and released after it.
+OUT=$(run_cadre "$D" review --roster good,good2 --synth echoer --base main --label pr-13 "$S"); RC=$?
+check "claim: released after synthesis"          "[ -s '$D/state/reviews/pr-13/synthesis.md' ] && [ ! -e '$D/state/reviews/pr-13/.claim' ]"
+# ★ Two losers on one label: the reclaim sequence is serialised by a sidecar,
+# and a caller that finds the sidecar taken is looking at a live reclaim.
+mkdir -p "$D/state/reviews/pr-6" "$D/state/reviews/pr-6.taking"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-6 "$S"); RC=$?
+check "claim: a reclaim in progress exits 8"     "[ '$RC' -eq 8 ]"
+check "claim: and parks nothing"                 "! ls -d '$D/state/reviews/pr-6.stale.'* >/dev/null 2>&1"
+# ★ The winner between its mkdir and its first write: no record, no report, a
+# directory seconds old. Busy, not dead.
+mkdir -p "$D/state/reviews/pr-7"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-7 "$S"); RC=$?
+check "claim: a fresh empty dir is busy (8)"     "[ '$RC' -eq 8 ]"
+check "claim: and is left alone"                 "[ -d '$D/state/reviews/pr-7' ] && ! ls -d '$D/state/reviews/pr-7.stale.'* >/dev/null 2>&1"
+# The same dir two minutes old is a run that died before it could say so.
+touch -d '-2 minutes' "$D/state/reviews/pr-7" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-7"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-7 "$S"); RC=$?
+check "claim: an old empty dir is reclaimed"     "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-7/report.md' ]"
+# ★ pid reuse after a reboot: a same-host claim whose pid is alive but whose
+# start is past the TTL is dead. pid 1 is always alive.
+mkdir -p "$D/state/reviews/pr-8"
+printf '%s\n%s\n%s\n' "1" "${HOSTNAME:-$(uname -n)}" "$(( $(date +%s) - 20000 ))" > "$D/state/reviews/pr-8/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-8 "$S"); RC=$?
+check "claim: same-host live pid past TTL is dead" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-8/report.md' ]"
+# pid 0 is the process group, so kill -0 0 always succeeds; it is not a holder.
+mkdir -p "$D/state/reviews/pr-9"
+printf '%s\n%s\n%s\n' "0" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-9/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-9 "$S"); RC=$?
+check "claim: pid 0 is not a live holder"        "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-9/report.md' ]"
+# No sidecar left behind by any path above.
+check "claim: no .taking sidecars remain"        "! ls -d '$D/state/reviews/'*.taking 2>/dev/null | grep -v pr-6 | grep -q ."
 
 echo
 echo "$PASS passed, $FAIL failed"
