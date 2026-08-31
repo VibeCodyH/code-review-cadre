@@ -1252,6 +1252,12 @@ classify_run() {
     # shapes explicit_verdict exists to exclude -- "Request not approved: 429",
     # "Recommendation: retry after 60s" -- are RATE refusals, and a rate refusal
     # never reaches this line.
+    # ★ And that makes the guards here IDENTICAL to the inconclusive test at the
+    # bottom of this function -- findings=0 and no broad bottom line, the same
+    # two predicates. So this branch can only ever move a run from
+    # `inconclusive` to `failed`. It cannot reach a run that would have been
+    # `ok`, which is the only direction that destroys a real review. Keep the
+    # two in step if either one moves.
     if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
