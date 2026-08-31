@@ -23,7 +23,7 @@ setup_agents() {
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
-           blocked permquote ratereview budget window; do
+           blocked permquote ratereview budget window tier; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -158,6 +158,14 @@ A
 # Nonzero like the real claude CLI: with exit 0 this text is `inconclusive`
 # (no rate keyword, no findings, no verdict) and never reaches the retry loop.
 run_window() { printf "You've hit your session limit · resets 5am (UTC)\n"; return 1; }
+A
+  # ★ #48. A model-tier window, and the reason it needs its own stub is the
+  # RETURN CODE: every other window in the corpus exits nonzero, so classify_run
+  # binned it `failed` on the rc test and the refusal chain got asked. This one
+  # exits 0 -- observed on the claudecr seat -- so with only the regex fixed it
+  # still lands `inconclusive` and still aborts the sweep.
+  cat > "$1/agents.d/tier.sh" <<'A'
+run_tier() { printf "You've reached your Fable 5 limit. Switch to another model to continue.\n"; }
 A
   # Unquoted heredoc on purpose: the call counter's path is baked in, because
   # the adapter runs under a scrubbed environment and cannot be told it.
@@ -1607,7 +1615,7 @@ printf 'Error: rate limit exceeded.\nRecommendation: retry after 60 seconds.\n' 
 check "unit: 'Recommendation: retry' is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$D/recommend.txt' 0) = failed ]\""
 # ★ Budget and window refusals: filed failed, NOT retried. The retries were
 # 8.7 hours of a single-lane queue on the live runner.
-OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster budget,window,good --synth none \
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster budget,window,tier,good --synth none \
       --base main --label budget "$S")
 R="$D/state/reviews/budget"
 check "budget refusal is failed"             "ls '$R'/budget-*.md.failed >/dev/null 2>&1"
@@ -1617,6 +1625,13 @@ check "budget banner leads the artifact"     "head -1 '$R'/budget-*.md.failed | 
 check "window refusal is failed"             "ls '$R'/window-*.md.failed >/dev/null 2>&1"
 check "window refusal is named"              "grep -q 'usage window CLOSED' <<<\"\$OUT\""
 check "window banner leads the artifact"     "head -1 '$R'/window-*.md.failed | grep -q 'usage window closed, not retried'"
+# ★ #48, the same treatment for a window that exits ZERO. Before the fix this
+# one was `inconclusive`: it never reached the refusal chain, so it was neither
+# named nor kept out of the retry loop.
+check "tier limit is failed"                 "ls '$R'/tier-*.md.failed >/dev/null 2>&1"
+check "tier limit is not retried"            "[ \$(grep -c 'rate limited, waiting' <<<\"\$OUT\") -eq 0 ]"
+check "tier banner leads the artifact"       "head -1 '$R'/tier-*.md.failed | grep -q 'usage window closed, not retried'"
+check "tier refusal text is kept"            "grep -q 'Switch to another model' '$R'/tier-*.md.failed"
 check "the rest of the panel still ran"      "ls '$R'/good-*.md >/dev/null 2>&1"
 check "unit: a refusal with no verdict is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$R'/../ratelim/ratelim-*.md.failed 0) = failed ]\""
 
@@ -2687,6 +2702,45 @@ head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"
 printf "hit your session limit, resets at midnight\n" >> "$QB"
 check "window: too big to be a refusal" "! $WC"
 
+# ★★ A MODEL-TIER window (#48), verbatim from benchmarking the claudecr seat.
+# It is the first window in the corpus that states NO reset -- the reset is real
+# and sits in the provider's usage API, the message names a REMEDY instead -- so
+# the stated-reset test every case above turns on refuses it. It matched none of
+# the three classifiers, so a spent tier was filed as a failed measurement of the
+# candidate: it cost the last pass of `high` and all 12 of `xhigh`.
+printf "You've reached your Fable 5 limit. Switch to another model to continue.\n" > "$QB"
+check "window: model tier caught"        "$WC"
+check "window: tier is NOT a budget"     "! $QE"
+check "window: tier is NOT a rate limit" "! $RL"
+# ★ BOTH halves are required, and each alone is a shape that must not trip it.
+# A spend cap names a payment page and never another model, which is why the
+# remedy can stand in for the reset at all.
+printf "You've reached your monthly spend limit. Raise it at claude.ai/settings/usage\n" > "$QB"
+check "window: tier half alone is not"   "! $WC"
+check "window: that one stays a budget"  "$QE"
+printf 'The retry advice says to switch to another model, which is wrong here.\n' > "$QB"
+check "window: remedy half alone is not" "! $WC"
+
+# ★★ THE HALF THE REGEX DOES NOT FIX. Both dispatch paths ask
+# provider_window_closed() only about a run classify_run already called `failed`,
+# and every window above arrives with a NONZERO exit, so the rc test did that
+# binning for free. The tier limit exits 0 -- no findings, no verdict, no rate
+# keyword -- so it landed `inconclusive`, the refusal chain was never consulted,
+# and the sweep aborted with exit 4. Pinned at rc 0 on purpose.
+CJ="bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$QB' 0) = failed ]\""
+printf "You've reached your Fable 5 limit. Switch to another model to continue.\n" > "$QB"
+check "window: tier at rc 0 is failed"   "$CJ"
+printf "You've hit your session limit · resets 7:10pm (America/New_York)\n" > "$QB"
+check "window: a stated reset too"       "$CJ"
+# ★ ...and a real review is not caught by it. Same shape as the 2026-08-29
+# measurement that put explicit_verdict on the rate scan: a short clean review
+# that quotes a usage window and signs off. This check is the one that would
+# otherwise STOP a whole sweep over a review.
+{ printf 'The banner text says "You have hit your session limit, resets 7:10pm"\n'
+  printf 'and nothing else in this diff changed. No new defects.\n\n'
+  printf 'Verdict: ship it\n'; } > "$QB"
+check "window: a review quoting one is not" "! $CJ"
+
 # A candidate that is out of budget: refuses, and counts how often it was asked.
 budget_case() {  # budget_case <dir>
   local d="$1" sha
@@ -2750,12 +2804,38 @@ check "window: p2 marked NOT ATTEMPTED" "grep -q 'p2: NOT ATTEMPTED' <<<\"\$OUT\
 check "window: verdict names the window" "grep -q 'Verdict: NOT MEASURED -- PROVIDER WINDOW CLOSED' <<<\"\$OUT\""
 check "window: NOT 'NOTHING MEASURED'"   "! grep -q 'Verdict: NOTHING MEASURED' <<<\"\$OUT\""
 check "window: does not say fix it"      "! grep -q 'Fix the cause and re-run' <<<\"\$OUT\""
-check "window: says resume after reset"  "grep -q 'Resume after the reset time above' <<<\"\$OUT\""
+check "window: says resume when it reopens" "grep -q 'Resume when that window reopens' <<<\"\$OUT\""
 # The reset time is the one fact a driver needs to schedule its own resumption,
 # so it is quoted verbatim rather than parsed into a sleep in lib/.
 check "window: quotes the reset time"    "grep -q 'resets 7:10pm' <<<\"\$OUT\""
 # ★ THE ONE THAT REACHES A DRIVER THAT IS NOT READING STDOUT.
 check "window: exit 6, not 4"            "[ '$RC' -eq 6 ]"
+
+# ★★ #48, the benchmark path for a window that states NO reset and exits ZERO.
+# Two separate defects had to be fixed for this to reach exit 6 at all: the
+# classifier never matched the string, and classify_run binned it `inconclusive`
+# so the refusal chain was never asked. Measured on the claudecr seat: it cost
+# the last pass of `high` and all 12 of `xhigh`, reported as exit 4, "fix the
+# cause", about a tier that had nothing wrong with it.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+cat > "$D/agents.d/broke.sh" <<A
+run_broke() {
+  echo call >> "$D/calls"
+  echo "You've reached your Fable 5 limit. Switch to another model to continue."
+}
+A
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+check "tier: asked exactly ONCE"       "[ \$(wc -l < '$D/calls') -eq 1 ]"
+check "tier: says window CLOSED"       "grep -q 'usage window is CLOSED' <<<\"\$OUT\""
+check "tier: not called a budget"      "! grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
+check "tier: not a failed measurement" "! grep -q 'Fix the cause and re-run' <<<\"\$OUT\""
+check "tier: exit 6, not 4"            "[ '$RC' -eq 6 ]"
+# ★ And the instruction has to match the refusal it was given. This one names a
+# remedy, not a time, so "resume after the reset time quoted above" would send
+# the operator looking for a line no provider printed.
+check "tier: no reset time promised"   "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
+check "tier: says where the reset is"  "grep -q \"check the provider's usage\" <<<\"\$OUT\""
 
 # ★★ THE PATH THE REAL INCIDENT TOOK, and the one above does NOT cover it. Above,
 # the window closes on the FIRST pass, so graded_passes is 0 and the run lands in
@@ -2783,7 +2863,7 @@ check "partial window: says INCOMPLETE"  "grep -q 'Verdict: INCOMPLETE, not slot
 # "restore the missing keys or checkouts" sends the operator hunting a broken
 # registry when a clock stopped the sweep and there is nothing to restore.
 check "partial window: not 'restore keys'" "! grep -q 'Restore the missing keys' <<<\"\$OUT\""
-check "partial window: says wait + resume" "grep -q 'wait for the reset named above' <<<\"\$OUT\""
+check "partial window: says wait + resume" "grep -q 'wait for that window to reopen' <<<\"\$OUT\""
 check "partial window: exit 6"           "[ '$RC' -eq 6 ]"
 
 # A PARTIAL failure must NOT abort. 1 of 2 runs is still a review worth grading,

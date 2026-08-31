@@ -540,7 +540,7 @@ remove that directory and re-run."
         # go looking for a defect. Kept out of $measurement_failed for exactly
         # that reason -- see provider_window_closed() in lib/common.sh.
         if [ "$prc" -eq 6 ]; then
-          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume after its reset)"$'\n'
+          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume once it reopens)"$'\n'
           window_closed=1
         # ★ 7 gets the same treatment as 6 and for the same reason: the pass
         # measured nothing, but the cause is on the provider's side and clears
@@ -1047,7 +1047,10 @@ file, and do not record a verdict about the candidate from it."
         body1="A provider usage window closed mid-sweep, so this pass never got to run.
 That is a clock, not a defect: nothing is wrong with the tool, the key or the
 candidate, and every review already on disk is intact and still counted."
-        tail1="Resume after the reset time above. There is nothing here to fix, and no
+        # ★ Not "resume after the reset time above" (#48): a model-tier window
+        # names a remedy instead of a time, so that sentence pointed at a line
+        # that was never printed. run-pass quotes whatever the provider said.
+        tail1="Resume when that window reopens. There is nothing here to fix, and no
 number to quote."
       fi
       {
@@ -1120,7 +1123,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     # unchanged either way -- a short denominator still cannot recommend a seat.
     local fixit="Restore the missing keys or checkouts and re-run before slotting anything."
     [ -n "$window_closed" ] &&
-      fixit="A provider usage window closed mid-sweep, so the missing passes are a clock and not a defect: wait for the reset named above, then re-run to resume. Every review already on disk is reused."
+      fixit="A provider usage window closed mid-sweep, so the missing passes are a clock and not a defect: wait for that window to reopen, then re-run to resume. Every review already on disk is reused."
     case "$slot" in
       SEAT:*|INCONCLUSIVE)
         reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. $fixit On the passes that did run: $reason"
@@ -1327,7 +1330,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   # disk are reused, which is what made resuming the 2026-07-28 sweep cost four
   # reviews instead of thirty.
   if [ -n "$window_closed" ]; then
-    echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the reset, then re-run to resume." >&2
+    echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the window to reopen, then re-run to resume." >&2
     return 6
   fi
 }

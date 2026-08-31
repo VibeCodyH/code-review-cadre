@@ -803,6 +803,27 @@ provider_window_closed() {
   # The upgrade pitch is a red herring: it states a reset, so waiting clears it.
   # Safe against kiro's "rate limit reached: Request quota exceeded" -- that is
   # `quota exceeded`, stays on the retry path where a throughput ceiling belongs.
+  # ★ A MODEL-TIER window is the one shape that states NO reset, so it gets
+  # its own two-half test rather than another alternative in the pattern below,
+  # which the `reset` requirement would refuse anyway. Measured 2026-08-30
+  # benchmarking the claudecr seat (#48), verbatim:
+  #
+  #   You've reached your Fable 5 limit. Switch to another model to continue.
+  #
+  # It matched nothing at all -- no 429, no period word, no stated reset -- so
+  # it fell through to `inconclusive` and one spent model tier was reported as a
+  # failed measurement of the candidate. The account was healthy: the five-hour
+  # bucket sat at 5% and the all-model weekly at 59%, and only the one tier was
+  # at 100%. Its reset is real and knowable, it just lives in the usage endpoint
+  # and not in the message.
+  #
+  # So the REMEDY stands in for the reset as the discriminator. "Switch to
+  # another model" is a sentence only a PER-MODEL window can say: a spend cap
+  # names a payment page ("raise it at", "recharge your account") precisely
+  # because no other model on the account would help. Both halves are required,
+  # so a review that merely discusses model limits does not trip it.
+  if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
+     && grep -qi 'switch to another model' "$f"; then return 0; fi
   grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
@@ -1182,6 +1203,20 @@ classify_run() {
     # bottom line. `failed`, not `inconclusive`: the report must send the
     # operator to the box, not to the roster.
     if env_blocked "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
+    # ★ #48. A window refusal that exits ZERO never reached the refusal chain at
+    # all. Both dispatch paths ask provider_window_closed() only about a run this
+    # function already called `failed`, and every window in the corpus until now
+    # arrived with a nonzero exit, so the rc test below did that binning for
+    # free. The model-tier limit does not: "You've reached your <Model> limit.
+    # Switch to another model to continue." states no findings and no verdict and
+    # exits 0, so it landed in `inconclusive` and run-pass aborted the sweep as a
+    # failed measurement -- with the regex fixed and this line missing, it still
+    # would.
+    # ★ Same findings=0 guard as its two neighbours, plus explicit_verdict for
+    # the reason the rate scan grew one: a short clean review that quotes a
+    # session limit and then signs off is a review, and this is the check that
+    # would otherwise STOP a whole sweep over it.
+    if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! explicit_verdict "$f"; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
   fi
