@@ -2720,6 +2720,18 @@ check "window: tier half alone is not"   "! $WC"
 check "window: that one stays a budget"  "$QE"
 printf 'The retry advice says to switch to another model, which is wrong here.\n' > "$QB"
 check "window: remedy half alone is not" "! $WC"
+# ★★ AND THE REMEDY HAS TO BE ISSUED, NOT MENTIONED. Both halves alone were not
+# enough: these two are this repo's own review prose, and both matched a first
+# draft of the pattern. The second one is the dangerous shape -- no findings, no
+# verdict -- so it would have passed classify_run's guards and STOPPED A SWEEP
+# over a review. A refusal instructs; prose refers.
+printf 'blocking: the retry path reached your rate limit ceiling and should switch to another model provider\n' > "$QB"
+check "window: prose naming both is not"  "! $WC"
+printf 'The docs say you have reached your quota limit; the fix is to switch to another model.\n' > "$QB"
+check "window: mid-sentence remedy is not" "! $WC"
+# ★ ...and a CLI that wraps its line still counts: the remedy starts the line.
+printf "You've reached your Fable 5 limit.\nSwitch to another model to continue.\n" > "$QB"
+check "window: wrapped tier still caught"  "$WC"
 
 # ★★ THE HALF THE REGEX DOES NOT FIX. Both dispatch paths ask
 # provider_window_closed() only about a run classify_run already called `failed`,

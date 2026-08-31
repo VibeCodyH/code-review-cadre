@@ -820,10 +820,23 @@ provider_window_closed() {
   # So the REMEDY stands in for the reset as the discriminator. "Switch to
   # another model" is a sentence only a PER-MODEL window can say: a spend cap
   # names a payment page ("raise it at", "recharge your account") precisely
-  # because no other model on the account would help. Both halves are required,
-  # so a review that merely discusses model limits does not trip it.
+  # because no other model on the account would help.
+  #
+  # ★ The remedy has to be ISSUED, not mentioned -- start of a line or start of
+  # a sentence. Both halves alone were not enough, measured against this repo's
+  # own prose while writing the fix:
+  #
+  #   blocking: the retry path reached your rate limit ceiling and should
+  #   switch to another model provider
+  #   The docs say you have reached your quota limit; the fix is to switch to
+  #   another model.
+  #
+  # Both matched, and the second one has no findings and no verdict, so it
+  # would have reached classify_run's guards and STOPPED A SWEEP over a review.
+  # A refusal instructs; prose refers. The real string ends the previous
+  # sentence first: "... limit. Switch to another model to continue."
   if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
-     && grep -qi 'switch to another model' "$f"; then return 0; fi
+     && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f"; then return 0; fi
   grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
