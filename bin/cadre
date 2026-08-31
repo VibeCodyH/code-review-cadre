@@ -34,6 +34,12 @@ export CADRE_ROOT="${CADRE_ROOT:-$(dirname "$SELF_DIR")}"
 . "$CADRE_ROOT/lib/grade.sh"
 # shellcheck source=lib/adjudicate.sh
 . "$CADRE_ROOT/lib/adjudicate.sh"
+# The engine. It produces findings.json; the benchmark half of cadre only ever
+# consumes it. lib/engine/README.md draws the line, tests/engine-seam.sh holds it.
+# shellcheck source=lib/engine/synthesize.sh
+. "$CADRE_ROOT/lib/engine/synthesize.sh"
+# shellcheck source=lib/engine/settle.sh
+. "$CADRE_ROOT/lib/engine/settle.sh"
 
 PASSES="$CADRE_HOME/passes.conf"
 
@@ -141,16 +147,6 @@ init_home() {
   [ -f "$PASSES" ] || cp "$CADRE_ROOT/templates/passes.conf" "$PASSES"
 }
 
-# The judge is a model too. Default to the first installed candidate and SAY
-# which one, because a silently-chosen judge is a silently-chosen bias.
-pick_judge() {
-  [ -n "$CADRE_JUDGE" ] && return 0
-  local a
-  for a in claude codex grok opencode; do
-    agent_installed "$a" && { CADRE_JUDGE="$a"; return 0; }
-  done
-  return 1
-}
 need_judge() {
   pick_judge || die "no judge available, set CADRE_JUDGE to an agent agentcall can run"
   # Catch a typo or a missing CLI here. Otherwise every call fails and the whole
@@ -1095,6 +1091,19 @@ cmd_review() {
   # that parked the directory here would have this process finish its merge
   # inside the replacement run's directory.
   [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
+  # ★ UNCONDITIONAL, and deliberately outside the `&&` chain above. findings.json
+  # is the engine's output for this panel, and a panel that produced reviews
+  # produced claims whether or not a merge ran, succeeded, or was even asked for.
+  # Hanging it off the synthesize call would erase every degraded run from the
+  # benchmark's view -- see the comment on engine_write_findings.
+  # $skipped_env carries the gate-skipped seats, which are NOT in $specs: they
+  # were filtered out before dispatch, and a panel built from $specs alone would
+  # report a smaller roster than the user asked for.
+  # ★ ...and BEFORE the panel floor below, for the same reason it sits outside
+  # the `&&`: a thin panel's artifacts are all real and all on disk, so the
+  # engine still owes its consumer a findings.json. Exit 10 is a statement about
+  # the ROSTER, not about the reviews that did come back.
+  engine_write_findings "$out" "${synth:-none}" "$skipped_env" "${specs[@]}"
   # ★ Panel floor (#29). The report is honest about a shrunken panel, but a
   # runner posting the synthesis never reads the report; it reads the exit
   # code. Below the floor the artifacts are all real and all on disk -- this
@@ -1125,235 +1134,6 @@ cmd_review() {
   # review on the next call instead of refusing to re-measure it.
   rm -f "$out/.claim"
   return "$frc"
-}
-
-# Merge the reviews. A model too, so the same rate-limit rule applies, and a
-# failure here must not cost the individual reviews: they are already on disk.
-cmd_synthesize() {
-  local out="$1" synth="$2"; shift 2
-  local specs=("$@") sl body="" cap="${CADRE_SYNTH_MAX:-200000}"
-  local dead=() srcspec=() srcfile=() srcstate=() total=0
-  for sp in "${specs[@]}"; do
-    sl=$(slug "$sp")
-    if [ -s "$out/$sl.md" ];           then srcspec+=("$sp"); srcfile+=("$out/$sl.md");         srcstate+=(ok)
-    elif [ -s "$out/$sl.md.partial" ]; then srcspec+=("$sp"); srcfile+=("$out/$sl.md.partial"); srcstate+=(degraded)
-    else dead+=("$sp"); fi
-  done
-  local usable=${#srcspec[@]} i
-  # Partials count toward having something to merge. One full review plus one
-  # partial is still two independent looks at the diff.
-  [ "$usable" -ge 2 ] || { echo "only $usable usable review(s); nothing to synthesize."; return 0; }
-  for i in "${!srcfile[@]}"; do total=$((total + $(wc -c < "${srcfile[$i]}"))); done
-
-  # Over budget, every review gets the same byte share. ★ head -c MAKES a review
-  # partial: a full review cut at 40KB is silent about everything after 40KB for
-  # exactly the reason a truncated one is. Re-label it degraded here or the
-  # silence rule below skips the reviews this function itself just truncated.
-  local per=0
-  if [ "$total" -gt "$cap" ]; then
-    per=$(( cap / usable ))
-    # A share of 0 would announce a truncation and then perform none, quietly
-    # sending the whole oversized body anyway.
-    [ "$per" -lt 1 ] && per=1
-    echo "⚠ reviews total $total bytes, over CADRE_SYNTH_MAX ($cap). Truncating each to $per."
-  fi
-
-  # ★ TWO different facts, kept apart. "The reviewer stopped early" is a fact
-  # about the reviewer's health. "Cadre sent only the first N bytes" is a fact
-  # about what this function did to a reviewer that finished perfectly well.
-  # Both mean the silence that follows proves nothing, so both get the silence
-  # rule -- but telling the synthesizer a healthy reviewer "stopped early" is
-  # simply false, and it is the kind of false that ends up quoted in a report.
-  local partial=() capped=() n=0 text cut
-  for i in "${!srcspec[@]}"; do
-    cut=0
-    if [ "$per" -gt 0 ] && [ "$(wc -c < "${srcfile[$i]}")" -gt "$per" ]; then
-      text=$(head -c "$per" "${srcfile[$i]}"); cut=1
-    else
-      text=$(cat "${srcfile[$i]}")
-    fi
-    # A DIFFERENT delimiter, not just different prose. Under the same delimiter
-    # as a full review the synthesizer has no handle to apply a different rule
-    # to, however carefully the instructions are worded.
-    if [ "${srcstate[$i]}" = degraded ]; then
-      body="$body===== REVIEWER (PARTIAL, THIS REVIEWER STOPPED EARLY): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      partial+=("${srcspec[$i]}")
-    elif [ "$cut" = 1 ]; then
-      body="$body===== REVIEWER (COMPLETE, BUT CADRE SENT ONLY ITS FIRST $per BYTES): ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      capped+=("${srcspec[$i]}")
-    else
-      body="$body===== REVIEWER: ${srcspec[$i]} ====="$'\n'"$text"$'\n\n'
-      n=$((n + 1))
-    fi
-  done
-  local short=("${partial[@]}" "${capped[@]}")
-  # ★ Two different counts, and conflating them made cadre lie in prose while
-  # the arithmetic stayed right. $n is "full text in front of the synthesizer",
-  # which is the correct denominator floor for a finding only the full reviews
-  # could have named. It is NOT the number of reviewers who finished: a capped
-  # reviewer reviewed the whole diff and returned a complete review, cadre just
-  # sent part of it. Reporting $n as "returned a complete review" understates a
-  # healthy panel, and when every survivor was capped the console announced
-  # "synthesizing 0 review(s)" for a run that was about to synthesize several.
-  local completed=$((n + ${#capped[@]}))
-
-  # ★ Tell the synthesizer who DIED. Without this it sees two reviews, reports
-  # "2/2 agree", and the reader concludes the panel was unanimous when a third
-  # of it never returned. The header line the prompt asks for is what carries
-  # that; these members are NOT in the tags, because a reviewer that never ran
-  # has no opinion to count either way.
-  #
-  # ★ dead[] is anything that is neither .md nor .md.partial, which is what
-  # makes an INCONCLUSIVE run safe by construction: it lands here, and this
-  # block already keeps it out of every denominator. That is the whole fix for
-  # the false green -- no third delimiter, no new counting rule. The delimiter
-  # says NO REVIEW rather than FAILED because a run that exited 0 and wrote 40KB
-  # did not fail, and the prompt asks the synthesizer to describe these members
-  # in the verdict spread.
-  if [ ${#dead[@]} -gt 0 ]; then
-    body="$body===== NO USABLE REVIEW: ${dead[*]} =====
-These roster members produced no usable review. Say so in the verdict spread and
-in the header line. Keep them out of every agreement tag: they neither agree nor
-disagree with anything. This panel was ${#specs[@]} reviewers, of whom $completed
-returned a complete review.
-
-"
-  fi
-  # ★ Incomplete coverage breaks the agreement MATH, not just the prose, and in
-  # the direction nobody checks. Tagging a finding [1/4] when two of the four
-  # never reached that file reads as three dissents; it is one reviewer and two
-  # absences. One rule for both causes, since the consequence is identical, but
-  # each reviewer is listed under the cause that is actually true of it.
-  if [ ${#short[@]} -gt 0 ]; then
-    body="$body===== REVIEWERS WITH INCOMPLETE COVERAGE: ${short[*]} ====="$'\n'
-    [ ${#partial[@]} -gt 0 ] && body="$body\
-  ${partial[*]} -- stopped partway through, out of tokens or time.
-"
-    [ ${#capped[@]} -gt 0 ] && body="$body\
-  ${capped[*]} -- reviewed the whole diff, but their review was too long for
-  this synthesis and CADRE cut it. The reviewer is healthy; the copy you were
-  given is not the whole of what it wrote. Do not say it stopped early.
-"
-    body="$body
-Their text is a real review of the part you can see. Rules for them, unlike a
-review you have in full:
-  - On a finding one of them RAISED, it counts in both the numerator and the
-    denominator, exactly like a complete review.
-  - On a finding it never mentioned, it counts in NEITHER. That code is outside
-    what you were given, so its silence is not agreement, disagreement, or
-    clearance, and the denominator for that finding is smaller. Never list one
-    under Disagreements for something it simply does not mention.
-  - Give no overall verdict on behalf of a reviewer that stopped early.
-
-Do the arithmetic for THIS panel. You have $n review(s) in full and ${#short[@]} with
-incomplete coverage (${short[*]}). For each finding: denominator = $n, plus one
-for EACH of those ${#short[@]} that raised that finding. So it is $n when none of them
-raised it, and at most $((n + ${#short[@]})) when all of them did.
-
-The low end is the case that gets written wrong. A defect only the full reviews
-named is tagged [x/$n]. A bigger number there claims someone looked at that code
-and declined to flag it, which is exactly backwards.
-
-"
-  fi
-
-  local pf="$out/.synth-prompt" raw attempt=1 w
-  { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
-  local pcount=""
-  [ ${#capped[@]} -gt 0 ] && pcount="$pcount, ${#capped[@]} sent short"
-  [ ${#partial[@]} -gt 0 ] && pcount="$pcount, ${#partial[@]} partial"
-  echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
-  local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
-  [ -n "$m" ] && mm=(-M "$m")
-  # Capability preflight: a doomed synthesizer must not burn the merge call.
-  local sblock sdecl sreason
-  if sblock=$(capability_block "$synth" synth); then
-    IFS=$'\t' read -r sdecl sreason <<< "$sblock"
-    echo "synthesis SKIPPED by capability preflight ($sdecl: $sreason). Individual reviews are intact in $out." >&2
-    rm -f "$pf"
-    return 0
-  fi
-  local rc=0
-  while :; do
-    raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
-    printf '%s' "$raw" > "$out/.synth-tmp"
-    # ★ The THIRD retry loop. The commit that taught the two reviewer loops to
-    # stop trusting a keyword scan over the adapter left this one asking the old
-    # question, so a healthy short merge that discussed rate limiting burned
-    # three retries and then got filed failed. Same principle, different test,
-    # because a synthesis has no marker to be rescued by. See provider_refused.
-    provider_refused "$out/.synth-tmp" "$rc" || { rm -f "$out/.synth-tmp"; break; }
-    rm -f "$out/.synth-tmp"
-    [ "$attempt" -ge "${CADRE_RETRIES:-3}" ] && break
-    w=$(retry_wait "$attempt")
-    echo "  synthesis rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})"
-    sleep "$w"; attempt=$((attempt + 1))
-  done
-  rm -f "$pf"
-  # ★ Same classifier the reviewers get. An auth error or an exhausted retry is
-  # NON-EMPTY text, so testing only for emptiness filed the error itself as
-  # synthesis.md and the reader saw a merged review that was really a 429. The
-  # synthesizer is a model; it fails like one.
-  # ★ Deliberately NOT three-state: only `ok` survives here. A partial merge is
-  # worthless in a way a partial review is not, because the reviews it was
-  # merging are already on disk and complete. Fail closed and keep them.
-  printf '%s' "$raw" > "$out/.synth-tmp"
-  if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" != ok ]; then
-    mv "$out/.synth-tmp" "$out/synthesis.md.failed"
-    # ★ Third consumer of the same split (#12). The synthesizer is a model and
-    # fails like one, so "the provider returned nothing" and "cadre's clock cut
-    # a live merge short" are as distinguishable here as on a review -- and the
-    # second one is fixable by re-running with a bigger CADRE_TIMEOUT, which the
-    # old flat message never suggested. No elapsed time is tracked on this path,
-    # so the phrase is asked for without one rather than handed a made-up number.
-    echo "synthesis $(failure_phrase "$out/synthesis.md.failed" "$rc"), kept as synthesis.md.failed." >&2
-    echo "The individual reviews are intact in $out." >&2
-    return 0
-  fi
-  rm -f "$out/.synth-tmp"
-  { echo "# Synthesis ($synth)"; echo
-    echo "_Model-produced and unverified. It merges what the reviewers said; it has"
-    echo "not seen the code. Read the individual reviews before acting._"; echo
-    printf '%s\n' "$raw"
-  } > "$out/synthesis.md"
-  echo "saved: $out/synthesis.md"
-}
-
-# ---- the settled-decisions ledger --------------------------------------------
-#
-# ★ Cadre reviews once and stops, so on its own it cannot treadmill. The moment
-# something WRAPS it in a loop, which is the normal way people use a review tool
-# on a branch, every re-run re-raises findings the human already dismissed. The
-# reviewers have no memory; the human is the only thing that remembers, and
-# making them remember is how a review loop becomes unbearable.
-#
-# The ledger is a human-written file. Nothing writes to it automatically: a tool
-# that files its own dismissals will eventually dismiss something real, and the
-# whole value here is that a person decided. `cadre settle` only READS it.
-LEDGER_HELP='One finding per line:
-
-    <id> | <disposition> | <description>
-
-  L1 | wontfix  | timestamps are strings from neon-http, callers wrap them
-  L2 | accepted | missing test for the retry path, tracked in #412
-
-disposition is yours; cadre does not interpret it.'
-
-ledger_path() { echo "${CADRE_LEDGER:-$CADRE_HOME/ledger}"; }
-
-cmd_ledger() {
-  local lp; lp=$(ledger_path)
-  case "${1:-show}" in
-    show)
-      if [ ! -s "$lp" ]; then
-        echo "no ledger at $lp"; echo; echo "$LEDGER_HELP"; return 0
-      fi
-      echo "$lp"; echo
-      # Comments and blanks are the user's; print the file as they wrote it.
-      cat "$lp" ;;
-    path) echo "$lp" ;;
-    *) die "ledger: expected 'show' or 'path'" ;;
-  esac
 }
 
 # Sum only what slots.tsv measured. Old and reconstructed rows have no prompt
@@ -1421,102 +1201,6 @@ cmd_receipts() {
     echo
     echo "$missing rows predate prompt-byte capture; their prompt spend is not counted."
   fi
-}
-
-# Split one review into SETTLED / NEW against the ledger. Read-only, and it
-# never edits the review: the finding stays on disk exactly as written.
-cmd_settle() {
-  local review="" judge="${CADRE_JUDGE:-}"
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --judge) judge="${2:?--judge needs an agent spec}"; shift 2 ;;
-      -*) die "settle: unknown option '$1'" ;;
-      *)  review="$1"; shift ;;
-    esac
-  done
-  [ -n "$review" ] || die "usage: cadre settle <review-file-or-dir> [--judge spec]"
-
-  # A review directory is the normal thing to have: point at the report.
-  [ -d "$review" ] && review="$review/report.md"
-  [ -s "$review" ] || die "no review to read at $review"
-
-  local lp; lp=$(ledger_path)
-  [ -s "$lp" ] || die "no ledger at $lp, so there is nothing settled yet.
-
-     $LEDGER_HELP"
-
-  [ -n "$judge" ] || { pick_judge || true; judge="${CADRE_JUDGE:-}"; }
-  [ -n "$judge" ] || die "settle needs a judge. Set \$CADRE_JUDGE or pass --judge."
-
-  # ★ Strip comments and blanks before the model sees it. A '#' line is a note
-  # to the human, and feeding it as an entry invites a match against a comment.
-  local entries; entries=$(grep -vE '^[[:space:]]*(#|$)' "$lp")
-  [ -n "$entries" ] || die "$lp has no entries, only comments."
-
-  local pf; pf=$(mktemp)
-  { cat "$CADRE_ROOT/lib/prompts/settle.md"; echo
-    echo "===== LEDGER ====="; printf '%s\n' "$entries"; echo
-    echo "===== REVIEW ====="; cat "$review"
-  } > "$pf"
-
-  local a m mm=() raw rc
-  a=$(spec_agent "$judge"); m=$(spec_model "$judge")
-  [ -n "$m" ] && mm=(-M "$m")
-  echo "matching against $(printf '%s\n' "$entries" | wc -l) ledger entries with $judge …"
-  raw=$("$CADRE_ROOT/bin/agentcall" "$a" "${mm[@]}" -d /tmp -m ro < "$pf" 2>&1); rc=$?
-  rm -f "$pf"
-
-  # ★ Fail loudly. A settle pass that silently returns nothing looks exactly
-  # like "everything here is already settled", which would hide a live finding
-  # behind a judge that never ran.
-  # ★ Models fence their JSON. `sed -n '/{/,$p'` took the first { to EOF, which
-  # carries the CLOSING ``` along with it, and jq rejects the trailing fence --
-  # so a judge that answered perfectly was reported as one that "failed or
-  # stopped early". Measured with qwen as judge on a real panel: the correct
-  # findings were printed in the error's own diagnostic lines, which is as close
-  # to self-refuting as a message gets.
-  # Take the first { to the LAST }, after dropping fence lines. That survives
-  # prose on either side of the block and braces inside strings, which a
-  # brace-counting scan does not. Anything that still is not JSON -- no object
-  # at all, or a truncated one -- fails jq and is refused below, which is the
-  # direction that has to stay safe.
-  # ★ extract_json_slice() in lib/common.sh, which grade.sh's fallback also
-  # calls: two copies of this that had to agree were one copy too many (#26).
-  local js
-  js=$(printf '%s' "$raw" | extract_json_slice | jq -c . 2>/dev/null) || js=""
-  # ★ Two causes, one message, so say both. An adapter that truncates now exits
-  # nonzero even when the JSON it printed parses fine, and reporting that as
-  # "did not return usable JSON" describes the wrong problem to whoever has to
-  # fix it. A partial match is still refused either way: settle's exit code is a
-  # stopping rule, and half a match reads as "nothing new is left".
-  if [ "$rc" -ne 0 ] || [ -z "$js" ]; then
-    echo "cadre: the judge failed or stopped early, so nothing was matched." >&2
-    printf '%s\n' "$raw" | head -5 | sed 's/^/     /' >&2
-    return 1
-  fi
-
-  local total new
-  total=$(printf '%s' "$js" | jq '.findings | length')
-  new=$(printf '%s' "$js" | jq '[.findings[] | select(.status != "SETTLED")] | length')
-  echo
-  if [ "$total" -eq 0 ]; then echo "no findings in that review."; return 0; fi
-
-  if [ "$new" -gt 0 ]; then
-    echo "NEW ($new of $total):"
-    printf '%s' "$js" | jq -r '.findings[] | select(.status != "SETTLED") | "  - \(.summary)"'
-  fi
-  if [ "$new" -lt "$total" ]; then
-    echo
-    echo "already settled ($((total - new)) of $total), shown so you can check the match:"
-    printf '%s' "$js" | jq -r '.findings[] | select(.status == "SETTLED")
-                               | "  - [\(.ledger_id // "?")] \(.summary)"'
-  fi
-  echo
-  echo "The review itself is unchanged at $review."
-  # ★ The exit status is the useful part for a wrapper: 0 means nothing new to
-  # look at, so a loop can stop. Non-zero means a human still has something to
-  # read. That is the stopping rule, and it is deliberately not automatic.
-  [ "$new" -eq 0 ]
 }
 
 # Exits non-zero when a pass is broken. README and docs both say doctor FAILS a

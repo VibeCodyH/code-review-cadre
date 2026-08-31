@@ -540,8 +540,23 @@ review_findings() {
   # number, or one short label, and the severity has to arrive immediately after
   # it. Probed against `**Overall:** no critical problems` and `*not a nit* but
   # worth noting` -- both stay zero, as does the whole corpus.
-  grep -cEi '^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*(blocking|should[ -]fix|must[ -]fix|nit|critical|major)\**' "$1"
+  grep -cEi "$SEVERITY_RE" "$1"
 }
+
+# ★ ONE definition, two callers, and that is a correctness rail rather than
+# tidiness. This function COUNTS severity lines; lib/engine/ EXTRACTS them for
+# claims[]. A second copy of the pattern over there would drift the moment either
+# side is tuned -- and drift silently, because nothing in cadre compares the two
+# numbers: a review counted at 13 findings and projected as 4 both look fine
+# alone. Same pattern, `-c` here and `-n` there.
+#
+# SEVERITY_WORDS is split out for the same reason. The extractor needs the
+# vocabulary alternation on its own to pull the severity back off a matched line,
+# and spelling that list twice is how the two ends stop agreeing about what a
+# severity is. Every documented near-miss above is a change to the PREFIX; the
+# vocabulary itself has been stable, which is exactly why it is safe to share.
+SEVERITY_WORDS='blocking|should[ -]fix|must[ -]fix|nit|critical|major'
+SEVERITY_RE='^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*('"$SEVERITY_WORDS"')\**'
 
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
 # reviewer answered the question it was asked. Two legal forms, both already in
@@ -1370,6 +1385,23 @@ CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE
                  CADRE_ADJUDICATOR CADRE_LEDGER CADRE_ROSTER
                  CADRE_SYNTH CADRE_SYNTH_MAX
                  CADRE_TARGET_MAX_FILES CADRE_TARGET_MAX_KB)
+# The judge is a model too. Default to the first installed candidate and SAY
+# which one, because a silently-chosen judge is a silently-chosen bias.
+#
+# ★ SHARED, not bin/cadre-local, because lib/engine/settle.sh calls it: settle
+# picks a judge when none was passed. It worked from bin/cadre only because
+# everything is sourced into one binary, so the engine was quietly depending on
+# a symbol the benchmark's entrypoint owned -- which is exactly the coupling the
+# two-binary split will trip over. Living here it belongs to neither half.
+pick_judge() {
+  [ -n "${CADRE_JUDGE:-}" ] && return 0
+  local a
+  for a in claude codex grok opencode; do
+    agent_installed "$a" && { CADRE_JUDGE="$a"; return 0; }
+  done
+  return 1
+}
+
 scrubbed_env() {
   local a=(env) v
   for v in "${CADRE_SCRUB_ENV[@]}"; do a+=(-u "$v"); done
