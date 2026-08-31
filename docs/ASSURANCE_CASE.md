@@ -100,17 +100,34 @@ claims survive", "by: the finding after the bad byte is claimed".
 
 **12. A published number names the inputs that produced it.** Every row of
 `slots.tsv` and every `complete` record carries a content hash for the rendered
-prompt, for the adapter file(s) that ran, and for the harness files that shape a
-review (`lib/common.sh`, `lib/run-review.sh`, `lib/run-pass.sh`, `lib/grade.sh`,
-`lib/prompts/*`). `prompt_bytes` was a size, so two prompts of equal length were
-one row; `CADRE_PROMPT_FILE` replaces the brief wholesale, which made the
-highest-leverage input the least described. The hash is EMPTY, never zero and
-never faked, when it could not be determined — a reconstructed row, a promptless
-adapter, or a box with no sha256 tool. `cadre receipts` states whether every row
-in a comparison ran against the same harness, on both branches.
-Tests: "adapter hash is per adapter", "one harness hash for the panel",
-"sha: a missing input is EMPTY", "harness: a split is called out",
-"harness: agreement is stated".
+prompt, for the adapter code that ran, and for the harness files that shape a
+review (`bin/agentcall`, `lib/common.sh`, `lib/run-review.sh`,
+`lib/run-pass.sh`, `lib/grade.sh`, `lib/prompts/*`). `prompt_bytes` was a size,
+so two prompts of equal length were one row; `CADRE_PROMPT_FILE` replaces the
+brief wholesale, which made the highest-leverage input the least described.
+
+`adapter_sha` covers the files `agentcall` would source that define anything for
+that agent — both copies of `<agent>.sh`, and any other file in either directory
+mentioning `_<agent>(`. It sources every `*.sh` in both directories into one
+namespace, so a foreign file defining `run_<agent>()` is a different reviewer
+behind an otherwise unchanged adapter file.
+
+**The hash is EMPTY whenever it could not be fully determined** — a
+reconstructed row, a promptless adapter that received no shared brief, a box
+with no sha256 tool, an unreadable or missing input, or any hashing step that
+exits non-zero. Never a zero, never a partial digest: the digest of an empty
+read is *stable*, so two runs that both failed would compare EQUAL, which is the
+one answer this field must never give. Per-file digests are hashed rather than
+concatenated bytes, so no pair of inputs can straddle a field boundary and
+collide.
+
+`cadre receipts` states whether every row in a comparison ran against the same
+harness, on both branches — agreement and disagreement.
+Tests: "adapter hash is per adapter", "adapter hash sees a foreign override",
+"and ignores an unrelated adapter", "one harness hash for the panel",
+"harness: agentcall is hashed", "sha: an unreadable input is EMPTY",
+"sha: never the digest of nothing", "sha: file boundaries are kept",
+"harness: a split is called out", "harness: agreement is stated".
 
 **13. Receipts do not average across a schema change.** `slots.tsv` rows carry
 the schema version that wrote them, and `cadre receipts` groups by
@@ -118,8 +135,11 @@ the schema version that wrote them, and `cadre receipts` groups by
 print schema `?` — unknown, not a default — because they straddle the change to
 what `secs` means on a failed seat and nothing on disk separates the halves.
 Nothing is excluded, so older panels stay readable.
+Column 8 is read as a version only when it *reads* as one: a dataset written by
+the older `lib/aggregate.sh` carries `source` there, and `recorded` /
+`reconstructed` would otherwise have split every family into two named schemas.
 Tests: "mixed: one row per schema", "mixed: the two secs never merge",
-"mixed: pre-#19 panels still read".
+"mixed: pre-#19 panels still read", "olddata: a source word is never a schema".
 
 ## Non-goals, named
 

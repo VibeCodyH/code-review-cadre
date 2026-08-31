@@ -59,15 +59,21 @@ about which model reviews *better* needs that path, not this file.
   print as `?` and are listed on their own row.
 - **prompt_sha** / **adapter_sha** / **harness_sha** — 12-hex content hashes of
   the three inputs that decide what a seat saw: the rendered prompt as
-  dispatched, the adapter file(s) that ran (both the shipped one and a user
-  override, since `agentcall` sources both), and the harness files that shape a
-  review. `prompt_bytes` is a size — two prompts that differ but happen to be
+  dispatched, the adapter code that ran, and the harness files that shape a
+  review (including `bin/agentcall`, which decides whether the brief arrives on
+  stdin or in argv; `bin/cadre` is deliberately excluded, so a CLI edit does not
+  invalidate stored comparisons). `adapter_sha` covers both copies of
+  `<agent>.sh` *and* any other file in either adapter directory mentioning
+  `_<agent>(` — `agentcall` sources every `*.sh` in both into one namespace, so
+  a foreign file defining `run_<agent>()` is a different reviewer. `prompt_bytes` is a size — two prompts that differ but happen to be
   the same length are indistinguishable by it, and `CADRE_PROMPT_FILE` replaces
   the brief wholesale, so the input with the largest effect on a review was the
   one the record described least. All three are **EMPTY when undetermined** and
   never zeroed: a reconstructed row, a promptless adapter that received no
-  shared brief, or a machine with no `sha256sum`/`shasum`. This is provenance,
-  not tamper-proofing — see `docs/ASSURANCE_CASE.md`.
+  shared brief, a machine with no `sha256sum`/`shasum`, or an input that could
+  not be read in full. The digest of an empty read is *stable*, so a partial
+  answer here would make two failed runs compare equal. This is provenance, not
+  tamper-proofing — see `docs/ASSURANCE_CASE.md`.
 - **source** — `recorded` (written live by `run-review.sh`, with status and
   timing measured and prompt size present on new rows) or `reconstructed`
   (rebuilt from artifacts after the fact). Reconstructed rows have **no timing

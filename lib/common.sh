@@ -82,28 +82,62 @@ if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
 fi
 
-# content_sha <file>... -- 12 hex chars over the files' bytes, concatenated in
-# the order given. EMPTY if any input is missing: a hash that silently describes
-# a subset is worse than none, because it compares equal to a run that had the
-# same subset for a different reason.
+# content_sha <file>... -- 12 hex chars identifying the files' contents, in the
+# order given. EMPTY if any input is missing, unreadable, or fails to hash.
+#
+# ★ Hashes the per-file DIGESTS, not the concatenated bytes. Concatenation has
+# no field boundary, so `#a` + `x=1` and `#` + `ax=1` both hash `#ax=1` and
+# compare EQUAL -- two adapter sets that source differently, reported as one.
+# A fixed-width hex block per file cannot run into its neighbour.
+#
+# ★ And every step is checked, because the failure mode here is not a missing
+# value, it is a CONFIDENT one. `cat -- /proc/1/mem | sha256sum` exits 0 down the
+# pipe and prints e3b0c44298fc, the digest of nothing -- stable, so two runs that
+# both failed to read an input compare equal, which is the exact opposite of
+# what these fields are for. Anything short of a full read returns EMPTY.
 content_sha() {
   [ -n "$SHA_CMD" ] || return 0
-  local f
-  for f in "$@"; do [ -f "$f" ] || return 0; done
   [ "$#" -gt 0 ] || return 0
-  # shellcheck disable=SC2086  # SHA_CMD may carry an argument (shasum -a 256)
-  cat -- "$@" | $SHA_CMD | cut -c1-12
+  local f d out=""
+  for f in "$@"; do
+    [ -f "$f" ] && [ -r "$f" ] || return 0
+    # pipefail inside the substitution's own subshell, so a read error anywhere
+    # in the pipe is a refusal rather than a digest of what got through.
+    # shellcheck disable=SC2086  # SHA_CMD may carry an argument (shasum -a 256)
+    d=$(set -o pipefail; $SHA_CMD < "$f" | cut -d' ' -f1) || return 0
+    [ -n "$d" ] || return 0
+    out="$out$d"
+  done
+  # shellcheck disable=SC2086
+  printf '%s' "$out" | $SHA_CMD | cut -c1-12
 }
 
-# The adapter files that ACTUALLY load for an agent, in agentcall's order.
-# ★ BOTH, when both exist. agentcall sources the shipped file and then the user
-# one, so hashing only the override describes half of what ran -- the same
-# partial-override shape that once left a shipped noprompt_ marker alive
-# underneath a user adapter that supported prompts.
+# The files agentcall would source that define anything for this agent, in
+# agentcall's own load order: the shipped dir first, then the user dir, each
+# glob-sorted, because content_sha is order-sensitive and so is sourcing.
+#
+# ★ BOTH copies of `<agent>.sh` when both exist. agentcall sources the shipped
+# file and then the user one, so hashing only the override describes half of
+# what ran -- the same partial-override shape that once left a shipped
+# noprompt_ marker alive underneath a user adapter that supported prompts.
+#
+# ★ And NOT only the files named after the agent. agentcall sources every *.sh
+# in both dirs into ONE namespace, so a `zzz.sh` defining run_<agent>() replaces
+# the shipped function while `<agent>.sh` is untouched -- a different reviewer,
+# an identical hash. Any file mentioning `_<agent>(` is counted in.
+# Over-inclusion is the safe direction here, the same way mention-crediting is
+# in coverage-per-changeset: a hash covering too much can only produce a false
+# "this changed", never a false "this is the same".
 adapter_files() {
-  local a="$1" d
+  local a="$1" d f
   for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
-    if [ -f "$d/$a.sh" ]; then printf '%s\n' "$d/$a.sh"; fi
+    [ -d "$d" ] || continue
+    for f in "$d"/*.sh; do
+      [ -f "$f" ] || continue
+      if [ "$f" = "$d/$a.sh" ] || grep -qF "_$a(" "$f" 2>/dev/null; then
+        printf '%s\n' "$f"
+      fi
+    done
   done
 }
 
@@ -121,7 +155,15 @@ adapter_sha() {
 # an edit. Content, not revision.
 # sort, because find's order is filesystem-dependent and an unstable input order
 # would make the same tree hash differently on two machines.
-HARNESS_FILES=(lib/common.sh lib/run-review.sh lib/run-pass.sh lib/grade.sh)
+#
+# ★ bin/agentcall is IN. It is what actually spawns the CLI, and it decides
+# whether the brief arrives on stdin or in argv -- change it and every seat
+# receives something different while nothing else in the record moves.
+# ★ bin/cadre is deliberately OUT. It is the driver: argument parsing, the
+# report, `receipts`. Folding it in would invalidate every stored comparison on
+# any CLI edit, which is a false "these are not like-for-like" -- the one error
+# this field must not make, since its whole job is to be believed when it fires.
+HARNESS_FILES=(bin/agentcall lib/common.sh lib/run-review.sh lib/run-pass.sh lib/grade.sh)
 harness_sha() {
   local f files=()
   for f in "${HARNESS_FILES[@]}"; do files+=("$CADRE_ROOT/$f"); done

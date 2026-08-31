@@ -1951,6 +1951,54 @@ check "sha: order changes the hash"  "[ \"\$(content_sha '$CS/a' '$CS/b')\" != \
 # reason, so it reads as agreement where there is none.
 check "sha: a missing input is EMPTY" "[ -z \"\$(content_sha '$CS/a' '$CS/nope')\" ]"
 check "sha: no input at all is EMPTY" "[ -z \"\$(content_sha)\" ]"
+# ★ The worst shape this function can produce is not a missing value, it is a
+# CONFIDENT one. The first cut piped `cat -- "$@"` into sha256sum: cat printed
+# "Permission denied" to stderr, the pipe exited 0, and the digest of NOTHING
+# came back -- e3b0c44298fc, which is STABLE, so two runs that both failed to
+# read an input compared EQUAL. Every happy-path check above passed while that
+# held; a second-opinion reviewer found it.
+printf 'secret' > "$CS/locked"; chmod 000 "$CS/locked"
+check "sha: an unreadable input is EMPTY" "[ -z \"\$(content_sha '$CS/locked' 2>/dev/null)\" ]"
+check "sha: never the digest of nothing"  "! content_sha '$CS/locked' 2>/dev/null | grep -q e3b0c44298fc"
+check "sha: a directory is EMPTY"         "[ -z \"\$(content_sha '$CS' 2>/dev/null)\" ]"
+chmod 644 "$CS/locked"
+# ★ Concatenating raw bytes has no field boundary, so '#a' + 'x=1' and '#' +
+# 'ax=1' are both '#ax=1' and hash IDENTICALLY -- two adapter sets that source
+# to different code, reported as one input. Hashing the per-file digests gives
+# every file a fixed-width block that cannot run into its neighbour.
+printf '#a' > "$CS/c1"; printf 'x=1' > "$CS/c2"; printf '#' > "$CS/c3"; printf 'ax=1' > "$CS/c4"
+check "sha: file boundaries are kept" \
+  "[ \"\$(content_sha '$CS/c1' '$CS/c2')\" != \"\$(content_sha '$CS/c3' '$CS/c4')\" ]"
+
+# ---- what the harness hash covers (#37) --------------------------------------
+# ★ bin/agentcall is what spawns the CLI and decides whether the brief arrives
+# on stdin or in argv. Left out of the set, an agentcall edit changes what every
+# seat receives while prompt_sha, adapter_sha and harness_sha all hold still.
+check "harness: agentcall is hashed"     "printf '%s\n' \"\${HARNESS_FILES[@]}\" | grep -qx 'bin/agentcall'"
+# ★ ...and bin/cadre is deliberately NOT. It is the driver -- argument parsing,
+# the report, receipts -- and folding it in would invalidate every stored
+# comparison on any CLI edit. A field whose whole job is to be believed when it
+# fires must not fire on that.
+check "harness: bin/cadre is left out"   "! printf '%s\n' \"\${HARNESS_FILES[@]}\" | grep -qx 'bin/cadre'"
+check "harness: every named file exists" "for f in \"\${HARNESS_FILES[@]}\"; do [ -f '$ROOT'/\$f ] || exit 1; done"
+
+# ---- the adapter namespace, not just the adapter file (#37) ------------------
+# ★ agentcall sources EVERY *.sh in both dirs into ONE namespace, so a foreign
+# `zzz.sh` defining run_<agent>() replaces the shipped function while
+# <agent>.sh is byte-identical: a different reviewer behind an unchanged hash.
+# The per-adapter check further up passed the entire time this was live.
+AD=$(mktemp -d -p "$SANDBOX"); mkdir -p "$AD/agents.d"
+printf 'run_probe() { echo shipped; }\n' > "$AD/agents.d/probe.sh"
+ASHA_BASE=$(CADRE_ROOT="$ROOT" CADRE_AGENTS_D="$AD/agents.d" adapter_sha probe)
+printf 'run_probe() { echo hijacked; }\n' > "$AD/agents.d/zzz.sh"
+ASHA_HIJ=$(CADRE_ROOT="$ROOT" CADRE_AGENTS_D="$AD/agents.d" adapter_sha probe)
+check "adapter hash sees a foreign override" "[ -n '$ASHA_BASE' ] && [ '$ASHA_BASE' != '$ASHA_HIJ' ]"
+# ★ ...and stays put for an adapter that cannot touch this seat. Hashing the
+# whole directory would close the hole above and break this, which is why
+# membership is "mentions _<agent>(" rather than "is in agents.d".
+printf 'run_other() { echo unrelated; }\n' > "$AD/agents.d/zzz.sh"
+ASHA_OTHER=$(CADRE_ROOT="$ROOT" CADRE_AGENTS_D="$AD/agents.d" adapter_sha probe)
+check "and ignores an unrelated adapter"     "[ '$ASHA_BASE' = '$ASHA_OTHER' ]"
 
 RJ=$(mktemp -d -p "$SANDBOX"); RL="$RJ/runs.jsonl"
 record_event "$RL" event=complete seat='codex:gpt-5.5' "secs#=12" "rc#=0"
@@ -2116,6 +2164,21 @@ check "harness: both are named"        "grep -q '111111111111, 222222222222' <<<
 printf 'r3\tc\topenai\tok\t10\t1\t10\t2\tpppppppppppp\taaaaaaaaaaaa\t111111111111\n' > "$RF/harness/slots.tsv"
 OUT=$(run_cadre "$D" receipts "$RF/harness")
 check "harness: agreement is stated"   "grep -q 'every row ran against 111111111111' <<<\"\$OUT\""
+
+# ★ receipts takes ANY directory, and a stale `cadre dataset` output dir is a
+# directory. The dataset written by the old lib/aggregate.sh puts `source` in
+# column 8 -- exactly where the schema version now lives -- so `recorded` and
+# `reconstructed` came back as two schema NAMES and split every family in the
+# table. Column 8 is a version only when it reads as one.
+mkdir -p "$RF/olddataset"
+printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tsource\n' > "$RF/olddataset/slots.tsv"
+printf 'p1\tc\topenai\tok\t100\t2\t200\trecorded\n' >> "$RF/olddataset/slots.tsv"
+printf 'p2\tc\topenai\tok\t100\t\t\treconstructed\n' >> "$RF/olddataset/slots.tsv"
+OUT=$(run_cadre "$D" receipts "$RF/olddataset")
+check "olddata: one row, not one per source"  "[ \$(awk '\$1 == \"openai\"' <<<\"\$OUT\" | wc -l) -eq 1 ]"
+check "olddata: the schema reads unknown"     "awk '\$1 == \"openai\" && \$13 == \"?\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "olddata: a source word is never a schema" "! awk '\$13 == \"recorded\" || \$13 == \"reconstructed\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "olddata: both rows still counted"      "awk '\$1 == \"openai\" && \$3 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
 
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises

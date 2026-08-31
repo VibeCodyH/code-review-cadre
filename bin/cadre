@@ -1164,11 +1164,16 @@ cmd_receipts() {
     NF < 5 || $3 == "" { next }
     {
       fam = $3
-      # ★ A missing or empty column 8 is UNKNOWN, printed "?", never defaulted to
-      # a version. Those rows straddle the change this grouping exists to keep
-      # apart, and calling them by any version number would assert the one thing
-      # nothing on disk can tell us.
-      v = (NF >= 8 && $8 != "") ? $8 : "?"
+      # ★ A missing, empty or NON-NUMERIC column 8 is UNKNOWN, printed "?", never
+      # defaulted to a version. Those rows straddle the change this grouping
+      # exists to keep apart, and calling them by any version number would assert
+      # the one thing nothing on disk can tell us.
+      # ★ The numeric test is not belt-and-braces. A dataset written by the old
+      # lib/aggregate.sh puts `source` in column 8, so `recorded` and
+      # `reconstructed` arrived here as two schema names and split every family
+      # in the table -- receipts accepts any directory, and a stale dataset dir
+      # is a directory.
+      v = (NF >= 8 && $8 ~ /^[0-9]+$/) ? $8 : "?"
       key = fam SUBSEP v
       if (!(key in keys)) { keys[key] = 1; famof[key] = fam; vof[key] = v; nver[fam]++ }
       seats[key]++
