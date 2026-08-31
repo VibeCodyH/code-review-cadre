@@ -88,7 +88,7 @@ mapfile -t SCRUB < <(scrubbed_env)
 # everything, and the driver above it wrote COMPLETED across a sweep where 27 of
 # 30 requested reviews did not exist. Silence and success must not share an exit
 # code.
-ok_runs=0; bad_runs=0; dead_agents=""; windows=""; no_output_runs=0; misconfigured_runs=0
+ok_runs=0; bad_runs=0; dead_agents=""; windows=""; windows_reset=""; no_output_runs=0; misconfigured_runs=0
 
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
@@ -237,6 +237,11 @@ for r in "${reviewers[@]}"; do
     if [ -n "$window" ]; then
       bad_runs=$((bad_runs + (runs - n)))
       windows="$windows  $r: usage window closed after run$n -- $(head -c 200 "$f.failed" 2>/dev/null | tr '\n' ' ')"$'\n'
+      # ★ Asked of the REFUSAL, not of the line above it (#48). That line
+      # carries the agent name and a 200-byte excerpt, so an agent called
+      # `resetter` would supply the word and a reset past the excerpt would be
+      # missed -- both of them wrong about the only thing this flag decides.
+      grep -qi 'reset' "$f.failed" 2>/dev/null && windows_reset=1
       echo "    ⏸ $r's usage window is CLOSED, not a rate limit and not a budget."
       echo "cadre: $r hit a provider usage window on pass $label. Waiting clears it; the refusal is quoted above." >&2
       break
@@ -304,7 +309,7 @@ if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
       # REMEDY instead, and the reset only exists in the provider's usage API.
       # Printing "resume after the reset time quoted above" over text that
       # quotes no time sends the operator hunting for a line nobody wrote.
-      if printf '%s' "$windows" | grep -qi 'reset'; then
+      if [ -n "$windows_reset" ]; then
         echo "Resume after the reset time quoted above."
       else
         echo "This refusal does not state its reset; check the provider's usage"

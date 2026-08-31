@@ -1626,8 +1626,11 @@ check "window refusal is failed"             "ls '$R'/window-*.md.failed >/dev/n
 check "window refusal is named"              "grep -q 'usage window CLOSED' <<<\"\$OUT\""
 check "window banner leads the artifact"     "head -1 '$R'/window-*.md.failed | grep -q 'usage window closed, not retried'"
 # ★ #48, the same treatment for a window that exits ZERO. Before the fix this
-# one was `inconclusive`: it never reached the refusal chain, so it was neither
-# named nor kept out of the retry loop.
+# one was `inconclusive`, so the refusal chain was never asked and the artifact
+# was never named a window. It was not retried either way -- the loop breaks on
+# anything classify_run does not call `failed` -- so these four pin the naming
+# and the filing, not the retry. (The retry is what the benchmark path's exit-6
+# test below pins.)
 check "tier limit is failed"                 "ls '$R'/tier-*.md.failed >/dev/null 2>&1"
 check "tier limit is not retried"            "[ \$(grep -c 'rate limited, waiting' <<<\"\$OUT\") -eq 0 ]"
 check "tier banner leads the artifact"       "head -1 '$R'/tier-*.md.failed | grep -q 'usage window closed, not retried'"
@@ -2732,6 +2735,20 @@ check "window: mid-sentence remedy is not" "! $WC"
 # ★ ...and a CLI that wraps its line still counts: the remedy starts the line.
 printf "You've reached your Fable 5 limit.\nSwitch to another model to continue.\n" > "$QB"
 check "window: wrapped tier still caught"  "$WC"
+# ★★ AND THE TIER BRANCH YIELDS TO THE OTHER TWO, which is the opposite of the
+# rule the stated-reset branch follows. A stated reset PROVES waiting clears it,
+# so it is worth taking "usage limit - resets 3pm" out of the budget matcher's
+# hands. A remedy proves nothing of the kind, and a multi-model router can
+# phrase either of the others this way. Window is asked FIRST in both dispatch
+# paths, so without this a throughput ceiling loses its retries and a spend cap
+# is reported as a clock that will clear itself -- the operator then waits out a
+# window that only money opens. Found by the codex review of this change.
+printf "You've reached your rate limit. Switch to another model to continue.\n" > "$QB"
+check "window: yields to a rate limit"   "! $WC"
+check "window: and it still retries"     "$RL"
+printf "You've reached your monthly spend limit. Switch to another model to continue.\n" > "$QB"
+check "window: yields to a spend cap"    "! $WC"
+check "window: and it stays a budget"    "$QE"
 
 # ★★ THE HALF THE REGEX DOES NOT FIX. Both dispatch paths ask
 # provider_window_closed() only about a run classify_run already called `failed`,
@@ -2752,6 +2769,16 @@ check "window: a stated reset too"       "$CJ"
   printf 'and nothing else in this diff changed. No new defects.\n\n'
   printf 'Verdict: ship it\n'; } > "$QB"
 check "window: a review quoting one is not" "! $CJ"
+# ★ ...and the BROAD bottom line counts here, where the rate scan demands the
+# narrow one. A wrong `failed` on the rate path costs one run; a wrong `failed`
+# on this path stops the whole sweep at exit 6 and the re-run does it again, so
+# this guard protects a real review as hard as it can. None of these three would
+# survive explicit_verdict.
+for bl in 'Looks good to me.' 'LGTM' 'Recommendation: merge as is.'; do
+  { printf 'A short note on the session limit banner, which resets 7:10pm.\n\n'
+    printf '%s\n' "$bl"; } > "$QB"
+  check "window: '$bl' saves the review" "! $CJ"
+done
 
 # A candidate that is out of budget: refuses, and counts how often it was asked.
 budget_case() {  # budget_case <dir>
@@ -2848,6 +2875,21 @@ check "tier: exit 6, not 4"            "[ '$RC' -eq 6 ]"
 # the operator looking for a line no provider printed.
 check "tier: no reset time promised"   "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
 check "tier: says where the reset is"  "grep -q \"check the provider's usage\" <<<\"\$OUT\""
+# ★ ...and that decision reads the REFUSAL, not the line cadre wrote about it.
+# That line carries the agent name and a 200-byte excerpt of the text, so an
+# agent named `resetter` supplied the word `reset` all by itself and got the
+# operator sent looking for a time nobody printed. Found by the codex review.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/resetter"; chmod +x "$D/bin/resetter"
+cat > "$D/agents.d/resetter.sh" <<A
+run_resetter() {
+  echo "You've reached your Fable 5 limit. Switch to another model to continue."
+}
+A
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run resetter 1 2>&1); RC=$?
+check "tier: agent name is not a reset"  "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
+check "tier: resetter still exits 6"     "[ '$RC' -eq 6 ]"
 
 # ★★ THE PATH THE REAL INCIDENT TOOK, and the one above does NOT cover it. Above,
 # the window closes on the FIRST pass, so graded_passes is 0 and the run lands in

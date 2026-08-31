@@ -835,8 +835,23 @@ provider_window_closed() {
   # would have reached classify_run's guards and STOPPED A SWEEP over a review.
   # A refusal instructs; prose refers. The real string ends the previous
   # sentence first: "... limit. Switch to another model to continue."
+  #
+  # ★★ AND IT YIELDS TO THE OTHER TWO, which is the opposite of the rule the
+  # stated-reset branch below follows. That branch deliberately claims
+  # "You've hit your usage limit - resets 3pm" out of quota_exhausted's hands,
+  # because a stated reset PROVES waiting clears it. A remedy proves nothing of
+  # the kind, and a multi-model router can phrase either of the others this way:
+  #
+  #   You've reached your rate limit. Switch to another model to continue.
+  #   You've reached your monthly spend limit. Switch to another model to continue.
+  #
+  # Window is asked FIRST in both dispatch paths, so without this a throughput
+  # ceiling loses its retries and -- far worse -- a spend cap is reported as a
+  # clock that will clear itself, and the operator waits out a window that money
+  # is the only thing that opens. Found by the codex review of this change.
   if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
-     && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f"; then return 0; fi
+     && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f" \
+     && ! rate_limited "$f" && ! quota_exhausted "$f"; then return 0; fi
   grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
@@ -1225,11 +1240,19 @@ classify_run() {
     # exits 0, so it landed in `inconclusive` and run-pass aborted the sweep as a
     # failed measurement -- with the regex fixed and this line missing, it still
     # would.
-    # ★ Same findings=0 guard as its two neighbours, plus explicit_verdict for
-    # the reason the rate scan grew one: a short clean review that quotes a
-    # session limit and then signs off is a review, and this is the check that
-    # would otherwise STOP a whole sweep over it.
-    if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! explicit_verdict "$f"; then echo failed; return 0; fi
+    # ★ Same findings=0 guard as its two neighbours -- but has_verdict, the
+    # BROAD one, where the rate scan above uses the narrow explicit_verdict. The
+    # blast radius is what moves the line. A wrong `failed` on the rate path
+    # costs one run; a wrong `failed` here stops the ENTIRE SWEEP at exit 6 and
+    # sends the operator off to wait out a window that never closed, and the
+    # re-run does it again. So this one protects a real review as hard as it can
+    # and accepts the pre-existing exit 4 as the cost of a miss.
+    # ★ Safe in the other direction, checked against every refusal in the
+    # corpus one by one: not one of them states a bottom line at all. The
+    # shapes explicit_verdict exists to exclude -- "Request not approved: 429",
+    # "Recommendation: retry after 60s" -- are RATE refusals, and a rate refusal
+    # never reaches this line.
+    if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
   fi
