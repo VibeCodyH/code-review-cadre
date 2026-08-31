@@ -77,7 +77,13 @@ then run that panel on the code you are about to ship.
       --roster a,b,c     override $CADRE_HOME/roster
       --jobs N           reviewers in parallel (default 1; they share rate limits)
       --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
-      --label <name>     output dir name; labels are single-use
+      --label <name>     output dir name; labels are single-use, and a label
+                         under review by another caller exits 8 (not an error:
+                         the run exists, go back to sleep). A label whose run
+                         died is reclaimed and the dead dir parked as
+                         <label>.stale.<epoch>.
+      --force            re-measure a label that already holds a finished
+                         review; never displaces a live run
       --prerun <cmd>     run <cmd> once on a throwaway copy of the checkout and
                          give every reviewer the transcript. Off unless you ask.
   cadre passes                          list registered passes
@@ -118,6 +124,11 @@ Environment:
   CADRE_TEST_CMD  override the detected test command
   CADRE_RETRIES     attempts when a call comes back rate limited (default 3)
   CADRE_RETRY_WAIT  first backoff in seconds, doubling, capped at 600 (default 60)
+  CADRE_PANEL_MIN   `cadre review` exits 10 when fewer usable seats than this
+                    came back (checked after synthesis; every artifact is
+                    intact). Off by default. A runner reads the exit code, not
+                    the report, and should alert rather than post a thin panel
+                    as if it were the one asked for.
 EOF
 }
 
@@ -638,9 +649,136 @@ resolve_roster() {
   printf '%s\n' "${out[@]}"
 }
 
+# Take the review claim at $out, or say why not. Returns 0 holding the claim,
+# 8 when a LIVE run holds it, 2 (die) when the label is spent.
+#
+# The record is three lines in $out/.claim: pid, host, started (epoch). Liveness
+# is `kill -0` when the host matches; a claim from another host cannot be
+# probed, so it is live until CADRE_CLAIM_TTL (default 4h, comfortably past a
+# whole panel at the 900s per-seat timeout) and stale after. Stale means the
+# holder died, and a dead run's directory is PARKED as $out.stale.<epoch>, never
+# deleted: whatever it wrote is evidence about why it died.
+#
+# ★ The record lives under $CADRE_HOME/reviews, beside prompt.txt, which
+# cmd_review already refuses to place inside the target: a reviewer's cwd is a
+# $CADRE_WORK checkout and cannot reach it by relative path.
+# ★ --force never displaces a live run. A human who wants to re-measure a sha is
+# doing something legitimate; a human who wants to kill someone else's run in
+# flight is doing something else, and gets the pid to do it with.
+claim_review() {  # <out> <force> -> 0 | 8 | exits
+  local out="$1" force="${2:-0}" claim="$1/.claim" host now
+  host="${HOSTNAME:-$(uname -n)}"
+  if ! mkdir "$out" 2>/dev/null; then
+    # ★ The loser's path is inspect -> park -> recreate, three steps that are
+    # not atomic together: two losers on one label both decide the holder is
+    # dead, the first parks and recreates, the second parks the FIRST's live
+    # run. A sidecar directory serialises the whole sequence; a caller that
+    # cannot take it is looking at someone mid-reclaim, which is a live run.
+    local gate="$out.taking"
+    # A gate older than a minute has no owner: the reclaim inside it is a
+    # handful of renames, so a caller that died mid-way is the only thing
+    # that leaves one, and without this every later call would read it as a
+    # reclaim in progress, forever.
+    if ! mkdir "$gate" 2>/dev/null; then
+      claim_dir_fresh "$gate" || rmdir "$gate" 2>/dev/null
+      mkdir "$gate" 2>/dev/null || {
+        echo "cadre: $(basename "$out") is being reclaimed by another caller right now. Nothing to do; this is not a failure." >&2
+        return 8
+      }
+    fi
+    local rc=0
+    claim_reclaim "$out" "$force" "$host" || rc=$?
+    rmdir "$gate" 2>/dev/null
+    case "$rc" in 0) ;; 8) return 8 ;; *) exit "$rc" ;; esac
+  fi
+  # ★ Written whole, then renamed: `>` truncates first, and a contender that
+  # reads the file in that instant sees an empty record. Four lines: the
+  # fourth is this process's start time as ps prints it, the identity that
+  # tells a pid apart from its reincarnation after a reboot.
+  now=$(date +%s)
+  printf '%s\n%s\n%s\n%s\n' "$$" "$host" "$now" "$(claim_pstart "$$")" > "$claim.tmp" \
+    && mv "$claim.tmp" "$claim" || {
+    rm -f "$claim.tmp"; rmdir "$out" 2>/dev/null; die "cannot write $claim"
+  }
+  return 0
+}
+
+claim_pstart() {  # <pid> -> the process start time as a string, or ""
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'
+}
+
+# Inside the sidecar: decide whether $out's holder is alive, and if not, park
+# the directory and take a fresh one. 0 = $out is ours (empty, unclaimed).
+claim_reclaim() {  # <out> <force> <host> -> 0 | 8 | exits
+  local out="$1" force="$2" host="$3" claim="$1/.claim"
+  local cpid="" chost="" cstart="" cpstart="" reason="" when
+  [ -f "$claim" ] && { read -r cpid; read -r chost; read -r cstart; read -r cpstart; } < "$claim"
+  if [ -n "$cpid" ] && [ -n "$cstart" ]; then
+    if claim_live "$cpid" "$chost" "$cstart" "$host" "$cpstart"; then
+      when=$(date -d "@$cstart" 2>/dev/null || date -r "$cstart" 2>/dev/null || echo "epoch $cstart")
+      echo "cadre: $out is being reviewed right now by pid $cpid on $chost (since $when). Nothing to do; this is not a failure." >&2
+      return 8
+    fi
+    reason="pid $cpid on $chost is gone"
+  elif [ -s "$out/report.md" ]; then
+    # ★ Not die: the sidecar is held here, and an exit inside it would leave
+    # the gate behind, so every later caller reads a reclaim in progress.
+    [ "$force" = 1 ] || {
+      echo "cadre: $out already holds a finished review. Labels are single-use: pick another --label, or --force to re-measure the same target on purpose." >&2
+      return 2
+    }
+    reason="re-measured with --force"
+  elif claim_dir_fresh "$out"; then
+    # ★ No record (or a record with no pid in it) and no report is what the
+    # WINNER looks like between its mkdir and its first write. That window is
+    # milliseconds, so a directory younger than a minute is busy, not dead;
+    # older than that with nothing in it is a run that died before it could
+    # say so.
+    echo "cadre: $out was just claimed by another caller. Nothing to do; this is not a failure." >&2
+    return 8
+  else
+    reason="no claim and no report, a run died before either"
+  fi
+  # $$ in the name: two reclaims in the same second must not share a park, or
+  # GNU mv nests the second directory inside the first.
+  local park="$out.stale.$(date +%s).$$"
+  mv "$out" "$park" || { echo "cadre: cannot park $out" >&2; return 2; }
+  echo "cadre: reclaimed $(basename "$out") ($reason); the old directory is parked at $park"
+  mkdir "$out" 2>/dev/null || {
+    echo "cadre: $out was claimed by another caller while reclaiming it. Nothing to do; this is not a failure." >&2
+    return 8
+  }
+  return 0
+}
+
+claim_dir_fresh() {  # <dir> -> 0 when modified within the last 60s
+  local age
+  age=$(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0) ))
+  [ "$age" -lt 60 ]
+}
+
+# ★ `kill -0` alone is false-live after a reboot: pids restart low and a
+# leftover claim's pid belongs to some daemon forever -- issue #32 again with
+# a quieter symptom. So a same-host pid is the holder only if it is alive AND
+# its start time matches the one the claim recorded; a different start time is
+# a reincarnation. The TTL is the fallback for what cannot be probed: another
+# host, or a ps that prints no start time. A live, identity-matched run is
+# never displaced by the clock, however long its panel takes.
+claim_live() {  # <pid> <host> <started> <this-host> [pstart] -> 0 when alive
+  local pid="$1" chost="$2" started="$3" host="$4" pstart="${5:-}" cur
+  case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$started" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$chost" = "$host" ]; then
+    kill -0 "$pid" 2>/dev/null || return 1
+    cur=$(claim_pstart "$pid")
+    if [ -n "$pstart" ] && [ -n "$cur" ]; then [ "$cur" = "$pstart" ]; return $?; fi
+  fi
+  [ $(( $(date +%s) - started )) -lt "${CADRE_CLAIM_TTL:-14400}" ]
+}
+
 cmd_review() {
   init_home; need git; need jq
-  local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo=""
+  local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo="" force=0
   local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -652,6 +790,7 @@ cmd_review() {
       --synth)  synth="${2:?--synth needs an agent spec}"; shift 2 ;;
       --label)  label="${2:?--label needs a name}"; shift 2 ;;
       --prerun) prerun="${2:?--prerun needs a command}"; shift 2 ;;
+      --force)  force=1; shift ;;
       -*) die "review: unknown option '$1'" ;;
       *)  repo="$1"; shift ;;
     esac
@@ -821,6 +960,25 @@ cmd_review() {
     esac
     is_promptless "$sa" && die "--synth cannot be '$sa': that adapter ignores the prompt and
      ships its own review contract, so it cannot merge reviews."
+    # ★ The synthesizer's own seat runs LAST (#29). On a single-lane runner
+    # the next review starts seconds after this one's synthesize call, and a
+    # roster that lists that account first fires its seat straight into the
+    # provider's burst window: measured 2026-08-25, five runs back to back,
+    # the claude SEAT produced zero reviews while claude-as-synthesizer
+    # worked in every one of them. Every other seat's wall time is the
+    # backoff that seat never got. Stable partition, roster order otherwise.
+    local head_specs=() tail_specs=() moved="" sp
+    for sp in "${specs[@]}"; do
+      if [ "$(spec_agent "$sp")" = "$sa" ]; then
+        tail_specs+=("$sp"); moved="${moved:+$moved, }$sp"
+      else
+        head_specs+=("$sp")
+      fi
+    done
+    if [ -n "$moved" ] && [ "${#head_specs[@]}" -gt 0 ]; then
+      specs=("${head_specs[@]}" "${tail_specs[@]}")
+      echo "  seat order: $moved moved last, it shares the synthesizer's account"
+    fi
   fi
 
   # Single-use labels. Reusing one would hand back the previous review of
@@ -842,7 +1000,16 @@ cmd_review() {
   fi
   local out="$CADRE_HOME/reviews/$label"
   mkdir -p "$CADRE_HOME/reviews" || die "cannot create $CADRE_HOME/reviews"
-  mkdir "$out" 2>/dev/null || die "$out already exists. Pick another --label."
+  # ★ Admission control (#32). The label IS the identity of the measurement --
+  # a runner keys it `<repo>-<pr>-<sha>` -- so two callers reaching for the
+  # same one compute the same path, and `mkdir` is the atomic claim: first one
+  # wins. What the bare mkdir could not tell a loser was WHY it lost, and the
+  # three answers call for opposite responses: a live run means go back to
+  # sleep (exit 8), a finished one means the label is spent (die, or --force
+  # to re-measure on purpose), and a crashed one means reclaim it, because a
+  # wedged claim is invisible and the operator's only symptom is "the runner
+  # stopped reviewing". The claim record and its rules are in claim_review.
+  claim_review "$out" "$force" || exit $?
 
   # ★ Say it when the panel is less independent than it looks. This is the ONE
   # property the whole tool rests on, and it is the easiest to lose by accident
@@ -911,6 +1078,7 @@ cmd_review() {
   CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
+    rm -f "$out/.claim"
     # rmdir, not rm -rf: it succeeds only when the directory is empty, so a run
     # that died before writing anything leaves nothing behind, and one that
     # produced partial output keeps it. An empty review dir reads as a review
@@ -919,6 +1087,9 @@ cmd_review() {
     return "$rrc"
   fi
 
+  # ★ Still claimed through synthesis: it writes into $out too, and a --force
+  # that parked the directory here would have this process finish its merge
+  # inside the replacement run's directory.
   [ -n "$synth" ] && [ "$synth" != none ] && cmd_synthesize "$out" "$synth" "${specs[@]}"
   # ★ UNCONDITIONAL, and deliberately outside the `&&` chain above. findings.json
   # is the engine's output for this panel, and a panel that produced reviews
@@ -928,8 +1099,41 @@ cmd_review() {
   # $skipped_env carries the gate-skipped seats, which are NOT in $specs: they
   # were filtered out before dispatch, and a panel built from $specs alone would
   # report a smaller roster than the user asked for.
+  # ★ ...and BEFORE the panel floor below, for the same reason it sits outside
+  # the `&&`: a thin panel's artifacts are all real and all on disk, so the
+  # engine still owes its consumer a findings.json. Exit 10 is a statement about
+  # the ROSTER, not about the reviews that did come back.
   engine_write_findings "$out" "${synth:-none}" "$skipped_env" "${specs[@]}"
-  return 0
+  # ★ Panel floor (#29). The report is honest about a shrunken panel, but a
+  # runner posting the synthesis never reads the report; it reads the exit
+  # code. Below the floor the artifacts are all real and all on disk -- this
+  # is not a failed measurement, so it runs AFTER synthesis -- and 10 says
+  # "you got less than you asked for" in a channel a runner can act on.
+  # Off unless CADRE_PANEL_MIN is set: a floor is a property of a roster.
+  # ★ Still under the claim: this writes report.md, and a --force parking the
+  # directory here would land the note in the replacement run.
+  # ★ A malformed floor is refused, not coerced to "off": CADRE_PANEL_MIN=3x
+  # silently posting a two-seat panel as healthy is the exact failure the
+  # floor exists to stop. Found by the codex review of this change.
+  local floor="${CADRE_PANEL_MIN:-0}" usable=0 sl frc=0
+  local requested=$(( ${#specs[@]} + ${#skipped[@]} ))
+  case "$floor" in *[!0-9]*) rm -f "$out/.claim"; die "CADRE_PANEL_MIN must be a whole number, got '$floor'" ;; esac
+  if [ "${floor:-0}" -gt 0 ]; then
+    for sp in "${specs[@]}"; do
+      sl=$(slug "$sp")
+      { [ -s "$out/$sl.md" ] || [ -s "$out/$sl.md.partial" ]; } && usable=$((usable + 1))
+    done
+    if [ "$usable" -lt "$floor" ]; then
+      echo "> ⚠ **Panel below floor**: $usable of $requested requested seat(s) usable; CADRE_PANEL_MIN is $floor. The reviews above are real; there are fewer of them than the roster asked for." >> "$out/report.md"
+      echo "cadre: PANEL BELOW FLOOR: $usable of $requested requested seat(s) usable, floor $floor (CADRE_PANEL_MIN). Everything on disk is intact; the panel is thinner than you asked for. Exit 10." >&2
+      frc=10
+    fi
+  fi
+  # Released on every path. Left behind, a finished run reads as a claim with
+  # a dead pid -- reclaimable, so not fatal, but it would park a completed
+  # review on the next call instead of refusing to re-measure it.
+  rm -f "$out/.claim"
+  return "$frc"
 }
 
 # Sum only what slots.tsv measured. Old and reconstructed rows have no prompt

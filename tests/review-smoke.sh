@@ -23,6 +23,7 @@ setup_agents() {
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
+           blocked permquote ratereview budget window tier \
            finder bigfinder synthmerge; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
@@ -187,6 +188,65 @@ A
   cat > "$1/agents.d/ratelim.sh" <<'A'
 run_ratelim() { printf 'Error: 429 too many requests.\n'; }
 A
+  # ★ A short CLEAN review of throttle code, verbatim shape from the live
+  # runner (2026-08-29): findings=0, the words "429" and "rate limited" in the
+  # body, a verdict at the end. The keyword scan binned it and burned three
+  # retries. A refusal never states a bottom line; this does.
+  # ★ Verbatim shapes from the live runner. A budget refusal and a closed usage
+  # window both match the rate scan; neither is cleared by backoff.
+  cat > "$1/agents.d/budget.sh" <<'A'
+run_budget() { printf 'You have exceeded your monthly quota (Request ID: F443:1788AA:4F7ACB)\n'; }
+A
+  cat > "$1/agents.d/window.sh" <<'A'
+# Nonzero like the real claude CLI: with exit 0 this text is `inconclusive`
+# (no rate keyword, no findings, no verdict) and never reaches the retry loop.
+run_window() { printf "You've hit your session limit · resets 5am (UTC)\n"; return 1; }
+A
+  # ★ #48. A model-tier window, and the reason it needs its own stub is the
+  # RETURN CODE: every other window in the corpus exits nonzero, so classify_run
+  # binned it `failed` on the rc test and the refusal chain got asked. This one
+  # exits 0 -- observed on the claudecr seat -- so with only the regex fixed it
+  # still lands `inconclusive` and still aborts the sweep.
+  cat > "$1/agents.d/tier.sh" <<'A'
+run_tier() { printf "You've reached your Fable 5 limit. Switch to another model to continue.\n"; }
+A
+  # Unquoted heredoc on purpose: the call counter's path is baked in, because
+  # the adapter runs under a scrubbed environment and cannot be told it.
+  cat > "$1/agents.d/ratereview.sh" <<A
+run_ratereview() {
+  echo x >> "$1/ratereview.calls"
+  echo "Comment-only diff. The old comment claimed the in-app 429 was the only throttle,"
+  echo "but there is no rate-limit check anywhere in this route; the new comment says so."
+  echo "No behavior changed, so nothing is rate limited differently. No new defects."
+  echo
+  echo "Verdict: ship it"
+}
+A
+  # ★ #28, verbatim from a live panel (codex, 2026-08-24). The sandbox broke
+  # before the model could look; it said so, stated NO findings, and then wrote
+  # a verdict of its own. Exit 0, no adapter marker. has_verdict rescued it from
+  # `inconclusive` and it was counted `ok` -- a seat that reviewed nothing,
+  # clearing the diff by silence.
+  cat > "$1/agents.d/blocked.sh" <<'A'
+run_blocked() {
+  echo "I couldn't review the change because every filesystem command failed before execution with:"
+  echo
+  echo '`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`'
+  echo
+  echo "I therefore could not inspect the diff or run tests, and won't claim findings without evidence."
+  echo
+  echo "Overall verdict: should-fix — review blocked by the execution environment."
+}
+A
+  # The control: a SHORT real review whose one finding is about a permission
+  # error in the diff. Same words, but it states a finding, so it stays ok.
+  cat > "$1/agents.d/permquote.sh" <<'A'
+run_permquote() {
+  echo "REVIEW by permquote"
+  echo "- should-fix: install.sh swallows 'permission denied' from bwrap: and the sandbox setup reports success anyway. I could not inspect the diff of the generated wrapper without a runtime, but the error path is wrong as written."
+  echo "Verdict: ship it after that fix"
+}
+A
   # ★ A COMPLETE synthesis that ends by QUOTING a reviewer's truncation marker,
   # which the synthesis prompt explicitly asks it to report. Exits 0, because
   # nothing went wrong. Must survive: this is a good merge.
@@ -267,6 +327,26 @@ check "gitignored secret excluded"   "! grep -q 'env.local' '$G'"
 check "ignored log excluded"         "! grep -q 'debug.log' '$G'"
 check ".env.example did not refuse"  "[ -n '$G' ]"
 check "missing agent -> FAILED"      "grep -q 'NOT INSTALLED' '$R'/ghost-*.failed"
+# ★ #31: same bucket, different sentence. The operator reads MISCONFIGURED and
+# goes to the roster, not to a reviewer that was never called.
+check "missing agent reads MISCONFIGURED"   "grep -q 'ghost.*MISCONFIGURED' '$R/report.md'"
+check "and not as a reviewer FAILED"        "! grep -qE '^- .ghost. — \*\*FAILED' '$R/report.md'"
+check "report says the panel is smaller"    "grep -q 'never ran' '$R/report.md'"
+check "unit: NOT INSTALLED -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$R'/ghost-*.failed) = misconfigured ]\""
+check "unit: phrase names the box, not the model" "bash -c \"source '$ROOT/lib/common.sh'; failure_phrase '$R'/ghost-*.failed '' 0\" | grep -q 'not a verdict on the model'"
+printf 'agentcall: unknown agent %s (have: good)\n' "'nope'" > "$D/ac.txt"
+check "unit: agentcall die -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/ac.txt' 2) = misconfigured ]\""
+printf 'DID NOT RUN, misconfigured: model gpt-99 is not served by this account\n' > "$D/adm.txt"
+check "unit: adapter opt-in marker -> misconfigured" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/adm.txt' 0) = misconfigured ]\""
+# ★ A reviewer OF this repo opens with the marker's first words. Whole
+# sentences only, or a review is filed as a seat that never ran.
+printf 'NOT INSTALLED handling is too broad in run-review.sh.\n- should-fix: the check matches prose.\nVerdict: ship it after that fix\n' > "$D/prose.txt"
+check "unit: prose starting NOT INSTALLED stays failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/prose.txt' 1) = failed ]\""
+# The marker on line 2 is the line that gets quoted, not line 1.
+printf 'cli chrome\nagentcall: unknown agent %s (have: good)\n' "'nope'" > "$D/ac2.txt"
+check "unit: a line-2 marker is the quoted line" "bash -c \"source '$ROOT/lib/common.sh'; failure_phrase '$D/ac2.txt' 2\" | grep -q 'MISCONFIGURED: agentcall: unknown agent'"
+printf 'DID NOT COMPLETE, no text returned (stopReason=Error).\n' > "$D/dnc.txt"
+check "unit: a provider failure stays failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$D/dnc.txt' 1) = failed ]\""
 check "all 4 roster rows in report"  "[ \$(grep -c '^- \`' '$R/report.md') -eq 4 ]"
 
 # ---- three-state reviewer health ---------------------------------------------
@@ -331,8 +411,8 @@ printf '# good\n' > "$D/state/roster"
 OUT=$(run_cadre "$D" review --base main "$S")
 check "all-commented roster refused"  "grep -q 'commented out' <<<\"\$OUT\""
 OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
-OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S")
-check "label is single-use"           "grep -q 'already exists' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster good --label reuse --base main "$S"); RC=$?
+check "label is single-use"           "grep -q 'already holds a finished review' <<<\"\$OUT\" && [ '$RC' -eq 2 ]"
 
 echo "== user-declared roster seat gates =="
 # One added line is below the declared threshold. The all-skipped case is still
@@ -1258,6 +1338,30 @@ check "and is not binned as unusable"  "[ ! -e '$RS/synthesis.md.failed' ]"
 # roster decision gets made on.
 check "slots.tsv records the state"    "grep -qP '\tinconclusive\t' '$R/slots.tsv'"
 
+echo "== ★ a sandbox error with a self-written verdict is not a review (#28) =="
+D=$(case_dir env_blocked); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster blocked,permquote,good --synth echoer --base main "$S")
+R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
+check "blocked seat -> .md.failed"       "ls '$R'/blocked-*.md.failed >/dev/null 2>&1"
+check "and NOT a clean review"           "! ls '$R'/blocked-*.md >/dev/null 2>&1"
+# ★ failed, not inconclusive: the fix is on the box, not in the roster.
+check "and NOT inconclusive"             "! ls '$R'/blocked-*.md.inconclusive >/dev/null 2>&1"
+check "its verdict line did not rescue it" "grep -q 'Overall verdict' '$R'/blocked-*.md.failed"
+check "counts file it as failed"         "grep -q '2 ok, 0 degraded, 0 inconclusive, 1 failed' <<<\"\$OUT\""
+check "excluded from the synthesis"      "! grep -qE '^===== REVIEWER: blocked =====' '$R/synthesis.md'"
+# The control: same vocabulary, one stated finding, stays a review.
+check "short review quoting the error stays ok" "ls '$R'/permquote-*.md >/dev/null 2>&1"
+check "unit: env_blocked matches the artifact" "bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$R'/blocked-*.md.failed\""
+echo 'Error: 429 too many requests.' > "$D/rl.txt"
+# ★ Third person is a review OF sandbox code, not a stopped reviewer.
+printf 'Reviewed the patch. The new diagnostic correctly reports permission denied when the sandbox cannot access the repository. Overall verdict: ship it.\n' > "$D/third.txt"
+check "unit: third-person mention is not env_blocked" "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/third.txt'\""
+# Length guard: the same apology padded past 2KB is not this shape.
+{ cat "$R"/blocked-*.md.failed; head -c 2100 /dev/zero | tr '\0' 'x'; } > "$D/long.txt"
+check "unit: over 2KB is not env_blocked"  "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/long.txt'\""
+check "unit: a 429 is not env_blocked"   "! bash -c \"source '$ROOT/lib/common.sh'; env_blocked '$D/rl.txt'\""
+
 echo "== ★ coderabbit's bracket severities are findings =="
 # ★ Measured across three real panels: coderabbit reviews declaring findings=3,
 # findings=13 and findings=3 all counted ZERO here, because review_findings only
@@ -1546,6 +1650,44 @@ R="$D/state/reviews/ratelim"
 check "a real rate limit still fails"   "ls '$R'/ratelim-*.md.failed >/dev/null 2>&1"
 check "give-up note leads the file"     "head -1 '$R'/ratelim-*.md.failed | grep -q '^DID NOT COMPLETE, rate limited'"
 check "and the error text is kept"      "grep -q '429 too many requests' '$R'/ratelim-*.md.failed"
+# ★ The verdict is the discriminator. Same words, zero findings, a bottom line:
+# a review, filed ok, and NOT retried -- the retries are the expensive half.
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster ratereview --synth none \
+      --base main --label ratereview "$S")
+R="$D/state/reviews/ratereview"
+check "clean review of throttle code is ok"  "ls '$R'/ratereview-*.md >/dev/null 2>&1"
+check "and not filed failed"                 "! ls '$R'/ratereview-*.md.failed >/dev/null 2>&1"
+check "and was never retried"                "! grep -q 'rate limited, waiting' <<<\"\$OUT\""
+check "and the adapter was called exactly once" "[ \$(wc -l < '$D/ratereview.calls') -eq 1 ]"
+# The refusal shapes has_verdict would have let through.
+printf 'Request not approved: 429 rate limit exceeded.\n' > "$D/notapproved.txt"
+check "unit: 'not approved: 429' is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$D/notapproved.txt' 0) = failed ]\""
+printf 'Error: rate limit exceeded.\nRecommendation: retry after 60 seconds.\n' > "$D/recommend.txt"
+check "unit: 'Recommendation: retry' is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$D/recommend.txt' 0) = failed ]\""
+# ★ Budget and window refusals: filed failed, NOT retried. The retries were
+# 8.7 hours of a single-lane queue on the live runner.
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster budget,window,tier,good --synth none \
+      --base main --label budget "$S")
+R="$D/state/reviews/budget"
+check "budget refusal is failed"             "ls '$R'/budget-*.md.failed >/dev/null 2>&1"
+check "budget refusal is not retried"        "! grep -q 'rate limited, waiting' <<<\"\$OUT\""
+check "budget refusal is named"              "grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
+check "budget banner leads the artifact"     "head -1 '$R'/budget-*.md.failed | grep -q 'out of budget, not retried'"
+check "window refusal is failed"             "ls '$R'/window-*.md.failed >/dev/null 2>&1"
+check "window refusal is named"              "grep -q 'usage window CLOSED' <<<\"\$OUT\""
+check "window banner leads the artifact"     "head -1 '$R'/window-*.md.failed | grep -q 'usage window closed, not retried'"
+# ★ #48, the same treatment for a window that exits ZERO. Before the fix this
+# one was `inconclusive`, so the refusal chain was never asked and the artifact
+# was never named a window. It was not retried either way -- the loop breaks on
+# anything classify_run does not call `failed` -- so these four pin the naming
+# and the filing, not the retry. (The retry is what the benchmark path's exit-6
+# test below pins.)
+check "tier limit is failed"                 "ls '$R'/tier-*.md.failed >/dev/null 2>&1"
+check "tier limit is not retried"            "[ \$(grep -c 'rate limited, waiting' <<<\"\$OUT\") -eq 0 ]"
+check "tier banner leads the artifact"       "head -1 '$R'/tier-*.md.failed | grep -q 'usage window closed, not retried'"
+check "tier refusal text is kept"            "grep -q 'Switch to another model' '$R'/tier-*.md.failed"
+check "the rest of the panel still ran"      "ls '$R'/good-*.md >/dev/null 2>&1"
+check "unit: a refusal with no verdict is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$R'/../ratelim/ratelim-*.md.failed 0) = failed ]\""
 
 echo "== ★ a synthesis QUOTING a marker is not a truncated synthesis =="
 # The synthesis prompt asks the model to report which reviewers were cut off, so
@@ -1646,6 +1788,81 @@ OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
       "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
 check "a real error stays nonzero"    "[ $RC -ne 0 ]"
 check "and keeps the provider text"   "grep -q '400: model not found' <<<\"\$OUT\""
+# ★ issue #33: run_pi's stdin pipe carries the prompt PLUS the format contract,
+# and the contract must carry the two hooks the classifier actually reads -- a
+# bold severity label and a closing Verdict: line. pi_output_contract alone, in
+# a subshell: no run_pi, no pi binary, no network.
+contract=$( . "$ROOT/agents.d/pi.sh" >/dev/null 2>&1; pi_output_contract )
+check "pi adapter appends output contract (issue #33)" \
+  "grep -q 'Verdict:' <<<\"\$contract\" && grep -qF -- '**blocking**' <<<\"\$contract\""
+
+echo "== ★ claudecr: /code-review per level as a seat (#42) =="
+# Stub `claude` on PATH; the adapter's own contract logic is what is under test.
+CD=$(case_dir claudecr); cp "$ROOT/agents.d/claudecr.sh" "$ROOT/agents.d/claude.sh" "$CD/agents.d/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/claude.argv"\necho "**blocking**"\necho "src/x.js:3 -- missing await"\necho "Verdict: blocking"\n' "$CD" > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: review passes through"          "grep -q 'missing await' <<<\"\$OUT\" && [ $RC -eq 0 ]"
+check "claudecr: argv leads with the slash command" "head -2 '$CD/claude.argv' | grep -q '^/code-review low'"
+check "claudecr: and appends the format contract"  "grep -q 'Verdict:' '$CD/claude.argv' && grep -qF -- '**blocking**' '$CD/claude.argv'"
+check "claudecr: ro carries the claude deny list"  "grep -q -- '--disallowedTools' '$CD/claude.argv' && grep -qw 'Workflow' '$CD/claude.argv'"
+# ★ Never a base target: probed, it makes the skill review nothing.
+check "claudecr: no base commit in the argv"       "! grep -qE '^[0-9a-f]{40}$' '$CD/claude.argv'"
+# A level is required, and a bad one is refused -- both as misconfiguration,
+# the operator's fault, never a verdict on the model.
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro 2>&1 </dev/null)
+check "claudecr: no level -> DID NOT RUN, misconfigured" "grep -q '^DID NOT RUN, misconfigured: claudecr needs a level' <<<\"\$OUT\""
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M ultra 2>&1 </dev/null)
+check "claudecr: ultra is refused"                 "grep -q \"^DID NOT RUN, misconfigured: claudecr level 'ultra'\" <<<\"\$OUT\""
+printf 'DID NOT RUN, misconfigured: claudecr level x\n' > "$CD/lvl.txt"
+check "claudecr: and files as misconfigured"       "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(failure_kind '$CD/lvl.txt' 0) = misconfigured ]\""
+# Silence is not a clean pass.
+printf '#!/bin/sh\nexit 0\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M medium 2>&1 </dev/null); RC=$?
+check "claudecr: silent run is DID NOT COMPLETE"   "grep -q '^DID NOT COMPLETE, claudecr:medium printed no review' <<<\"\$OUT\" && [ $RC -ne 0 ]"
+# Nonzero WITH text keeps both: the text is a review, the status is the CLI's.
+printf '#!/bin/sh\necho "**should-fix**"\necho "x.js:1 -- thing"\necho "Verdict: should-fix"\nexit 3\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: nonzero with text keeps both"     "grep -q 'x.js:1' <<<\"\$OUT\" && [ $RC -eq 3 ]"
+# A clock kill with text on the way is a partial review, not nothing.
+printf '#!/bin/sh\necho "**blocking**"\necho "x.js:1 -- partial"\nexit 124\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: timeout with text -> _TRUNCATED"  "grep -q 'x.js:1 -- partial' <<<\"\$OUT\" && tail -1 <<<\"\$OUT\" | grep -q '^_TRUNCATED' && [ $RC -ne 0 ]"
+printf '#!/bin/sh\nexit 124\n' > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: timeout with nothing -> DID NOT COMPLETE" "grep -q '^DID NOT COMPLETE.*timeout with no output' <<<\"\$OUT\" && [ $RC -ne 0 ]"
+# ★ ro must not fail open when claude.sh is not loaded. agentcall always
+# sources the shipped agents.d first, so the only way to test the guard is to
+# source the adapter alone and call run_claudecr with the locals it expects.
+printf '#!/bin/sh\necho "should not run"\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+OUT=$(PATH="$CD/bin:$PATH" bash -c 'unset CLAUDE_DENY; . "$1"; dir=/tmp mode=ro model=low prompt="" TIMEOUT=5 DRY=""; run_claudecr' _ "$ROOT/agents.d/claudecr.sh" 2>&1 </dev/null)
+check "claudecr: ro without CLAUDE_DENY refuses"   "grep -q 'misconfigured: CLAUDE_DENY is unset' <<<\"\$OUT\" && ! grep -q 'should not run' <<<\"\$OUT\""
+# Dry run shows the real argv, contract included.
+OUT=$(echo hi | CADRE_AGENTS_D="$CD/agents.d" "$ROOT/bin/agentcall" --print-command claudecr -d /tmp -m ro -M xhigh 2>&1)
+check "claudecr: dry run carries the contract"     "grep -q 'code-review' <<<\"\$OUT\" && grep -q 'Verdict' <<<\"\$OUT\""
+# ★ The three-commit checkout: the skill must see base..HEAD, not the last
+# commit alone. The stub records what HEAD^ was when claude ran.
+TR=$(mktemp -d -p "$SANDBOX"); git -C "$TR" init -q; git -C "$TR" -c user.name=c -c user.email=c@x commit -q --allow-empty -m base
+TB=$(git -C "$TR" rev-parse HEAD); echo a > "$TR/a"; git -C "$TR" add a; git -C "$TR" -c user.name=c -c user.email=c@x commit -qm tracked
+echo u > "$TR/u"; git -C "$TR" add u; git -C "$TR" -c user.name=c -c user.email=c@x commit -qm untracked; TH=$(git -C "$TR" rev-parse HEAD)
+printf '#!/bin/sh\ngit rev-parse HEAD^ > "%s/parent.txt"; git diff --name-only HEAD^ HEAD > "%s/files.txt"\necho "**nit**"\necho "a:1 -- x"\necho "Verdict: no defects found"\n' "$CD" "$CD" > "$CD/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CD/agents.d" PATH="$CD/bin:$PATH" CADRE_PASS_BASE="$TB" "$ROOT/bin/agentcall" claudecr -d "$TR" -m ro -M low 2>&1 </dev/null)
+check "claudecr: squashed view has the base as parent" "[ \"\$(cat '$CD/parent.txt')\" = '$TB' ]"
+check "claudecr: and the diff carries BOTH commits"    "grep -qx a '$CD/files.txt' && grep -qx u '$CD/files.txt'"
+check "claudecr: and HEAD is restored after"           "[ \"\$(git -C '$TR' rev-parse HEAD)\" = '$TH' ]"
+# Declarations: it cannot merge, grade, or take a security brief.
+DECL=$( . "$ROOT/agents.d/claudecr.sh" >/dev/null 2>&1; cannot_claudecr )
+check "claudecr: declares role:synth + role:judge" "grep -q '^role:synth$' <<<\"\$DECL\" && grep -q '^role:judge$' <<<\"\$DECL\" && grep -q '^prompt:security-audit$' <<<\"\$DECL\""
+check "claudecr: is promptless"                    "bash -c \"source '$ROOT/lib/common.sh'; CADRE_AGENTS_D='$ROOT/agents.d' is_promptless claudecr\""
+check "claudecr: documented in CLI-REFERENCE"      "grep -q 'claudecr' '$ROOT/docs/CLI-REFERENCE.md'"
+# ★ Installed means `claude` is on PATH, not `claudecr`. Without bin_claudecr
+# the real end-to-end run dispatched the seat as NOT INSTALLED.
+printf '#!/bin/sh\nexit 0\n' > "$CD/bin/claude"; chmod +x "$CD/bin/claude"
+# ★ grep -x, not -qx: under this suite's pipefail a -q that exits on the first
+# match leaves agentcall writing into a closed pipe, and the pipeline reports
+# SIGPIPE (141) for a check that actually matched.
+check "claudecr: installed when claude is"         "CADRE_AGENTS_D='$CD/agents.d' PATH='$CD/bin:$PATH' '$ROOT/bin/agentcall' --installed 2>/dev/null | grep -x claudecr >/dev/null"
+NOCL=$(mktemp -d -p "$SANDBOX"); mkdir -p "$NOCL/bin"
+check "claudecr: not installed without claude"     "! env -i PATH='$NOCL/bin:/usr/bin:/bin' HOME='$HOME' CADRE_AGENTS_D='$CD/agents.d' '$ROOT/bin/agentcall' --installed 2>/dev/null | grep -x claudecr >/dev/null"
 
 echo "== ★ the run dataset =="
 # ★ The record has to be written BEFORE the scratch files it is built from are
@@ -1858,13 +2075,18 @@ check "review file left alone"        "grep -q 'timestamps are strings' '$D/revi
 # with qwen judging a real panel. Every stub above returns bare JSON, which is
 # exactly why the suite was green while live settle was broken: judge stubs are
 # tidier than judges.
-for shape in fenced tagged prose_after leading_prose; do
+for shape in fenced tagged prose_after leading_prose blank_before; do
   case $shape in
     fenced)        pre='```';     post='```' ;;
     tagged)        pre='```json'; post='```' ;;
     prose_after)   pre='```json'; post='```
 Let me know if you want more detail.' ;;
     leading_prose) pre='Here is the match:
+```json'; post='```' ;;
+    # ★ #26: prose, a BLANK LINE, then the block. The one shape an awk in
+    # paragraph mode splits, leaving the JSON in a record the slicer never reads.
+    blank_before)  pre='Here is the match:
+
 ```json'; post='```' ;;
   esac
   cat > "$D/agents.d/judgestub.sh" <<A
@@ -1894,6 +2116,39 @@ J
 A
 OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1)
 check "braces inside strings survive" "grep -q 'returns early' <<<\"\$OUT\""
+
+# ★★ #26. Both copies of this slicer used to slurp by setting awk's record
+# separator to a NUL, which is a gawk extension: in awk source "\0" is a
+# NUL-terminated string, so an awk that reads it as C does sees the EMPTY string
+# -- and an empty RS is awk PARAGRAPH mode, splitting on blank lines instead of
+# slurping. The JSON then sits in a record the slicer never reads and a judge
+# that answered correctly is reported as one that "failed or stopped early".
+# In settle that is the bad direction twice over: its exit status is a stopping
+# rule, so an empty match reads as "nothing new is left".
+# NOT REPRODUCED on a real BSD awk -- this box has only gawk, which slurps under
+# --posix and --traditional too. So the hazard is MEASURED by forcing paragraph
+# mode explicitly rather than asserted from the docs, and the fix is the removal
+# of the dependency, not a confirmed platform bug.
+# ★ The first check below is EVIDENCE, not a regression guard: it exercises the
+# old shape under forced paragraph mode and passes with this commit reverted, on
+# purpose. The guards are the three source pins at the end of the block.
+cat > "$D/oldslice.awk" <<'A'
+BEGIN{RS=""}
+{ i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
+  for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
+  exit 1 }
+A
+printf 'Here is the match:\n\n{"findings":[]}\n' > "$D/para.txt"
+check "paragraph mode really loses it"  "[ -z \"\$(awk -f '$D/oldslice.awk' '$D/para.txt')\" ]"
+check "the shipped slicer keeps it"     "bash -c \"source '$ROOT/lib/common.sh'; extract_json_slice < '$D/para.txt'\" | grep -q findings"
+# ★ And ONE copy, so the two cannot drift apart again -- which is how the first
+# of them was fixed for the trailing fence and the other was not.
+# ★ Directory-wide, not a file list (#25): settle moved to lib/engine/ and the
+# file-list form went green on a bin/cadre that no longer held the code. A pin
+# that names a path stops pinning the moment the path changes.
+check "no RS left for an awk to misread" "! grep -rqE 'BEGIN\{ *RS' '$ROOT/lib' '$ROOT/bin'"
+check "grade.sh calls the shared slicer" "grep -q 'extract_json_slice' '$ROOT/lib/grade.sh'"
+check "settle calls the shared slicer"   "grep -q 'extract_json_slice' '$ROOT/lib/engine/settle.sh'"
 # Still has to REFUSE a fenced block that is not complete JSON.
 cat > "$D/agents.d/judgestub.sh" <<'A'
 run_judgestub() {
@@ -2539,6 +2794,81 @@ head -c 2100 /dev/zero | tr '\0' 'x' > "$QB"
 printf "hit your session limit, resets at midnight\n" >> "$QB"
 check "window: too big to be a refusal" "! $WC"
 
+# ★★ A MODEL-TIER window (#48), verbatim from benchmarking the claudecr seat.
+# It is the first window in the corpus that states NO reset -- the reset is real
+# and sits in the provider's usage API, the message names a REMEDY instead -- so
+# the stated-reset test every case above turns on refuses it. It matched none of
+# the three classifiers, so a spent tier was filed as a failed measurement of the
+# candidate: it cost the last pass of `high` and all 12 of `xhigh`.
+printf "You've reached your Fable 5 limit. Switch to another model to continue.\n" > "$QB"
+check "window: model tier caught"        "$WC"
+check "window: tier is NOT a budget"     "! $QE"
+check "window: tier is NOT a rate limit" "! $RL"
+# ★ BOTH halves are required, and each alone is a shape that must not trip it.
+# A spend cap names a payment page and never another model, which is why the
+# remedy can stand in for the reset at all.
+printf "You've reached your monthly spend limit. Raise it at claude.ai/settings/usage\n" > "$QB"
+check "window: tier half alone is not"   "! $WC"
+check "window: that one stays a budget"  "$QE"
+printf 'The retry advice says to switch to another model, which is wrong here.\n' > "$QB"
+check "window: remedy half alone is not" "! $WC"
+# ★★ AND THE REMEDY HAS TO BE ISSUED, NOT MENTIONED. Both halves alone were not
+# enough: these two are this repo's own review prose, and both matched a first
+# draft of the pattern. The second one is the dangerous shape -- no findings, no
+# verdict -- so it would have passed classify_run's guards and STOPPED A SWEEP
+# over a review. A refusal instructs; prose refers.
+printf 'blocking: the retry path reached your rate limit ceiling and should switch to another model provider\n' > "$QB"
+check "window: prose naming both is not"  "! $WC"
+printf 'The docs say you have reached your quota limit; the fix is to switch to another model.\n' > "$QB"
+check "window: mid-sentence remedy is not" "! $WC"
+# ★ ...and a CLI that wraps its line still counts: the remedy starts the line.
+printf "You've reached your Fable 5 limit.\nSwitch to another model to continue.\n" > "$QB"
+check "window: wrapped tier still caught"  "$WC"
+# ★★ AND THE TIER BRANCH YIELDS TO THE OTHER TWO, which is the opposite of the
+# rule the stated-reset branch follows. A stated reset PROVES waiting clears it,
+# so it is worth taking "usage limit - resets 3pm" out of the budget matcher's
+# hands. A remedy proves nothing of the kind, and a multi-model router can
+# phrase either of the others this way. Window is asked FIRST in both dispatch
+# paths, so without this a throughput ceiling loses its retries and a spend cap
+# is reported as a clock that will clear itself -- the operator then waits out a
+# window that only money opens. Found by the codex review of this change.
+printf "You've reached your rate limit. Switch to another model to continue.\n" > "$QB"
+check "window: yields to a rate limit"   "! $WC"
+check "window: and it still retries"     "$RL"
+printf "You've reached your monthly spend limit. Switch to another model to continue.\n" > "$QB"
+check "window: yields to a spend cap"    "! $WC"
+check "window: and it stays a budget"    "$QE"
+
+# ★★ THE HALF THE REGEX DOES NOT FIX. Both dispatch paths ask
+# provider_window_closed() only about a run classify_run already called `failed`,
+# and every window above arrives with a NONZERO exit, so the rc test did that
+# binning for free. The tier limit exits 0 -- no findings, no verdict, no rate
+# keyword -- so it landed `inconclusive`, the refusal chain was never consulted,
+# and the sweep aborted with exit 4. Pinned at rc 0 on purpose.
+CJ="bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$QB' 0) = failed ]\""
+printf "You've reached your Fable 5 limit. Switch to another model to continue.\n" > "$QB"
+check "window: tier at rc 0 is failed"   "$CJ"
+printf "You've hit your session limit · resets 7:10pm (America/New_York)\n" > "$QB"
+check "window: a stated reset too"       "$CJ"
+# ★ ...and a real review is not caught by it. Same shape as the 2026-08-29
+# measurement that put explicit_verdict on the rate scan: a short clean review
+# that quotes a usage window and signs off. This check is the one that would
+# otherwise STOP a whole sweep over a review.
+{ printf 'The banner text says "You have hit your session limit, resets 7:10pm"\n'
+  printf 'and nothing else in this diff changed. No new defects.\n\n'
+  printf 'Verdict: ship it\n'; } > "$QB"
+check "window: a review quoting one is not" "! $CJ"
+# ★ ...and the BROAD bottom line counts here, where the rate scan demands the
+# narrow one. A wrong `failed` on the rate path costs one run; a wrong `failed`
+# on this path stops the whole sweep at exit 6 and the re-run does it again, so
+# this guard protects a real review as hard as it can. None of these three would
+# survive explicit_verdict.
+for bl in 'Looks good to me.' 'LGTM' 'Recommendation: merge as is.'; do
+  { printf 'A short note on the session limit banner, which resets 7:10pm.\n\n'
+    printf '%s\n' "$bl"; } > "$QB"
+  check "window: '$bl' saves the review" "! $CJ"
+done
+
 # A candidate that is out of budget: refuses, and counts how often it was asked.
 budget_case() {  # budget_case <dir>
   local d="$1" sha
@@ -2602,12 +2932,53 @@ check "window: p2 marked NOT ATTEMPTED" "grep -q 'p2: NOT ATTEMPTED' <<<\"\$OUT\
 check "window: verdict names the window" "grep -q 'Verdict: NOT MEASURED -- PROVIDER WINDOW CLOSED' <<<\"\$OUT\""
 check "window: NOT 'NOTHING MEASURED'"   "! grep -q 'Verdict: NOTHING MEASURED' <<<\"\$OUT\""
 check "window: does not say fix it"      "! grep -q 'Fix the cause and re-run' <<<\"\$OUT\""
-check "window: says resume after reset"  "grep -q 'Resume after the reset time above' <<<\"\$OUT\""
+check "window: says resume when it reopens" "grep -q 'Resume when that window reopens' <<<\"\$OUT\""
 # The reset time is the one fact a driver needs to schedule its own resumption,
 # so it is quoted verbatim rather than parsed into a sleep in lib/.
 check "window: quotes the reset time"    "grep -q 'resets 7:10pm' <<<\"\$OUT\""
 # ★ THE ONE THAT REACHES A DRIVER THAT IS NOT READING STDOUT.
 check "window: exit 6, not 4"            "[ '$RC' -eq 6 ]"
+
+# ★★ #48, the benchmark path for a window that states NO reset and exits ZERO.
+# Two separate defects had to be fixed for this to reach exit 6 at all: the
+# classifier never matched the string, and classify_run binned it `inconclusive`
+# so the refusal chain was never asked. Measured on the claudecr seat: it cost
+# the last pass of `high` and all 12 of `xhigh`, reported as exit 4, "fix the
+# cause", about a tier that had nothing wrong with it.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+cat > "$D/agents.d/broke.sh" <<A
+run_broke() {
+  echo call >> "$D/calls"
+  echo "You've reached your Fable 5 limit. Switch to another model to continue."
+}
+A
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+check "tier: asked exactly ONCE"       "[ \$(wc -l < '$D/calls') -eq 1 ]"
+check "tier: says window CLOSED"       "grep -q 'usage window is CLOSED' <<<\"\$OUT\""
+check "tier: not called a budget"      "! grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
+check "tier: not a failed measurement" "! grep -q 'Fix the cause and re-run' <<<\"\$OUT\""
+check "tier: exit 6, not 4"            "[ '$RC' -eq 6 ]"
+# ★ And the instruction has to match the refusal it was given. This one names a
+# remedy, not a time, so "resume after the reset time quoted above" would send
+# the operator looking for a line no provider printed.
+check "tier: no reset time promised"   "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
+check "tier: says where the reset is"  "grep -q \"check the provider's usage\" <<<\"\$OUT\""
+# ★ ...and that decision reads the REFUSAL, not the line cadre wrote about it.
+# That line carries the agent name and a 200-byte excerpt of the text, so an
+# agent named `resetter` supplied the word `reset` all by itself and got the
+# operator sent looking for a time nobody printed. Found by the codex review.
+D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/resetter"; chmod +x "$D/bin/resetter"
+cat > "$D/agents.d/resetter.sh" <<A
+run_resetter() {
+  echo "You've reached your Fable 5 limit. Switch to another model to continue."
+}
+A
+OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run resetter 1 2>&1); RC=$?
+check "tier: agent name is not a reset"  "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
+check "tier: resetter still exits 6"     "[ '$RC' -eq 6 ]"
 
 # ★★ THE PATH THE REAL INCIDENT TOOK, and the one above does NOT cover it. Above,
 # the window closes on the FIRST pass, so graded_passes is 0 and the run lands in
@@ -2635,7 +3006,7 @@ check "partial window: says INCOMPLETE"  "grep -q 'Verdict: INCOMPLETE, not slot
 # "restore the missing keys or checkouts" sends the operator hunting a broken
 # registry when a clock stopped the sweep and there is nothing to restore.
 check "partial window: not 'restore keys'" "! grep -q 'Restore the missing keys' <<<\"\$OUT\""
-check "partial window: says wait + resume" "grep -q 'wait for the reset named above' <<<\"\$OUT\""
+check "partial window: says wait + resume" "grep -q 'wait for that window to reopen' <<<\"\$OUT\""
 check "partial window: exit 6"           "[ '$RC' -eq 6 ]"
 
 # A PARTIAL failure must NOT abort. 1 of 2 runs is still a review worth grading,
@@ -3337,6 +3708,156 @@ check "e2e: the silent pass is still named"  "grep -q 'every run came back EMPTY
 check "e2e: the silent pass exited 7"        "grep -q 'run-pass.sh exited 7' <<<\"\$OUTQ\""
 check "e2e: and the real score survives"     "grep -q 'blocking items hit' '$RQ'"
 check "e2e: half-dead sweep does not exit 7" "[ '$RCQ' -ne 7 ]"
+
+# ★ #31: a candidate that is not on PATH is the operator's fault. The pass
+# fails CLOSED with its own code, and the report sends the reader to the
+# install, not to a verdict on a model that was never called.
+DM=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DM" ghost "$HITBOTH" "$HITBOTH"
+RCM=0; OUTM=$(run_gaunt_all "$DM" good,good2 ghost) || RCM=$?
+check "e2e: misconfigured seat exits run-pass 9" "grep -q 'run-pass.sh exited 9' <<<\"\$OUTM\""
+check "e2e: and says MISCONFIGURED"             "grep -q 'MISCONFIGURED' <<<\"\$OUTM\""
+check "e2e: and is not the outage verdict"      "! grep -q 'came back EMPTY' <<<\"\$OUTM\""
+check "e2e: and cadre run exits 9 too"          "[ '$RCM' -eq 9 ]"
+RM=$(ls "$DM/home"/report-*.md | head -1)
+check "e2e: verdict names the seat, not the model" "grep -q 'Verdict: NOT MEASURED -- SEAT MISCONFIGURED' '$RM'"
+
+echo "== ★ admission control: one review per label at a time (#32) =="
+# The label is the identity of the measurement, so two callers reaching for it
+# compute the same path and `mkdir` decides. The loser has to hear WHY it lost:
+# a live run is "go back to sleep" (exit 8), a finished one is a spent label
+# (refuse, or --force), a dead one is reclaimed with the corpse parked.
+D=$(case_dir claim); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+run_cadre "$D" review --roster good --synth none --base main --label pr-1 "$S" >/dev/null
+L="$D/state/reviews/pr-1"
+check "claim: a finished run leaves no .claim"   "[ -s '$L/report.md' ] && [ ! -e '$L/.claim' ]"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-1 "$S"); RC=$?
+check "claim: a spent label refuses"             "[ '$RC' -eq 2 ]"
+check "claim: and says how to re-measure"        "grep -q -- '--force' <<<\"\$OUT\""
+check "claim: refusing parks nothing"            "! ls -d '$L'.stale.* >/dev/null 2>&1"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-1 --force "$S"); RC=$?
+check "claim: --force re-measures (exit 0)"      "[ '$RC' -eq 0 ]"
+check "claim: --force parked the old review"     "ls -d '$L'.stale.* >/dev/null 2>&1"
+check "claim: --force says it reclaimed"         "grep -q 'reclaimed pr-1' <<<\"\$OUT\""
+check "claim: and the new review is real"        "[ -s '$L/report.md' ]"
+# A LIVE claim: this test shell's own pid, which is certainly alive.
+mkdir -p "$D/state/reviews/pr-2"
+printf '%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-2/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-2 "$S"); RC=$?
+check "claim: a live run exits 8"                "[ '$RC' -eq 8 ]"
+check "claim: and names the holder"              "grep -q \"pid $$\" <<<\"\$OUT\""
+check "claim: and says it is not a failure"      "grep -q 'not a failure' <<<\"\$OUT\""
+check "claim: live dir untouched"                "[ -f '$D/state/reviews/pr-2/.claim' ] && [ ! -e '$D/state/reviews/pr-2/report.md' ]"
+# ★ --force never displaces a live run.
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-2 --force "$S"); RC=$?
+check "claim: --force still exits 8 on a live run" "[ '$RC' -eq 8 ]"
+check "claim: and parked nothing"                "! ls -d '$D/state/reviews/pr-2.stale.'* >/dev/null 2>&1"
+# A DEAD claim: a pid that has already exited, same host.
+( : ) & DEADPID=$!; wait "$DEADPID" 2>/dev/null
+mkdir -p "$D/state/reviews/pr-3"; echo "half-written" > "$D/state/reviews/pr-3/prompt.txt"
+printf '%s\n%s\n%s\n' "$DEADPID" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-3/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-3 "$S"); RC=$?
+check "claim: a dead holder is reclaimed"        "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-3/report.md' ]"
+check "claim: the corpse is parked, not deleted" "grep -q half-written '$D'/state/reviews/pr-3.stale.*/prompt.txt"
+check "claim: reclaim is announced"              "grep -q 'is gone' <<<\"\$OUT\""
+# A claim from ANOTHER host cannot be probed: live inside the TTL, stale past it.
+mkdir -p "$D/state/reviews/pr-4"
+printf '%s\n%s\n%s\n' "1" "some-other-box" "$(( $(date +%s) - 60 ))" > "$D/state/reviews/pr-4/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-4 "$S"); RC=$?
+check "claim: foreign host inside TTL is live"   "[ '$RC' -eq 8 ]"
+OUT=$(CADRE_CLAIM_TTL=30 run_cadre "$D" review --roster good --synth none --base main --label pr-4 "$S"); RC=$?
+check "claim: foreign host past TTL is reclaimed" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-4/report.md' ]"
+# A failed run releases the claim too, and the empty dir is still removed.
+OUT=$(run_cadre "$D" review --roster ghost --synth none --base main --label pr-5 "$S"); RC=$?
+check "claim: a failed run leaves no .claim"     "[ ! -e '$D/state/reviews/pr-5/.claim' ]"
+# ★ Identity, not just a live pid. The claim carries the holder's process
+# start time; a live pid with a different one is a reincarnation.
+mkdir -p "$D/state/reviews/pr-10"
+printf '%s\n%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" "$(ps -o lstart= -p $$ | tr -s ' ' | sed 's/^ //;s/ $//')" > "$D/state/reviews/pr-10/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-10 "$S"); RC=$?
+check "claim: matching start time is live (8)"   "[ '$RC' -eq 8 ]"
+printf '%s\n%s\n%s\n%s\n' "$$" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" "Thu Jan  1 00:00:00 1970" > "$D/state/reviews/pr-10/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-10 "$S"); RC=$?
+check "claim: live pid, other start time = dead"  "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-10/report.md' ]"
+# A half-written record (the winner's publication window) is busy, not dead.
+mkdir -p "$D/state/reviews/pr-11"; : > "$D/state/reviews/pr-11/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-11 "$S"); RC=$?
+check "claim: an empty .claim on a fresh dir is busy" "[ '$RC' -eq 8 ]"
+# A sidecar with no owner (older than a minute) is recovered, not obeyed.
+mkdir -p "$D/state/reviews/pr-12.taking"; touch -d '-2 minutes' "$D/state/reviews/pr-12.taking" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-12.taking"
+mkdir -p "$D/state/reviews/pr-12"; touch -d '-2 minutes' "$D/state/reviews/pr-12" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-12"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-12 "$S"); RC=$?
+check "claim: an abandoned sidecar is recovered" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-12/report.md' ] && [ ! -d '$D/state/reviews/pr-12.taking' ]"
+# The claim is held through synthesis and released after it.
+OUT=$(run_cadre "$D" review --roster good,good2 --synth echoer --base main --label pr-13 "$S"); RC=$?
+check "claim: released after synthesis"          "[ -s '$D/state/reviews/pr-13/synthesis.md' ] && [ ! -e '$D/state/reviews/pr-13/.claim' ]"
+# ★ Two losers on one label: the reclaim sequence is serialised by a sidecar,
+# and a caller that finds the sidecar taken is looking at a live reclaim.
+mkdir -p "$D/state/reviews/pr-6" "$D/state/reviews/pr-6.taking"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-6 "$S"); RC=$?
+check "claim: a reclaim in progress exits 8"     "[ '$RC' -eq 8 ]"
+check "claim: and parks nothing"                 "! ls -d '$D/state/reviews/pr-6.stale.'* >/dev/null 2>&1"
+# ★ The winner between its mkdir and its first write: no record, no report, a
+# directory seconds old. Busy, not dead.
+mkdir -p "$D/state/reviews/pr-7"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-7 "$S"); RC=$?
+check "claim: a fresh empty dir is busy (8)"     "[ '$RC' -eq 8 ]"
+check "claim: and is left alone"                 "[ -d '$D/state/reviews/pr-7' ] && ! ls -d '$D/state/reviews/pr-7.stale.'* >/dev/null 2>&1"
+# The same dir two minutes old is a run that died before it could say so.
+touch -d '-2 minutes' "$D/state/reviews/pr-7" 2>/dev/null || touch -A -000200 "$D/state/reviews/pr-7"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-7 "$S"); RC=$?
+check "claim: an old empty dir is reclaimed"     "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-7/report.md' ]"
+# ★ pid reuse after a reboot: a same-host claim whose pid is alive but whose
+# start is past the TTL is dead. pid 1 is always alive.
+mkdir -p "$D/state/reviews/pr-8"
+printf '%s\n%s\n%s\n' "1" "${HOSTNAME:-$(uname -n)}" "$(( $(date +%s) - 20000 ))" > "$D/state/reviews/pr-8/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-8 "$S"); RC=$?
+check "claim: same-host live pid past TTL is dead" "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-8/report.md' ]"
+# pid 0 is the process group, so kill -0 0 always succeeds; it is not a holder.
+mkdir -p "$D/state/reviews/pr-9"
+printf '%s\n%s\n%s\n' "0" "${HOSTNAME:-$(uname -n)}" "$(date +%s)" > "$D/state/reviews/pr-9/.claim"
+OUT=$(run_cadre "$D" review --roster good --synth none --base main --label pr-9 "$S"); RC=$?
+check "claim: pid 0 is not a live holder"        "[ '$RC' -eq 0 ] && [ -s '$D/state/reviews/pr-9/report.md' ]"
+# No sidecar left behind by any path above.
+check "claim: no .taking sidecars remain"        "! ls -d '$D/state/reviews/'*.taking 2>/dev/null | grep -v pr-6 | grep -q ."
+
+echo "== ★ #29: the synthesizer's seat runs last; a thin panel exits 10 =="
+D=$(case_dir seatorder); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster good,good2,terse --synth good --base main --label so "$S")
+check "order: synth's seat moved last"      "grep -q 'seat order: good moved last' <<<\"\$OUT\""
+check "order: good2 dispatched before good" "[ \$(grep -n '^  good2: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+check "order: terse dispatched before good" "[ \$(grep -n '^  terse: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+check "order: all three still reviewed"     "grep -q '3 ok, 0 degraded' <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster good,good2 --synth none --base main --label so2 "$S")
+check "order: no synth, roster order kept"  "! grep -q 'seat order' <<<\"\$OUT\" && [ \$(grep -n '^  good: started' <<<\"\$OUT\" | cut -d: -f1) -lt \$(grep -n '^  good2: started' <<<\"\$OUT\" | cut -d: -f1) ]"
+OUT=$(run_cadre "$D" review --roster good --synth good --base main --label so3 "$S")
+check "order: a synth-only roster is not shuffled" "! grep -q 'seat order' <<<\"\$OUT\""
+# The floor: off by default, exit 10 after synthesis when set and unmet.
+OUT=$(run_cadre "$D" review --roster good,dead --synth none --base main --label fl0 "$S"); RC=$?
+check "floor: off by default"               "[ '$RC' -eq 0 ]"
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,good2,dead --synth echoer --base main --label fl1 "$S"); RC=$?
+check "floor: met -> exit 0"                "[ '$RC' -eq 0 ]"
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,dead,chrome --synth none --base main --label fl2 "$S"); RC=$?
+R="$D/state/reviews/fl2"
+check "floor: unmet -> exit 10"             "[ '$RC' -eq 10 ]"
+check "floor: says how thin"                "grep -q 'PANEL BELOW FLOOR: 1 of 3' <<<\"\$OUT\""
+check "floor: the real review survives"     "ls '$R'/good-*.md >/dev/null 2>&1"
+check "floor: report carries the note"      "grep -q 'Panel below floor' '$R/report.md'"
+check "floor: claim released"               "[ ! -e '$R/.claim' ]"
+# Degraded counts as usable: partial findings are still findings.
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster good,trunc,dead --synth none --base main --label fl3 "$S"); RC=$?
+check "floor: degraded counts as usable"    "[ '$RC' -eq 0 ]"
+# Synthesis still ran on the thin panel: the artifacts are what a runner posts.
+OUT=$(CADRE_PANEL_MIN=3 run_cadre "$D" review --roster good,good2,dead --synth echoer --base main --label fl4 "$S"); RC=$?
+check "floor: synthesis ran before exit 10" "[ '$RC' -eq 10 ] && [ -s '$D/state/reviews/fl4/synthesis.md' ]"
+# ★ A malformed floor is refused, never silently "off".
+OUT=$(CADRE_PANEL_MIN=3x run_cadre "$D" review --roster good,dead --synth none --base main --label fl5 "$S"); RC=$?
+check "floor: malformed value is refused"   "[ '$RC' -eq 2 ] && grep -q 'whole number' <<<\"\$OUT\""
+check "floor: and releases the claim"       "[ ! -e '$D/state/reviews/fl5/.claim' ]"
+# The denominator is the whole roster, gate-skipped seats included.
+OUT=$(CADRE_PANEL_MIN=2 run_cadre "$D" review --roster 'good,dead,good2?min-lines=99999' --synth none --base main --label fl6 "$S"); RC=$?
+check "floor: gated seats count as requested" "[ '$RC' -eq 10 ] && grep -q 'PANEL BELOW FLOOR: 1 of 3' <<<\"\$OUT\""
 
 echo "== ★ findings.json: the engine's output, and what it must never lose =="
 # The engine/benchmark seam (#25). findings.json is what a consumer grades, so

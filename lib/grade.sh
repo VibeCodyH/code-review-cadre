@@ -35,24 +35,6 @@ extract_json() {
   '
 }
 
-# ★ The fallback for what the scan above cannot parse: an UNBALANCED brace
-# inside a JSON string. "The judge's format never has them" stopped being true
-# the day `quotes` became required -- a verbatim reviewer sentence about shell
-# or C code carries a lone { or } routinely, the depth count never returns to
-# zero, and a valid grade was recorded UNUSABLE with the judge blamed for it.
-# Same shape cmd_settle already uses: drop fence lines, slice first { to last
-# }, let jq be the arbiter. Tried second, not first, because on a reply that
-# echoes prompt text with braces the balanced scan finds the clean object and
-# this slice would not.
-extract_json_relaxed() {
-  sed -e '/^[[:space:]]*```/d' \
-  | awk 'BEGIN{RS="\0"} {
-      i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
-      for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
-      exit 1
-    }'
-}
-
 grade_one() {
   local keyfile="$1" review="$2" out="$3" raw attempt=1 w
   [ -s "$review" ] || { echo "$UNUSABLE" > "$out"; return; }
@@ -77,8 +59,17 @@ grade_one() {
   local parsed=0
   printf '%s' "$raw" | extract_json > "$out" 2>/dev/null
   jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
+  # ★ The fallback for what the scan above cannot parse: an UNBALANCED brace
+  # inside a JSON string. "The judge's format never has them" stopped being true
+  # the day `quotes` became required -- a verbatim reviewer sentence about shell
+  # or C code carries a lone { or } routinely, the depth count never returns to
+  # zero, and a valid grade was recorded UNUSABLE with the judge blamed for it.
+  # extract_json_slice() is the same code cmd_settle uses, one copy in
+  # lib/common.sh (#26). Tried SECOND, not first, because on a reply that echoes
+  # prompt text with braces the balanced scan finds the clean object and this
+  # slice would not.
   if [ "$parsed" -eq 0 ]; then
-    printf '%s' "$raw" | extract_json_relaxed > "$out" 2>/dev/null
+    printf '%s' "$raw" | extract_json_slice > "$out" 2>/dev/null
     jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
   fi
   # ★ Keep what the judge actually said when it does not parse. UNUSABLE with no
@@ -422,7 +413,7 @@ remove that directory and re-run."
   # the silent-denominator bug the nskipped guard was written for, still live on
   # the one path where it costs most: 11 of 12 passes producing nothing scored
   # 0/0 and reported INCONCLUSIVE, indistinguishable from a registry problem.
-  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed=""
+  local usable_runs=0 pass_usable=0 aborted="" measurement_failed="" nfiltered=0 window_closed="" misconfigured_seat=""
   # ★ Sweep-wide tally behind the fourth "nothing" verdict (#12). A NO OUTPUT
   # streak across every seat of a sweep is evidence about the PROVIDER, not the
   # candidate -- measured when every opencode-go model hung on `Reply with
@@ -540,7 +531,7 @@ remove that directory and re-run."
         # go looking for a defect. Kept out of $measurement_failed for exactly
         # that reason -- see provider_window_closed() in lib/common.sh.
         if [ "$prc" -eq 6 ]; then
-          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume after its reset)"$'\n'
+          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume once it reopens)"$'\n'
           window_closed=1
         # ★ 7 gets the same treatment as 6 and for the same reason: the pass
         # measured nothing, but the cause is on the provider's side and clears
@@ -551,6 +542,12 @@ remove that directory and re-run."
         elif [ "$prc" -eq 7 ]; then
           skipped="$skipped- $label: NOT MEASURED, every run came back empty (suspect a provider outage)"$'\n'
           provider_empty=1
+        # ★ 9 IS a failed measurement, unlike 6 and 7, because nothing clears
+        # it but the operator -- but the sentence must send them to the roster
+        # or the install, not to the candidate (#31).
+        elif [ "$prc" -eq 9 ]; then
+          skipped="$skipped- $label: NOT MEASURED, the seat is MISCONFIGURED on this box (not installed, bad spec, or no adapter); the reviewer was never called"$'\n'
+          measurement_failed=1; misconfigured_seat=1
         else
           skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
           measurement_failed=1
@@ -627,7 +624,9 @@ remove that directory and re-run."
         # Every other artifact test in this block stays `-s` on purpose -- an
         # empty .partial or .inconclusive really is nothing to report.
         if [ -e "$rf.failed" ]; then
-          if content_empty "$rf.failed"; then
+          if [ "$(failure_kind "$rf.failed")" = misconfigured ]; then
+            why="MISCONFIGURED on this box, the reviewer was never called: $(misconfigured_line "$rf.failed" | cut -c1-120)"
+          elif content_empty "$rf.failed"; then
             why="the provider returned NOTHING (no content in $sl-run$n.md.failed)"
             no_output_runs=$((no_output_runs + 1))
           else
@@ -976,6 +975,18 @@ here -- but nothing expensive was lost, and \`cadre grade $spec $runs\` re-runs
 the judge over what is already on disk. Do not re-review."
       fi
       local tail1="Fix the cause and re-run. Do not quote a number from this file."
+      # ★ The operator's own fault outranks every provider-shaped verdict below
+      # (#31): a seat that is not installed will not come back after a reset
+      # or an outage, and 4's "fix the cause" sends the reader to the tool.
+      # Exit 9, matching run-pass.sh, so a driver can tell "install it" from
+      # "file a bug" without reading the report.
+      if [ -n "$misconfigured_seat" ] && [ -z "$grading_failed" ]; then
+        head1="NOT MEASURED -- SEAT MISCONFIGURED"; rc1=9
+        body1="The seat for \`$spec\` never ran on this box: not installed, a bad spec, or no
+adapter. Nothing about the candidate was observed, so this says nothing about it."
+        tail1="Fix the roster entry or the install, then re-run. Do not quote a number from
+this file, and do not record a verdict about the candidate from it."
+      fi
       # ★ A fourth nothing (#12), and it is a statement about the PROVIDER. Fires
       # only when EVERY failed run of the sweep came back content-empty: one
       # empty artifact is an ordinary failure, a clean sweep of them is an
@@ -1027,7 +1038,10 @@ file, and do not record a verdict about the candidate from it."
         body1="A provider usage window closed mid-sweep, so this pass never got to run.
 That is a clock, not a defect: nothing is wrong with the tool, the key or the
 candidate, and every review already on disk is intact and still counted."
-        tail1="Resume after the reset time above. There is nothing here to fix, and no
+        # ★ Not "resume after the reset time above" (#48): a model-tier window
+        # names a remedy instead of a time, so that sentence pointed at a line
+        # that was never printed. run-pass quotes whatever the provider said.
+        tail1="Resume when that window reopens. There is nothing here to fix, and no
 number to quote."
       fi
       {
@@ -1100,7 +1114,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     # unchanged either way -- a short denominator still cannot recommend a seat.
     local fixit="Restore the missing keys or checkouts and re-run before slotting anything."
     [ -n "$window_closed" ] &&
-      fixit="A provider usage window closed mid-sweep, so the missing passes are a clock and not a defect: wait for the reset named above, then re-run to resume. Every review already on disk is reused."
+      fixit="A provider usage window closed mid-sweep, so the missing passes are a clock and not a defect: wait for that window to reopen, then re-run to resume. Every review already on disk is reused."
     case "$slot" in
       SEAT:*|INCONCLUSIVE)
         reason="$nskipped registered pass(es) never ran, so $blocking_hit/$blocking_total is a partial denominator and not the benchmark you registered. $fixit On the passes that did run: $reason"
@@ -1307,7 +1321,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   # disk are reused, which is what made resuming the 2026-07-28 sweep cost four
   # reviews instead of thirty.
   if [ -n "$window_closed" ]; then
-    echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the reset, then re-run to resume." >&2
+    echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the window to reopen, then re-run to resume." >&2
     return 6
   fi
 }

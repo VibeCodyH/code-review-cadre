@@ -659,6 +659,16 @@ has_verdict() {
   tail -12 "$1" | sed "$strip" | grep -qiE '(ship[ -]it|lgtm|looks good|approved?|no (defects|issues|problems|concerns|bugs|blockers)|nothing (worth )?(to )?(flag|report|fix|filing|flagging|flagged)|all (good|clear)|(safe|ready|ok) to merge|recommend merging|^[-*_#> `]*((overall +)?verdict|conclusion|recommendation)|no (blocking|defects)[a-z ]*(found|here)?)'
 }
 
+# The NARROW form of has_verdict, for exempting a short zero-finding review
+# from the rate-limit scan: a labelled verdict line, or one of the unambiguous
+# bottom-line idioms. Deliberately without has_verdict's bare `approved?`,
+# `looks good`, `conclusion` and `recommendation`, each of which a refusal can
+# say ("Request not approved: 429", "Recommendation: retry after 60s").
+explicit_verdict() {
+  local strip='s/^[[:space:]]*//;s/[[:space:]]*$//'
+  tail -12 "$1" | sed "$strip" | grep -qiE '(^[-*_#> `]*(overall +)?verdict[: *_]|\b(ship[ -]it|lgtm|safe to merge|recommend merging|no (defects|issues|problems|bugs|blockers) (found|here))\b)'
+}
+
 # Does this output look like a rate-limit refusal rather than a review?
 # ★ Length-guarded on purpose. A genuine review OF a rate limiter says "rate
 # limit exceeded" while quoting the code, and misreading that as a refusal would
@@ -671,6 +681,39 @@ rate_limited() {
   # shape is not a disaster: it falls through and the run is recorded FAILED,
   # which is the safe direction. It is never scored as a review.
   grep -qiE '(\b(429|529)\b|too many requests|rate[ _-]?limit[a-z]*([ _-](exceeded|reached|hit|error))?|quota (exceeded|exhausted)|exceeded your [a-z ]{0,20}quota|resource[ _-]exhausted|retry[- ]after|slow down|overloaded|capacity constraints|AI_RetryError)' "$f"
+}
+
+# Did the reviewer's ENVIRONMENT stop it before it reviewed? #28. Measured
+# 2026-08-24 on a live panel: codex's shell tool died under bwrap
+# (`loopback: Failed RTM_NEWADDR: Operation not permitted`), the model wrote
+# 334 bytes saying it could not inspect the diff, added "Overall verdict:
+# should-fix" of its own accord, and exited 0. No adapter marker, no rate-limit
+# keyword, and has_verdict rescued it from `inconclusive` -- so a seat that
+# reviewed nothing was counted `ok` and its silence cleared the whole diff.
+#
+# ★ Same guards as rate_limited and for the same reason: a small file, and the
+# caller also demands findings=0. A real review that quotes "permission denied"
+# from the diff states findings, and a real review is not this short. The
+# model's own verdict line does NOT rescue it: a verdict on a review that never
+# happened is the exact fabrication this exists to catch.
+# ★ Two halves, both required: a tool/sandbox error signature AND the model
+# saying it could not look. Either alone is too loose -- a reviewer of sandbox
+# code quotes bwrap, and "unable to access" alone is the request-for-
+# clarification shape that already lands in `inconclusive`.
+env_blocked() {
+  local f="$1"
+  [ -s "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 2000 ] || return 1
+  grep -qiE '(bwrap:|sandbox|operation not permitted|permission denied|EPERM|EACCES|execution environment|tool call(s)? (failed|error)|command(s)? failed)' "$f" || return 1
+  # ★ The second half names the DIFF as the thing it could not reach, never a
+  # test run. Measured on the bot box's 758 artifacts: "could not execute the
+  # tests in the sandbox" is a routine caveat in five genuine clean reviews, and
+  # a looser "could not (run|execute)" binned every one of them.
+  # ★ And FIRST PERSON. "the diagnostic reports permission denied when the
+  # sandbox cannot access the repository" is a clean review OF such code, not a
+  # reviewer that was stopped; "I could not inspect the diff" is. Found by the
+  # codex review of this change.
+  grep -qiE "\bI (could ?n[o']t|was unable to|am unable to|cannot|can ?not) (review|inspect|read|access|open|examine|see) (the |this |any )?(change|changes|diff|code|files?|source|repo|repository)|(^|\bI am |\bI was )unable to (complete|perform|do) (the |a |this )?review|\b(my |this |the )review (was |is )?blocked|failed before execution" "$f"
 }
 
 # ★ A BUDGET refusal, which is a different animal from a rate limit, and telling
@@ -775,6 +818,55 @@ provider_window_closed() {
   # The upgrade pitch is a red herring: it states a reset, so waiting clears it.
   # Safe against kiro's "rate limit reached: Request quota exceeded" -- that is
   # `quota exceeded`, stays on the retry path where a throughput ceiling belongs.
+  # ★ A MODEL-TIER window is the one shape that states NO reset, so it gets
+  # its own two-half test rather than another alternative in the pattern below,
+  # which the `reset` requirement would refuse anyway. Measured 2026-08-30
+  # benchmarking the claudecr seat (#48), verbatim:
+  #
+  #   You've reached your Fable 5 limit. Switch to another model to continue.
+  #
+  # It matched nothing at all -- no 429, no period word, no stated reset -- so
+  # it fell through to `inconclusive` and one spent model tier was reported as a
+  # failed measurement of the candidate. The account was healthy: the five-hour
+  # bucket sat at 5% and the all-model weekly at 59%, and only the one tier was
+  # at 100%. Its reset is real and knowable, it just lives in the usage endpoint
+  # and not in the message.
+  #
+  # So the REMEDY stands in for the reset as the discriminator. "Switch to
+  # another model" is a sentence only a PER-MODEL window can say: a spend cap
+  # names a payment page ("raise it at", "recharge your account") precisely
+  # because no other model on the account would help.
+  #
+  # ★ The remedy has to be ISSUED, not mentioned -- start of a line or start of
+  # a sentence. Both halves alone were not enough, measured against this repo's
+  # own prose while writing the fix:
+  #
+  #   blocking: the retry path reached your rate limit ceiling and should
+  #   switch to another model provider
+  #   The docs say you have reached your quota limit; the fix is to switch to
+  #   another model.
+  #
+  # Both matched, and the second one has no findings and no verdict, so it
+  # would have reached classify_run's guards and STOPPED A SWEEP over a review.
+  # A refusal instructs; prose refers. The real string ends the previous
+  # sentence first: "... limit. Switch to another model to continue."
+  #
+  # ★★ AND IT YIELDS TO THE OTHER TWO, which is the opposite of the rule the
+  # stated-reset branch below follows. That branch deliberately claims
+  # "You've hit your usage limit - resets 3pm" out of quota_exhausted's hands,
+  # because a stated reset PROVES waiting clears it. A remedy proves nothing of
+  # the kind, and a multi-model router can phrase either of the others this way:
+  #
+  #   You've reached your rate limit. Switch to another model to continue.
+  #   You've reached your monthly spend limit. Switch to another model to continue.
+  #
+  # Window is asked FIRST in both dispatch paths, so without this a throughput
+  # ceiling loses its retries and -- far worse -- a spend cap is reported as a
+  # clock that will clear itself, and the operator waits out a window that money
+  # is the only thing that opens. Found by the codex review of this change.
+  if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
+     && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f" \
+     && ! rate_limited "$f" && ! quota_exhausted "$f"; then return 0; fi
   grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
@@ -848,8 +940,30 @@ content_empty() {  # <file> -> 0 when the file holds no content
 # rc is OPTIONAL. `cadre grade` re-reads .failed artifacts off disk long after
 # the exit code is gone, and the content discriminator still works there -- so
 # with no rc the timeout case is simply not claimed rather than guessed at.
-failure_kind() {  # <file> [rc] -> no-output | timed-out | failed
+# The one copy of the misconfiguration markers, and the line that matched --
+# the renderers quote it, so a marker on line 2 or 3 is quoted, not line 1.
+CADRE_MISCONF_RE="^(NOT INSTALLED: [^ ]+ is not on PATH|agentcall: (unknown agent '|[^ ]+ takes no model, drop|no such directory: |mode must be ro or rw|no prompt \\()|DID NOT RUN, misconfigured: )"
+misconfigured_line() {  # <file> -> the matching marker line, or ""
+  head -3 "$1" 2>/dev/null | grep -E -m1 "$CADRE_MISCONF_RE"
+}
+
+failure_kind() {  # <file> [rc] -> misconfigured | no-output | timed-out | failed
   local f="$1" rc="${2:-}"
+  # ★ FIRST, ahead of every provider-shaped answer (#31): these are things the
+  # OPERATOR did, and they are fixed on this box -- a roster member not on
+  # PATH, a spec with a model on an adapter that takes none, a seat with no
+  # adapter file at all. None of it is evidence about a reviewer, and a sweep
+  # that files it as a reviewer failure manufactures a verdict on a model that
+  # was never called. Every marker here is one the HARNESS writes (run-review
+  # / run-pass's NOT INSTALLED line, agentcall's own die), plus one an adapter
+  # may opt into when its CLI reports a fault it can attribute to configuration
+  # rather than the provider: `DID NOT RUN, misconfigured: <why>`.
+  # Same rails as the other kinds: renderer layer only, classify_run's four
+  # states untouched, so the retry loops keep string-comparing `failed`.
+  # ★ Whole harness sentences, not their first words: a reviewer of THIS repo
+  # opening with "NOT INSTALLED handling is too broad" is a review, and the
+  # first draft of this check filed it as a seat that never ran.
+  if [ -n "$(misconfigured_line "$f")" ]; then echo misconfigured; return 0; fi
   if content_empty "$f"; then echo no-output; return 0; fi
   # ★ THE ADAPTER'S OWN VERDICT BEFORE THE EXIT CODE, the same rail classify_run
   # follows and for the same reason: the adapter is the only layer that watched
@@ -910,6 +1024,11 @@ failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
     # stop, one level up.
     timed-out)
       echo "TIMED OUT$after$rcp: killed at the ${tmo}s CADRE_TIMEOUT, so this is cadre's clock and not a verdict on the model -- raise CADRE_TIMEOUT and re-run" ;;
+    # ★ Quotes the harness's own line, because it already names the fix (the
+    # binary, the spec, the adapter). No rc: the seat never ran, so there is
+    # no exit status that means anything about it.
+    misconfigured)
+      echo "MISCONFIGURED$after: $(misconfigured_line "$f" | cut -c1-160) -- a fault on this box, not a verdict on the model; fix the roster or the install and re-run" ;;
     *)
       echo "FAILED$after$rcp" ;;
   esac
@@ -932,6 +1051,44 @@ failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
 # TSV. A seat whose seconds were never measured must not carry a 0 that averages
 # like a real measurement and pulls every mean toward the floor -- the rule
 # aggregate.sh and grade.sh already follow, now with a type that can express it.
+
+# The relaxed JSON slice, on stdin: drop fence lines, then take the first `{` to
+# the LAST `}`. Survives prose on either side of the block and an unbalanced
+# brace inside a string, which the balanced scan in grade.sh cannot -- that scan
+# stays first, because on a reply echoing prompt text with braces it finds the
+# clean object and this slice would not.
+#
+# ★ ONE copy, because there were two that had to agree: grade.sh's fallback and
+# the settle judge in bin/cadre. #26.
+#
+# ★ No `RS`. Both copies slurped by setting awk's record separator to a NUL,
+# which is a gawk extension: in awk source `"\0"` is a NUL-terminated
+# string, so an awk that reads it as C does sees the EMPTY string -- which is
+# awk paragraph mode, splitting on blank lines instead of slurping. A judge that
+# answers with prose, a blank line, then a fenced JSON block would leave the
+# JSON in a later record, `index($0,"{")` would find nothing, and a judge that
+# answered correctly would be reported as one that "failed or stopped early".
+# In settle that direction is worse than a wrong answer, because its exit status
+# is a stopping rule and an empty match reads as "nothing new is left".
+# NOT REPRODUCED: this box has only gawk, which slurps under --posix and
+# --traditional too, and no BSD awk was available to confirm the paragraph-mode
+# read. The RS dependency is removed rather than the failure measured. README
+# names bash 4.4+ and macOS, and a test already bans GNU-only sed/grep escapes
+# for the same reason, so the portable form is the one to ship either way.
+# Accumulating in END is identical on gawk: same first-{ to last-} over the
+# same bytes.
+extract_json_slice() {
+  sed -e '/^[[:space:]]*```/d' \
+  | awk '
+      { buf = buf $0 "\n" }
+      END {
+        i = index(buf, "{"); if (!i) exit 1
+        s = substr(buf, i)
+        for (k = length(s); k > 0; k--)
+          if (substr(s, k, 1) == "}") { printf "%s", substr(s, 1, k); exit 0 }
+        exit 1
+      }'
+}
 
 # One field value, escaped for JSON. Backslash BEFORE quote, or the escape this
 # adds is itself re-escaped. Control characters are dropped rather than encoded:
@@ -1106,7 +1263,55 @@ classify_run() {
     # length-guard claim was only true above 2KB. A refusal that happens to
     # open with "critical:" slips through here and lands on the judge instead,
     # which is the cheaper direction: a destroyed real review is unrecoverable.
-    if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
+    # ★ ...and never states a BOTTOM LINE either. Measured 2026-08-29 on the
+    # live runner: a 1.4KB clean review of a comment-only diff about a 429
+    # throttle -- "there is no rate-limit check ... Verdict: ship it" -- had
+    # findings=0, matched the scan, was retried three times over 250s of the
+    # seat's quota, and was filed failed under a DID NOT COMPLETE banner. The
+    # discriminator provider_refused() already names: a refusal is something
+    # the CLI RETURNS, a verdict is something the model WRITES. A refusal
+    # that happens to say "ship it" lands on the judge, the cheap direction.
+    # ★ explicit_verdict, not has_verdict: the broad gate accepts a bare
+    # "approved" or a leading "Recommendation:", and "Request not approved:
+    # 429" / "Recommendation: retry after 60s" are refusal shapes. Found by
+    # the codex review of this change.
+    if rate_limited "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! explicit_verdict "$f"; then echo failed; return 0; fi
+    # ★ #28. A seat whose sandbox broke before the model could look wrote a
+    # short apology, no findings, and a verdict of its own -- and that verdict
+    # carried it past the inconclusive test below into `ok`. Checked here with
+    # the same findings=0 gate as the rate-limit scan, and ahead of has_verdict
+    # on purpose: a bottom line on a review that never happened is not a
+    # bottom line. `failed`, not `inconclusive`: the report must send the
+    # operator to the box, not to the roster.
+    if env_blocked "$f" && [ "$(review_findings "$f")" -eq 0 ]; then echo failed; return 0; fi
+    # ★ #48. A window refusal that exits ZERO never reached the refusal chain at
+    # all. Both dispatch paths ask provider_window_closed() only about a run this
+    # function already called `failed`, and every window in the corpus until now
+    # arrived with a nonzero exit, so the rc test below did that binning for
+    # free. The model-tier limit does not: "You've reached your <Model> limit.
+    # Switch to another model to continue." states no findings and no verdict and
+    # exits 0, so it landed in `inconclusive` and run-pass aborted the sweep as a
+    # failed measurement -- with the regex fixed and this line missing, it still
+    # would.
+    # ★ Same findings=0 guard as its two neighbours -- but has_verdict, the
+    # BROAD one, where the rate scan above uses the narrow explicit_verdict. The
+    # blast radius is what moves the line. A wrong `failed` on the rate path
+    # costs one run; a wrong `failed` here stops the ENTIRE SWEEP at exit 6 and
+    # sends the operator off to wait out a window that never closed, and the
+    # re-run does it again. So this one protects a real review as hard as it can
+    # and accepts the pre-existing exit 4 as the cost of a miss.
+    # ★ Safe in the other direction, checked against every refusal in the
+    # corpus one by one: not one of them states a bottom line at all. The
+    # shapes explicit_verdict exists to exclude -- "Request not approved: 429",
+    # "Recommendation: retry after 60s" -- are RATE refusals, and a rate refusal
+    # never reaches this line.
+    # ★ And that makes the guards here IDENTICAL to the inconclusive test at the
+    # bottom of this function -- findings=0 and no broad bottom line, the same
+    # two predicates. So this branch can only ever move a run from
+    # `inconclusive` to `failed`. It cannot reach a run that would have been
+    # `ok`, which is the only direction that destroys a real review. Keep the
+    # two in step if either one moves.
+    if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; then echo failed; return 0; fi
   elif provider_refused "$f" "$rc"; then
     echo failed; return 0
   fi

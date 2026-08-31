@@ -560,6 +560,25 @@ run_one() {
     # classify_run left both halves alive; a test on the end-to-end path is what
     # found them, after the unit-level order was already correct.
     [ "$(classify_run "$f.part" "$rc")" = failed ] || break
+    # ★ The benchmark path's three refusals, in the benchmark path's order, and
+    # this path never had them. Measured on the live runner, 2026-08-29: the
+    # copilot seat's "You have exceeded your monthly quota" matched the rate
+    # scan below and was retried three times at 60/120/240s -- on 164 reviews,
+    # 31,322 seconds of a single-lane queue waiting on an account that no
+    # backoff could refill. A usage window is the same waste with a reset time
+    # attached. Neither is a throughput ceiling; neither gets a retry.
+    if provider_window_closed "$f.part"; then
+      { echo "DID NOT COMPLETE, provider usage window closed, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
+        cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
+      echo "  $spec: ⏸ usage window CLOSED, not a rate limit; not retried" >> "$log"
+      break
+    fi
+    if quota_exhausted "$f.part"; then
+      { echo "DID NOT COMPLETE, out of budget, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
+        cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
+      echo "  $spec: ⛔ OUT OF BUDGET, not a rate limit; not retried" >> "$log"
+      break
+    fi
     rate_limited "$f.part" || break
     if [ "$attempt" -ge "${CADRE_RETRIES:-3}" ]; then
       # ★ PREPENDED, in the documented contract shape. Appending is the one
@@ -655,7 +674,7 @@ REPORT="$OUT/report.md"
   [ -n "${CADRE_GATE_NOTICE:-}" ] && echo "$CADRE_GATE_NOTICE."
 } > "$REPORT"
 
-ok_count=0 degraded_count=0 inconc_count=0 fail_count=0
+ok_count=0 degraded_count=0 inconc_count=0 fail_count=0 misconf_count=0
 for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
   case "$(cat "$OUT/.status-$sl" 2>/dev/null)" in
@@ -672,7 +691,15 @@ for spec in "${reviewers[@]}"; do
       echo "  reviewer. See \`$sl.md.inconclusive\`." >> "$REPORT" ;;
     *)
       fail_count=$((fail_count + 1))
-      echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT" ;;
+      # ★ Same bucket, different sentence (#31). A seat that never ran because
+      # of a fault on this box is not a reviewer that failed, and the reader
+      # of "FAILED" goes looking for a model problem that does not exist.
+      if [ "$(failure_kind "$OUT/$sl.md.failed")" = misconfigured ]; then
+        misconf_count=$((misconf_count + 1))
+        echo "- \`$spec\` — **MISCONFIGURED**, never ran: $(misconfigured_line "$OUT/$sl.md.failed" | cut -c1-160). A fault on this box, not a reviewer verdict." >> "$REPORT"
+      else
+        echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT"
+      fi ;;
   esac
 done
 
@@ -687,6 +714,16 @@ for row in "${skipped_rows[@]}"; do
       echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
   esac
 done
+
+# ★ A misconfigured seat is counted under failed above, so the totals stay
+# comparable across runs; this line is where the reader learns the panel was
+# smaller than requested for a reason that is theirs to fix.
+[ "$misconf_count" -gt 0 ] && {
+  echo >> "$REPORT"
+  echo "> $misconf_count requested seat(s) were **MISCONFIGURED** on this box and never ran." >> "$REPORT"
+  echo "> The panel is smaller than the roster asked for. That is not a finding about" >> "$REPORT"
+  echo "> any reviewer; fix the roster or the install and re-run." >> "$REPORT"
+}
 
 # ★ Spell out what degraded costs the reader, once, where the counts are. The
 # tempting read of a short partial review is "it looked and found little".
@@ -733,6 +770,9 @@ for spec in "${reviewers[@]}"; do
   elif [ -s "$OUT/$sl.md.inconclusive" ]; then
     echo "_INCONCLUSIVE. Ran, but returned no findings and no verdict. Not a review._"$'\n' >> "$REPORT"
     head -20 "$OUT/$sl.md.inconclusive" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
+  elif [ "$(failure_kind "$OUT/$sl.md.failed")" = misconfigured ]; then
+    echo "_MISCONFIGURED. The seat never ran; this is a fault on this box, not a review._"$'\n' >> "$REPORT"
+    head -5 "$OUT/$sl.md.failed" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
   else echo "_FAILED. Not a clean review._"$'\n' >> "$REPORT"
        head -20 "$OUT/$sl.md.failed" 2>/dev/null | sed 's/^/    /' >> "$REPORT"
   fi

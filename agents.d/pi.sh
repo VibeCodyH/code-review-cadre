@@ -49,6 +49,20 @@ CADRE DOES NOT WRITE THAT FILE, the user does.
 NOTES
 }
 
+# ★ issue #33, measured: pi-routed qwen3.8 reviews that DID state real findings
+# were still binned inconclusive, because review_findings and has_verdict saw
+# no severity labels and no closing Verdict: -- the model narrated both in
+# prose, and the classifier reads only the shape. The adapter's one lever on
+# the shape that arrives is the prompt, so the prompt is told the shape.
+pi_output_contract() {
+  cat <<'CONTRACT'
+Format contract: state each finding under a bold severity label on its own
+line -- **blocking**, **should-fix**, or **nit** -- and end the whole review
+with a final line starting with `Verdict:` followed by one of: blocking,
+should-fix, no defects found.
+CONTRACT
+}
+
 run_pi() {
   local m=() out rc
   [ -n "$model" ] && m=(--model "$model")
@@ -59,7 +73,7 @@ run_pi() {
   # No working-directory flag, so cd. The pipe is not optional: it is what keeps
   # pi from waiting on a terminal that is never going to type anything.
   out=$(mktemp)
-  ( cd "$dir" && printf '%s' "$prompt" \
+  ( cd "$dir" && printf '%s\n\n%s' "$prompt" "$(pi_output_contract)" \
       | timeout -k 30 "$TIMEOUT" pi -p "${m[@]}" 2>&1 ) > "$out"
   rc=$?
 

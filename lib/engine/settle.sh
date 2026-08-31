@@ -114,14 +114,11 @@ cmd_settle() {
   # brace-counting scan does not. Anything that still is not JSON -- no object
   # at all, or a truncated one -- fails jq and is refused below, which is the
   # direction that has to stay safe.
+  # ★ extract_json_slice() in lib/common.sh, which grade.sh's fallback also
+  # calls: two copies of this that had to agree were one copy too many (#26).
+  # The engine gets it from common.sh, which bin/cadre sources first.
   local js
-  js=$(printf '%s' "$raw" \
-       | sed -e '/^[[:space:]]*```/d' \
-       | awk 'BEGIN{RS="\0"} {
-             i=index($0,"{"); if(!i) exit; s=substr($0,i);
-             for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
-           }' \
-       | jq -c . 2>/dev/null) || js=""
+  js=$(printf '%s' "$raw" | extract_json_slice | jq -c . 2>/dev/null) || js=""
   # ★ Two causes, one message, so say both. An adapter that truncates now exits
   # nonzero even when the JSON it printed parses fine, and reporting that as
   # "did not return usable JSON" describes the wrong problem to whoever has to

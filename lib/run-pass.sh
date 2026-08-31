@@ -88,7 +88,7 @@ mapfile -t SCRUB < <(scrubbed_env)
 # everything, and the driver above it wrote COMPLETED across a sweep where 27 of
 # 30 requested reviews did not exist. Silence and success must not share an exit
 # code.
-ok_runs=0; bad_runs=0; dead_agents=""; windows=""; no_output_runs=0
+ok_runs=0; bad_runs=0; dead_agents=""; windows=""; windows_reset=""; no_output_runs=0; misconfigured_runs=0
 
 for r in "${reviewers[@]}"; do
   agent=$(spec_agent "$r"); model=$(spec_model "$r")
@@ -97,6 +97,7 @@ for r in "${reviewers[@]}"; do
   agent_installed "$agent" || {
     echo "  $r: NOT INSTALLED, $runs requested run(s) produced nothing"
     bad_runs=$((bad_runs + runs)); dead_agents="$dead_agents  $r: not installed"$'\n'
+    misconfigured_runs=$((misconfigured_runs + runs))
     continue
   }
   # Capability preflight: a doomed seat must not burn the graded-pass budget.
@@ -209,8 +210,10 @@ for r in "${reviewers[@]}"; do
         bad_runs=$((bad_runs + 1))
         # Counted here so the pass can exit with the provider's cause rather
         # than a generic 4. See the exit-7 block at the bottom of this file.
-        [ "$(failure_kind "$f.failed" "$rc")" = no-output ] &&
-          no_output_runs=$((no_output_runs + 1))
+        case "$(failure_kind "$f.failed" "$rc")" in
+          no-output)     no_output_runs=$((no_output_runs + 1)) ;;
+          misconfigured) misconfigured_runs=$((misconfigured_runs + 1)) ;;
+        esac
         echo "    $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed"), not counted as a run" ;;
     esac
 
@@ -234,8 +237,13 @@ for r in "${reviewers[@]}"; do
     if [ -n "$window" ]; then
       bad_runs=$((bad_runs + (runs - n)))
       windows="$windows  $r: usage window closed after run$n -- $(head -c 200 "$f.failed" 2>/dev/null | tr '\n' ' ')"$'\n'
+      # ★ Asked of the REFUSAL, not of the line above it (#48). That line
+      # carries the agent name and a 200-byte excerpt, so an agent called
+      # `resetter` would supply the word and a reset past the excerpt would be
+      # missed -- both of them wrong about the only thing this flag decides.
+      grep -qi 'reset' "$f.failed" 2>/dev/null && windows_reset=1
       echo "    ⏸ $r's usage window is CLOSED, not a rate limit and not a budget."
-      echo "cadre: $r hit a provider usage window on pass $label. Waiting clears it; see the reset time above." >&2
+      echo "cadre: $r hit a provider usage window on pass $label. Waiting clears it; the refusal is quoted above." >&2
       break
     fi
 
@@ -264,19 +272,49 @@ echo "  $ok_runs usable, $bad_runs not usable, of $((ok_runs + bad_runs)) reques
 # because the operator's next move is different: 6, the provider's usage window
 # closed (wait for the reset), and 7, every run came back empty (check the
 # endpoint is up). Both mean "nothing is wrong here to fix", which 4 does not.
+# 9 is the operator's own fault (#31): the seat never ran on this box.
+# (8 is taken by bin/cadre's review claim and means "already running".)
 # This comment is the only table of these codes; add to it when you add one.
 if [ "$ok_runs" -eq 0 ] && [ "$bad_runs" -gt 0 ]; then
+  # ★ 9 before all of them (#31): a requested seat that NEVER RAN because of
+  # a fault on this box. Every later pass fails the same way, the fix is the
+  # operator's, and nothing about the candidate was observed -- so it must
+  # not read as 4's "defect to fix in the tool" nor as 6/7's "wait it out".
+  # Fail closed, the way addyosmani/factory's MISCONFIGURED gate refuses
+  # rather than scoring around a gate that was declared and never dispatched.
+  if [ "$misconfigured_runs" -eq "$bad_runs" ]; then
+    {
+      echo "cadre: pass '$label' measured NOTHING because the seat is MISCONFIGURED on this box."
+      [ -n "$dead_agents" ] && printf '%s' "$dead_agents"
+      echo "The reviewer was never called, so this is not evidence about it. Fix the roster"
+      echo "entry or the install and re-run; nothing here scores the candidate either way."
+    } >&2
+    exit 9
+  fi
   # ★ 6 before 4. Both mean "this pass measured nothing", and they prescribe
   # opposite next moves: 4 says the cause is a defect to fix, 6 says the cause is
   # a clock that will clear itself. Reporting a closed window as a failed
   # measurement is how a sweep four minutes short of resuming got a report
   # reading "Fix the cause and re-run" with nothing to fix.
-  if [ -n "$windows" ]; then
+  # ★ ...and not when a misconfigured seat is in the mix: "nothing is wrong
+  # with the tool" would be false, and the operator would wait out a window
+  # for a seat that can never run.
+  if [ -n "$windows" ] && [ "$misconfigured_runs" -eq 0 ]; then
     {
       echo "cadre: pass '$label' measured NOTHING because a provider usage window closed."
       printf '%s' "$windows"
       echo "Nothing is wrong with the tool, the key, or the candidate, and nothing"
-      echo "already on disk was lost. Resume after the reset time quoted above."
+      echo "already on disk was lost."
+      # ★ Not every window states its reset (#48): a model-tier limit names a
+      # REMEDY instead, and the reset only exists in the provider's usage API.
+      # Printing "resume after the reset time quoted above" over text that
+      # quotes no time sends the operator hunting for a line nobody wrote.
+      if [ -n "$windows_reset" ]; then
+        echo "Resume after the reset time quoted above."
+      else
+        echo "This refusal does not state its reset; check the provider's usage"
+        echo "page for when the window reopens, then resume."
+      fi
     } >&2
     exit 6
   fi
