@@ -2024,13 +2024,18 @@ check "review file left alone"        "grep -q 'timestamps are strings' '$D/revi
 # with qwen judging a real panel. Every stub above returns bare JSON, which is
 # exactly why the suite was green while live settle was broken: judge stubs are
 # tidier than judges.
-for shape in fenced tagged prose_after leading_prose; do
+for shape in fenced tagged prose_after leading_prose blank_before; do
   case $shape in
     fenced)        pre='```';     post='```' ;;
     tagged)        pre='```json'; post='```' ;;
     prose_after)   pre='```json'; post='```
 Let me know if you want more detail.' ;;
     leading_prose) pre='Here is the match:
+```json'; post='```' ;;
+    # ★ #26: prose, a BLANK LINE, then the block. The one shape an awk in
+    # paragraph mode splits, leaving the JSON in a record the slicer never reads.
+    blank_before)  pre='Here is the match:
+
 ```json'; post='```' ;;
   esac
   cat > "$D/agents.d/judgestub.sh" <<A
@@ -2060,6 +2065,36 @@ J
 A
 OUT=$(run_cadre "$D" settle "$D/review.md" --judge judgestub 2>&1)
 check "braces inside strings survive" "grep -q 'returns early' <<<\"\$OUT\""
+
+# ★★ #26. Both copies of this slicer used to slurp by setting awk's record
+# separator to a NUL, which is a gawk extension: in awk source "\0" is a
+# NUL-terminated string, so an awk that reads it as C does sees the EMPTY string
+# -- and an empty RS is awk PARAGRAPH mode, splitting on blank lines instead of
+# slurping. The JSON then sits in a record the slicer never reads and a judge
+# that answered correctly is reported as one that "failed or stopped early".
+# In settle that is the bad direction twice over: its exit status is a stopping
+# rule, so an empty match reads as "nothing new is left".
+# NOT REPRODUCED on a real BSD awk -- this box has only gawk, which slurps under
+# --posix and --traditional too. So the hazard is MEASURED by forcing paragraph
+# mode explicitly rather than asserted from the docs, and the fix is the removal
+# of the dependency, not a confirmed platform bug.
+# ★ The first check below is EVIDENCE, not a regression guard: it exercises the
+# old shape under forced paragraph mode and passes with this commit reverted, on
+# purpose. The guards are the three source pins at the end of the block.
+cat > "$D/oldslice.awk" <<'A'
+BEGIN{RS=""}
+{ i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
+  for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
+  exit 1 }
+A
+printf 'Here is the match:\n\n{"findings":[]}\n' > "$D/para.txt"
+check "paragraph mode really loses it"  "[ -z \"\$(awk -f '$D/oldslice.awk' '$D/para.txt')\" ]"
+check "the shipped slicer keeps it"     "bash -c \"source '$ROOT/lib/common.sh'; extract_json_slice < '$D/para.txt'\" | grep -q findings"
+# ★ And ONE copy, so the two cannot drift apart again -- which is how the first
+# of them was fixed for the trailing fence and the other was not.
+check "no RS left for an awk to misread" "! grep -rqE 'BEGIN\{ *RS' '$ROOT/lib/common.sh' '$ROOT/lib/grade.sh' '$ROOT/bin/cadre'"
+check "grade.sh calls the shared slicer" "grep -q 'extract_json_slice' '$ROOT/lib/grade.sh'"
+check "settle calls the shared slicer"   "grep -q 'extract_json_slice' '$ROOT/bin/cadre'"
 # Still has to REFUSE a fenced block that is not complete JSON.
 cat > "$D/agents.d/judgestub.sh" <<'A'
 run_judgestub() {
