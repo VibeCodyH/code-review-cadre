@@ -60,6 +60,84 @@ slug() {
   printf '%s-%s' "$safe" "$h"
 }
 
+
+# ---- content identity (#37) --------------------------------------------------
+# ★ A benchmark whose inputs are not pinned is not reproducible, however careful
+# the grading is. `prompt_bytes` is a SIZE: two prompts that differ but happen to
+# be the same length are indistinguishable in the record, and CADRE_PROMPT_FILE
+# replaces the brief wholesale, so the input with the largest effect on a review
+# is the one the record described least. These hashes close that.
+#
+# Scope is PROVENANCE, not tamper-proofing. A local hash cannot stop anyone
+# editing the tree; it makes a comparison across an edit visible instead of
+# silent. docs/ASSURANCE_CASE.md says so where the guarantees are listed.
+#
+# ★ Never cksum as a substitute. It is already used for slug() where a collision
+# costs a filename, but a 32-bit CRC collides often enough that "same hash" would
+# stop meaning "same bytes" -- which is the only property these fields are for.
+# No sha256 tool on the box means EMPTY, which every consumer already reads as
+# unknown; a weaker hash under the same column name would read as measured.
+SHA_CMD=""
+if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
+fi
+
+# content_sha <file>... -- 12 hex chars over the files' bytes, concatenated in
+# the order given. EMPTY if any input is missing: a hash that silently describes
+# a subset is worse than none, because it compares equal to a run that had the
+# same subset for a different reason.
+content_sha() {
+  [ -n "$SHA_CMD" ] || return 0
+  local f
+  for f in "$@"; do [ -f "$f" ] || return 0; done
+  [ "$#" -gt 0 ] || return 0
+  # shellcheck disable=SC2086  # SHA_CMD may carry an argument (shasum -a 256)
+  cat -- "$@" | $SHA_CMD | cut -c1-12
+}
+
+# The adapter files that ACTUALLY load for an agent, in agentcall's order.
+# ★ BOTH, when both exist. agentcall sources the shipped file and then the user
+# one, so hashing only the override describes half of what ran -- the same
+# partial-override shape that once left a shipped noprompt_ marker alive
+# underneath a user adapter that supported prompts.
+adapter_files() {
+  local a="$1" d
+  for d in "$CADRE_ROOT/agents.d" "${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"; do
+    if [ -f "$d/$a.sh" ]; then printf '%s\n' "$d/$a.sh"; fi
+  done
+}
+
+adapter_sha() {
+  local files=()
+  mapfile -t files < <(adapter_files "$1")
+  [ "${#files[@]}" -gt 0 ] || return 0
+  content_sha "${files[@]}"
+}
+
+# One hash over every harness file that shapes a review.
+# ★ `cadre:` in the manifest is a git short sha, and it says nothing at all
+# while lib/ is dirty -- which is the normal state of the tree whenever any of
+# this is being worked on, and exactly when a comparison is most likely to span
+# an edit. Content, not revision.
+# sort, because find's order is filesystem-dependent and an unstable input order
+# would make the same tree hash differently on two machines.
+HARNESS_FILES=(lib/common.sh lib/run-review.sh lib/run-pass.sh lib/grade.sh)
+harness_sha() {
+  local f files=()
+  for f in "${HARNESS_FILES[@]}"; do files+=("$CADRE_ROOT/$f"); done
+  while IFS= read -r f; do files+=("$f"); done \
+    < <(find "$CADRE_ROOT/lib/prompts" -type f -name '*.md' -print 2>/dev/null | LC_ALL=C sort)
+  content_sha "${files[@]}"
+}
+
+# ★ slots.tsv schema version, stamped on every row THIS harness writes (#20).
+# It describes the ROW, not the run: what the columns mean and which rule
+# produced them. A row without it is not "version 1", it is UNKNOWN -- rows
+# predating this column span the #19 change to what `secs` means on a failed
+# seat, and nothing on disk can tell those halves apart after the fact. That is
+# why `cadre receipts` groups by it instead of guessing a default.
+SLOTS_SCHEMA_V=2
+
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
 
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }

@@ -98,6 +98,29 @@ no diagnostic in the pipeline.
 Tests: "by: without -a the whole review is suppressed", "by: the pre-existing
 claims survive", "by: the finding after the bad byte is claimed".
 
+**12. A published number names the inputs that produced it.** Every row of
+`slots.tsv` and every `complete` record carries a content hash for the rendered
+prompt, for the adapter file(s) that ran, and for the harness files that shape a
+review (`lib/common.sh`, `lib/run-review.sh`, `lib/run-pass.sh`, `lib/grade.sh`,
+`lib/prompts/*`). `prompt_bytes` was a size, so two prompts of equal length were
+one row; `CADRE_PROMPT_FILE` replaces the brief wholesale, which made the
+highest-leverage input the least described. The hash is EMPTY, never zero and
+never faked, when it could not be determined — a reconstructed row, a promptless
+adapter, or a box with no sha256 tool. `cadre receipts` states whether every row
+in a comparison ran against the same harness, on both branches.
+Tests: "adapter hash is per adapter", "one harness hash for the panel",
+"sha: a missing input is EMPTY", "harness: a split is called out",
+"harness: agreement is stated".
+
+**13. Receipts do not average across a schema change.** `slots.tsv` rows carry
+the schema version that wrote them, and `cadre receipts` groups by
+(family, schema) rather than by family. Rows written before the column existed
+print schema `?` — unknown, not a default — because they straddle the change to
+what `secs` means on a failed seat and nothing on disk separates the halves.
+Nothing is excluded, so older panels stay readable.
+Tests: "mixed: one row per schema", "mixed: the two secs never merge",
+"mixed: pre-#19 panels still read".
+
 ## Non-goals, named
 
 - **The preflight reads filenames, plus content for exactly four config
@@ -114,6 +137,11 @@ claims survive", "by: the finding after the bad byte is claimed".
   target-pick time.
 - **Receipts do not measure hidden reasoning tokens, provider billing, or
   in-CLI retries.** METHOD.md §6.
+- **The input hashes are provenance, not tamper-proofing.** They are computed
+  by the same tree they describe, so anyone who can edit `lib/` can edit what
+  gets hashed. What they buy is that a comparison spanning an edit becomes
+  visible instead of silent. Nothing here is a signature and nothing verifies
+  a tree against a published manifest.
 - **A scratch file in the tree is a source file to the harness.** Planning
   notes, TODO dumps and other author-written artifacts ride into the checkout
   like any other file — tracked, or untracked-but-not-gitignored (carried on

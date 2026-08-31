@@ -22,7 +22,7 @@ REPO="${1:?usage: run-review.sh <repo> <base-rev> <out-dir> <jobs> <spec ...>}"
 BASE_REV="${2-}"
 MODE=diff; [ -n "$BASE_REV" ] || MODE=target
 OUT="${3:?need an out dir}"
-# ★ NOT `.log-*`, `.status-*` or `.len-*`. Those three globs are wiped at the
+# ★ NOT `.log-*`, `.status-*`, `.len-*` or `.sha-*`. Those four globs are wiped at the
 # bottom of this file, and a record that a cleanup line can match is a record
 # that will eventually be deleted by someone extending that line. The name is
 # the enforcement. Per-panel and under $OUT, because `cadre receipts` finds
@@ -411,6 +411,14 @@ else
   render_review_prompt "$CADRE_ROOT/lib/prompts/$BRIEF" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
 fi
 
+# ★ Frozen HERE, once, before a single seat is dispatched (#37). Recomputing per
+# seat would let a mid-panel edit land in half the rows and read as two seats
+# legitimately disagreeing about the harness, which is the opposite of what the
+# field is for. Same reasoning as docs/METHOD.md's refusal to edit lib/ mid-sweep,
+# made checkable instead of asked for.
+HARNESS_SHA=$(harness_sha)
+PROMPT_SHA=$(content_sha "$PROMPT")
+
 # ★ Capability preflight BEFORE any paid call. A seat whose adapter (or model)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
 # skipped-seat path as roster gates: slots.tsv status, report line, out of
@@ -463,6 +471,11 @@ unset _kept _spec _block _decl _reason
   # would split into rows that parse as other fields.
   [ -n "$PRERUN_FILE" ] && echo "prerun:    exit $PRERUN_RC | $(printf '%s' "$CADRE_PRERUN" | tr '\n' ' ')"
   echo "prompt:    $(cksum < "$PROMPT" | cut -d' ' -f1)"
+  # ★ Content, beside the revision, not instead of it. `cadre:` is a git sha and
+  # goes stale the moment lib/ is dirty; this one changes with the bytes. Kept
+  # here as well as on every row so a panel killed before slots.tsv was written
+  # still says which harness produced its artifacts.
+  echo "harness:   ${HARNESS_SHA:-unknown}"
   echo "cadre:     $(git -C "$CADRE_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$OUT/manifest.txt"
 
@@ -485,23 +498,36 @@ mapfile -t SCRUB < <(scrubbed_env)
 # measured, and record_event turns an empty numeric into `null`. Bytes come from
 # the artifact rather than any log line, so the number always describes the file
 # that is actually on disk.
+#
+# ★ The hashes are read from the DISPATCH scratch file, not recomputed here.
+# Recomputing would describe the tree as it stands after the seat finished,
+# which on a long panel is a different tree than the one that was reviewed --
+# and the whole point of the field is to make that difference visible.
+# They are STRINGS, not `#` numerics: EMPTY means "not determined" and must stay
+# an empty field, where a numeric null would print the same but claim a measure.
 record_complete() {  # <slug> <spec> <state> [rc] [secs]
-  local sl="$1" spec="$2" state="$3" rc="${4:-}" secs="${5:-}" art bytes
+  local sl="$1" spec="$2" state="$3" rc="${4:-}" secs="${5:-}" art bytes shaf
   art="$OUT/$sl.md"
   [ -s "$art" ] || art="$OUT/$sl.md.partial"
   [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
   [ -s "$art" ] || art="$OUT/$sl.md.failed"
   bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
+  shaf="$OUT/.sha-$sl"
   record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
     seat="$spec" family="$(spec_family "$spec")" slug="$sl" \
     state="$state" "rc#=$rc" "secs#=$secs" "bytes#=${bytes:-0}" \
-    "prompt_bytes#=$(cat "$OUT/.len-$sl" 2>/dev/null)" "ts#=$(date +%s)"
+    "prompt_bytes#=$(cat "$OUT/.len-$sl" 2>/dev/null)" \
+    "v#=$SLOTS_SCHEMA_V" \
+    prompt_sha="$(sed -n 1p "$shaf" 2>/dev/null)" \
+    adapter_sha="$(sed -n 2p "$shaf" 2>/dev/null)" \
+    harness_sha="$HARNESS_SHA" "ts#=$(date +%s)"
 }
 
 run_one() {
   local spec="$1" idx="$2"
   local sl; sl=$(slug "$spec")
   local f="$OUT/$sl.md" log="$OUT/.log-$sl" st="$OUT/.status-$sl" len="$OUT/.len-$sl"
+  local shaf="$OUT/.sha-$sl"
   local agent model dir attempt=1 rc w start took
   agent=$(spec_agent "$spec"); model=$(spec_model "$spec")
 
@@ -510,6 +536,14 @@ run_one() {
   # prompt. Overwrite it at the dispatch site so adapter failures still retain
   # the exact prompt size after the scratch files disappear.
   echo 0 > "$len"
+  # ★ Line 1 prompt, line 2 adapter (#37). Written BEFORE the installed check,
+  # so a seat that never runs still records which adapter file was consulted --
+  # "the adapter is missing" and "the adapter is present and broken" are
+  # different facts and the row should not need the console to tell them apart.
+  # Line 1 stays EMPTY until dispatch: the prompt this seat is charged for is
+  # the one agentcall actually receives, and a promptless adapter never receives
+  # one at all.
+  printf '\n%s\n' "$(adapter_sha "$agent")" > "$shaf"
   # ★ Recorded BEFORE anything can go wrong, which is the entire reason the log
   # is append-only rather than assembled at the end: a panel killed here leaves
   # proof this seat was dispatched. Every `return` below has a matching
@@ -543,7 +577,16 @@ run_one() {
   start=$(date +%s)
   # Promptless adapters use their own contract; zero is the exact number of
   # shared-brief bytes they send to their provider.
-  if ! is_promptless "$agent"; then wc -c < "$PROMPT" | tr -d ' ' > "$len"; fi
+  if ! is_promptless "$agent"; then
+    wc -c < "$PROMPT" | tr -d ' ' > "$len"
+    # ★ EMPTY for a promptless adapter, never the hash of a prompt it did not
+    # get. `prompt_bytes` records a measured 0 there because zero shared-brief
+    # bytes really were sent; the identity of a prompt that was never dispatched
+    # is not zero, it is unknown, and a sha of the empty string would compare
+    # equal across every promptless seat as if they shared an input.
+    local asha; asha=$(sed -n 2p "$shaf" 2>/dev/null)
+    printf '%s\n%s\n' "$PROMPT_SHA" "$asha" > "$shaf"
+  fi
   while :; do
     "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
       CADRE_PASS_BASE="$BASE" \
@@ -639,9 +682,16 @@ run_one() {
 # `secs` stays null, because nothing was timed.
 for row in "${skipped_rows[@]}"; do
   IFS=$'\t' read -r sk_spec _sk_gate _sk_reason <<< "$row"
+  # prompt_sha is EMPTY for the same reason prompt_bytes is a measured 0: the
+  # seat sent nothing, so there is no dispatched prompt to identify. The adapter
+  # and the harness are still recorded -- the gate that skipped it is a harness
+  # decision, and which version made it is exactly what a later reader asks.
   record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
     seat="$sk_spec" family="$(spec_family "$sk_spec")" slug="$(slug "$sk_spec")" \
-    state=skipped "rc#=" "secs#=" "bytes#=0" "prompt_bytes#=0" "ts#=$(date +%s)"
+    state=skipped "rc#=" "secs#=" "bytes#=0" "prompt_bytes#=0" \
+    "v#=$SLOTS_SCHEMA_V" prompt_sha= \
+    adapter_sha="$(adapter_sha "$(spec_agent "$sk_spec")")" \
+    harness_sha="$HARNESS_SHA" "ts#=$(date +%s)"
 done
 
 i=0; running=0
@@ -809,14 +859,22 @@ slot_rows=$(
   # reasoning aggregate.sh gives for trusting the roster line over filenames.
   # A seat with no completion event prints `failed` with EMPTY secs: it did not
   # take zero seconds, it was never measured.
-  all_complete=$(record_rows "$RUNLOG" complete seat family state bytes secs prompt_bytes)
+  # ★ `v` is a CONSTANT here, not a field read back from the record (#20). It
+  # describes the ROW -- which columns these are and which rule wrote them --
+  # and this harness wrote every row below, including one for a seat that left
+  # no completion event at all. Reading it from the record would blank exactly
+  # that row and lose the provenance for the only row whose provenance is in
+  # question.
+  all_complete=$(record_rows "$RUNLOG" complete seat family state bytes secs prompt_bytes \
+                   prompt_sha adapter_sha harness_sha)
   for spec in "${reviewers[@]}"; do
     rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
     rec_row="${rec_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt <<< "$rec_row"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha <<< "$rec_row"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
-      "${r_state:-failed}" "${r_bytes:-0}" "$r_secs" "$r_prompt"
+      "${r_state:-failed}" "${r_bytes:-0}" "$r_secs" "$r_prompt" \
+      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}"
   done
   # Skipped seats come from the same stream, for the same reason: one source, so
   # a change to how spend is recorded cannot land in one renderer and not the
@@ -826,10 +884,11 @@ slot_rows=$(
     IFS=$'\t' read -r spec _gate _reason <<< "$row"
     rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
     rec_row="${rec_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt <<< "$rec_row"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha <<< "$rec_row"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
-      "${r_state:-skipped}" "${r_bytes:-0}" "$r_secs" "${r_prompt:-0}"
+      "${r_state:-skipped}" "${r_bytes:-0}" "$r_secs" "${r_prompt:-0}" \
+      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}"
   done
 )
 printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
@@ -848,7 +907,7 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
     # Tabs are IFS whitespace, so plain `read` collapses the empty secs field in
     # a skipped row. Translate to a non-whitespace delimiter before splitting.
     slot_row="${slot_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes <<< "$slot_row"
+    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes _v _psha _asha _hsha <<< "$slot_row"
     prompt_kb=""
     if [ -n "${prompt_bytes:-}" ]; then
       prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
@@ -872,7 +931,7 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
   echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."
 } >> "$REPORT"
 
-rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-*
+rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-*
 echo
 skipped_count=${#skipped_rows[@]}
 if [ "$skipped_count" -gt 0 ]; then

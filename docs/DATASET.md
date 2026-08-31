@@ -25,7 +25,7 @@ about which model reviews *better* needs that path, not this file.
 
 ## slots.tsv — one row per reviewer slot
 
-    panel  slot  family  status  bytes  secs  prompt_bytes  source
+    panel  slot  family  status  bytes  secs  prompt_bytes  v  prompt_sha  adapter_sha  harness_sha  source
 
 - **status** — `ok` / `degraded` / `inconclusive` / `failed` / `skipped`.
   `skipped` means the user-declared roster gate did not hold, so no prompt was
@@ -49,13 +49,33 @@ about which model reviews *better* needs that path, not this file.
 - **prompt_bytes** — size of the exact prompt dispatched to the seat, captured
   by the harness at dispatch time. It is empty for rows that predate this field
   and for reconstructed rows; cadre never guesses it from surviving files.
+- **v** — the `slots.tsv` schema version that wrote the row: what these columns
+  mean and which rule filled them. A row **without** it is not version 1, it is
+  **unknown**, and `cadre receipts` groups on it rather than guessing. The
+  distinction it protects: `secs` on a *failed* seat used to be blank and is now
+  the measured seconds. Neither convention is wrong, and a total that spans both
+  is a number nobody can interpret. Rows that predate the column straddle that
+  change and nothing on disk can separate the halves after the fact, so they
+  print as `?` and are listed on their own row.
+- **prompt_sha** / **adapter_sha** / **harness_sha** — 12-hex content hashes of
+  the three inputs that decide what a seat saw: the rendered prompt as
+  dispatched, the adapter file(s) that ran (both the shipped one and a user
+  override, since `agentcall` sources both), and the harness files that shape a
+  review. `prompt_bytes` is a size — two prompts that differ but happen to be
+  the same length are indistinguishable by it, and `CADRE_PROMPT_FILE` replaces
+  the brief wholesale, so the input with the largest effect on a review was the
+  one the record described least. All three are **EMPTY when undetermined** and
+  never zeroed: a reconstructed row, a promptless adapter that received no
+  shared brief, or a machine with no `sha256sum`/`shasum`. This is provenance,
+  not tamper-proofing — see `docs/ASSURANCE_CASE.md`.
 - **source** — `recorded` (written live by `run-review.sh`, with status and
   timing measured and prompt size present on new rows) or `reconstructed`
   (rebuilt from artifacts after the fact). Reconstructed rows have **no timing
   or prompt size at all**: the per-slot scratch files were deleted when the
   panel finished, and fourteen panels ran before timing capture was fixed. Both
   fields are left EMPTY rather than zeroed, because a zero would average like a
-  real measurement and drag every mean toward the floor.
+  real measurement and drag every mean toward the floor. The four provenance
+  columns follow the same rule for the same reason.
 
 ## panels.tsv — one row per panel
 
