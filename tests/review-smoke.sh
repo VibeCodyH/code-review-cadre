@@ -2060,6 +2060,9 @@ check "braces inside strings survive" "grep -q 'returns early' <<<\"\$OUT\""
 # --posix and --traditional too. So the hazard is MEASURED by forcing paragraph
 # mode explicitly rather than asserted from the docs, and the fix is the removal
 # of the dependency, not a confirmed platform bug.
+# ★ The first check below is EVIDENCE, not a regression guard: it exercises the
+# old shape under forced paragraph mode and passes with this commit reverted, on
+# purpose. The guards are the three source pins at the end of the block.
 cat > "$D/oldslice.awk" <<'A'
 BEGIN{RS=""}
 { i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
