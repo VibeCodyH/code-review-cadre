@@ -34,6 +34,12 @@ is not a peer of one that cannot. Recorded, not assumed away -- it is what
 you are measuring when you pick this seat.
 Same ro rails as claude.sh: --strict-mcp-config, advisorModel="", and the
 CLAUDE_DENY list, which is why that adapter must stay loaded.
+★ The seat inherits the CLI's DEFAULT model, so the per-model weekly tier it
+spends is whatever ~/.claude/settings.json points at -- and that can change
+between passes of one sweep, silently. Pinning the model for a benchmark run
+is the caller's job today. When that tier runs out the CLI says "You've
+reached your <Model> limit. Switch to another model to continue.", which
+cadre reads as a usage window and not as a measurement (#48).
 NOTES
 }
 
