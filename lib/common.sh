@@ -988,6 +988,44 @@ failure_phrase() {  # <file> <rc> [secs] -> leading phrase, no trailing period
 # like a real measurement and pulls every mean toward the floor -- the rule
 # aggregate.sh and grade.sh already follow, now with a type that can express it.
 
+# The relaxed JSON slice, on stdin: drop fence lines, then take the first `{` to
+# the LAST `}`. Survives prose on either side of the block and an unbalanced
+# brace inside a string, which the balanced scan in grade.sh cannot -- that scan
+# stays first, because on a reply echoing prompt text with braces it finds the
+# clean object and this slice would not.
+#
+# ★ ONE copy, because there were two that had to agree: grade.sh's fallback and
+# the settle judge in bin/cadre. #26.
+#
+# ★ No `RS`. Both copies slurped by setting awk's record separator to a NUL,
+# which is a gawk extension: in awk source `"\0"` is a NUL-terminated
+# string, so an awk that reads it as C does sees the EMPTY string -- which is
+# awk paragraph mode, splitting on blank lines instead of slurping. A judge that
+# answers with prose, a blank line, then a fenced JSON block would leave the
+# JSON in a later record, `index($0,"{")` would find nothing, and a judge that
+# answered correctly would be reported as one that "failed or stopped early".
+# In settle that direction is worse than a wrong answer, because its exit status
+# is a stopping rule and an empty match reads as "nothing new is left".
+# NOT REPRODUCED: this box has only gawk, which slurps under --posix and
+# --traditional too, and no BSD awk was available to confirm the paragraph-mode
+# read. The RS dependency is removed rather than the failure measured. README
+# names bash 4.4+ and macOS, and a test already bans GNU-only sed/grep escapes
+# for the same reason, so the portable form is the one to ship either way.
+# Accumulating in END is identical on gawk: same first-{ to last-} over the
+# same bytes.
+extract_json_slice() {
+  sed -e '/^[[:space:]]*```/d' \
+  | awk '
+      { buf = buf $0 "\n" }
+      END {
+        i = index(buf, "{"); if (!i) exit 1
+        s = substr(buf, i)
+        for (k = length(s); k > 0; k--)
+          if (substr(s, k, 1) == "}") { printf "%s", substr(s, 1, k); exit 0 }
+        exit 1
+      }'
+}
+
 # One field value, escaped for JSON. Backslash BEFORE quote, or the escape this
 # adds is itself re-escaped. Control characters are dropped rather than encoded:
 # one event is one LINE, and a stray newline inside a value would split it into

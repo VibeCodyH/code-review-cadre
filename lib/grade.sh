@@ -35,24 +35,6 @@ extract_json() {
   '
 }
 
-# ★ The fallback for what the scan above cannot parse: an UNBALANCED brace
-# inside a JSON string. "The judge's format never has them" stopped being true
-# the day `quotes` became required -- a verbatim reviewer sentence about shell
-# or C code carries a lone { or } routinely, the depth count never returns to
-# zero, and a valid grade was recorded UNUSABLE with the judge blamed for it.
-# Same shape cmd_settle already uses: drop fence lines, slice first { to last
-# }, let jq be the arbiter. Tried second, not first, because on a reply that
-# echoes prompt text with braces the balanced scan finds the clean object and
-# this slice would not.
-extract_json_relaxed() {
-  sed -e '/^[[:space:]]*```/d' \
-  | awk 'BEGIN{RS="\0"} {
-      i=index($0,"{"); if(!i) exit 1; s=substr($0,i)
-      for(k=length(s);k>0;k--) if(substr(s,k,1)=="}") { printf "%s", substr(s,1,k); exit }
-      exit 1
-    }'
-}
-
 grade_one() {
   local keyfile="$1" review="$2" out="$3" raw attempt=1 w
   [ -s "$review" ] || { echo "$UNUSABLE" > "$out"; return; }
@@ -77,8 +59,17 @@ grade_one() {
   local parsed=0
   printf '%s' "$raw" | extract_json > "$out" 2>/dev/null
   jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
+  # ★ The fallback for what the scan above cannot parse: an UNBALANCED brace
+  # inside a JSON string. "The judge's format never has them" stopped being true
+  # the day `quotes` became required -- a verbatim reviewer sentence about shell
+  # or C code carries a lone { or } routinely, the depth count never returns to
+  # zero, and a valid grade was recorded UNUSABLE with the judge blamed for it.
+  # extract_json_slice() is the same code cmd_settle uses, one copy in
+  # lib/common.sh (#26). Tried SECOND, not first, because on a reply that echoes
+  # prompt text with braces the balanced scan finds the clean object and this
+  # slice would not.
   if [ "$parsed" -eq 0 ]; then
-    printf '%s' "$raw" | extract_json_relaxed > "$out" 2>/dev/null
+    printf '%s' "$raw" | extract_json_slice > "$out" 2>/dev/null
     jq -e '.items' "$out" >/dev/null 2>&1 && parsed=1
   fi
   # ★ Keep what the judge actually said when it does not parse. UNUSABLE with no
