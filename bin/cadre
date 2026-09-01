@@ -1160,10 +1160,29 @@ cmd_receipts() {
   [ "${#slot_files[@]}" -gt 0 ] || die "receipts: no slots.tsv found"
 
   raw=$(awk -v FS="$tab" '
+    # ★ Which column is `model` is decided PER FILE, from its header (#51). A
+    # live slots.tsv has no header and carries it in column 12. A dataset
+    # written by lib/aggregate.sh has a header; before this field existed its
+    # column 12 was `source`, so reading 12 blindly would file `recorded` and
+    # `reconstructed` as two served models and split every seat in the table.
+    # A header that does not name `model` means the file has no such column.
+    FNR == 1 {
+      mcol[FILENAME] = 12
+      if ($1 == "panel" && $2 == "slot") {
+        mcol[FILENAME] = 0
+        for (i = 1; i <= NF; i++) if ($i == "model") mcol[FILENAME] = i
+      }
+    }
     $1 == "panel" && $2 == "slot" { next }
     NF < 5 || $3 == "" { next }
     {
       fam = $3
+      # ★ Served model set, per row: EMPTY for a seat whose spec pins its model.
+      # It is part of the grouping key, so a seat that ran under two defaults
+      # lands on two rows and its totals are never added -- the row split IS the
+      # notice, the same answer #20 gives for a schema change. Rows with no
+      # model group exactly as before.
+      m = (mcol[FILENAME] > 0 && NF >= mcol[FILENAME]) ? $(mcol[FILENAME]) : ""
       # ★ A missing, empty or NON-NUMERIC column 8 is UNKNOWN, printed "?", never
       # defaulted to a version. Those rows straddle the change this grouping
       # exists to keep apart, and calling them by any version number would assert
@@ -1174,8 +1193,9 @@ cmd_receipts() {
       # in the table -- receipts accepts any directory, and a stale dataset dir
       # is a directory.
       v = (NF >= 8 && $8 ~ /^[0-9]+$/) ? $8 : "?"
-      key = fam SUBSEP v
-      if (!(key in keys)) { keys[key] = 1; famof[key] = fam; vof[key] = v; nver[fam]++ }
+      key = fam SUBSEP v SUBSEP m
+      if (!(key in keys)) { keys[key] = 1; famof[key] = fam; vof[key] = v; mof[key] = m }
+      if (!((fam SUBSEP v) in famver)) { famver[fam SUBSEP v] = 1; nver[fam]++ }
       seats[key]++
       run_key = key SUBSEP FILENAME SUBSEP $1
       if (!(run_key in seen)) { seen[run_key] = 1; runs[key]++ }
@@ -1201,22 +1221,22 @@ cmd_receipts() {
       # what actually ran -- claudecr, whose model slot holds the effort level.
       # One seat under two models is a benchmark split across a boundary the
       # spec cannot show, so it is named the way a harness split is named.
-      if (NF >= 12 && $12 != "") {
+      if (m != "") {
         named_model++
-        mk = $2 SUBSEP $12
+        mk = $2 SUBSEP m
         if (!(mk in seatmodel)) {
           seatmodel[mk] = 1; nmodels[$2]++
-          models_of[$2] = (models_of[$2] == "" ? "" : models_of[$2] ", ") $12
+          models_of[$2] = (models_of[$2] == "" ? "" : models_of[$2] "; ") m
         }
       }
     }
     END {
       for (key in keys) {
         sec = have_secs[key] ? secs[key] : ""
-        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%s\t%d\n", \
+        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%s\t%d\t%s\n", \
           famof[key], runs[key], seats[key], ok[key], degraded[key], \
           inconclusive[key], failed[key], skipped[key], sec, prompt_bytes[key], \
-          review_bytes[key], est_tokens[key], vof[key], nver[famof[key]]
+          review_bytes[key], est_tokens[key], vof[key], nver[famof[key]], mof[key]
       }
       printf "M\t%d\n", missing_prompt
       for (h in harness) printf "H\t%s\n", h
@@ -1231,14 +1251,17 @@ cmd_receipts() {
   # order; without it the two halves swap between runs and a diff of two
   # receipts reads as a change.
   rows=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "R"' \
-    | sort -t "$tab" -k13,13nr -k2,2 -k14,14)
+    | sort -t "$tab" -k13,13nr -k2,2 -k14,14 -k16,16)
 
-  printf '%-24s %5s %5s %4s %8s %12s %6s %7s %8s %10s %10s %11s %7s\n' \
-    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SKIPPED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS' SCHEMA
+  # MODEL is last and usually blank: it is filled only for rows whose seat
+  # declared the served model (#51), and a family split across two of them
+  # prints as two rows here, exactly like a schema split.
+  printf '%-24s %5s %5s %4s %8s %12s %6s %7s %8s %10s %10s %11s %7s  %s\n' \
+    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SKIPPED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS' SCHEMA MODEL
   printf '%s\n' "$rows" | awk -v FS="$tab" '
     $1 == "R" {
-      printf "%-24s %5d %5d %4d %8d %12d %6d %7d %8s %10.1f %10.1f %11d %7s\n", \
-        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 / 1024, $12 / 1024, $13, $14
+      printf "%-24s %5d %5d %4d %8d %12d %6d %7d %8s %10.1f %10.1f %11d %7s  %s\n", \
+        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 / 1024, $12 / 1024, $13, $14, $16
     }
   '
   if [ "${missing:-0}" -gt 0 ]; then
@@ -1284,11 +1307,11 @@ cmd_receipts() {
   if [ -n "$model_splits" ]; then
     echo
     printf '%s\n' "$model_splits" | awk -v FS="$tab" '{
-      printf "Model: seat %s ran under %d models (%s). Those rows are one seat measured twice, not one measurement; do not add them together.\n", $2, $3, $4
+      printf "Model: seat %s was served by %d different model sets (%s). Its rows above are listed per set and were not added together.\n", $2, $3, $4
     }'
   elif [ "${named_model:-0}" -gt 0 ]; then
     echo
-    echo "Model: every seat that names its served model ran under one model."
+    echo "Model: every seat that names its served model was served by one model set."
   fi
   if [ "${no_harness:-0}" -gt 0 ]; then
     [ "${nharness:-0}" -gt 0 ] || echo

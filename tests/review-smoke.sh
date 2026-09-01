@@ -4488,17 +4488,21 @@ check "model: the meta file does not outlive the run" \
 echo model-beta > "$DM/served-model"
 run_cadre "$DM" review --roster modeller,good --synth none --base main --label m2 "$DM/src" >/dev/null
 OUT=$(run_cadre "$DM" receipts "$DM/state/reviews")
-check "model: receipts name the seat that ran under two models" \
-  "grep -q '^Model: seat modeller ran under 2 models (model-alpha, model-beta)' <<<\"\$OUT\""
-check "model: and do not add them together" \
-  "grep -q 'do not add them together' <<<\"\$OUT\""
+check "model: receipts name the seat served by two model sets" \
+  "grep -q '^Model: seat modeller was served by 2 different model sets (model-alpha; model-beta)' <<<\"\$OUT\""
+# ★ Not just a warning: the totals are split too. Two rows for the family,
+# one per served model, and the MODEL column says which is which.
+check "model: the family is listed once per model" \
+  "awk '\$NF == \"model-alpha\" { a=1 } \$NF == \"model-beta\" { b=1 } END { exit !(a && b) }' <<<\"\$OUT\""
+check "model: and each row holds one run" \
+  "awk '\$NF == \"model-alpha\" && \$2 == 1 { a=1 } \$NF == \"model-beta\" && \$2 == 1 { b=1 } END { exit !(a && b) }' <<<\"\$OUT\""
 check "model: the pinned seat is not accused" \
-  "! grep -q 'seat good ran under' <<<\"\$OUT\""
+  "! grep -q 'seat good was served' <<<\"\$OUT\""
 # ★ Both branches: agreement is said out loud too, and a table with no model
 # column at all says nothing rather than agreeing about nothing.
 OUT=$(run_cadre "$DM" receipts "$RM1")
 check "model: one model is stated, not implied" \
-  "grep -q '^Model: every seat that names its served model ran under one model' <<<\"\$OUT\""
+  "grep -q '^Model: every seat that names its served model was served by one model set' <<<\"\$OUT\""
 mkdir -p "$DM/nomodel"
 printf 'r1\tcodex:a\topenai\tok\t1024\t7\t2048\t2\taaaaaaaaaaaa\tbbbbbbbbbbbb\tcccccccccccc\n' > "$DM/nomodel/slots.tsv"
 OUT=$(run_cadre "$DM" receipts "$DM/nomodel")
@@ -4509,6 +4513,18 @@ check "model: dataset header names the column" \
   "head -1 '$DM/dataset/slots.tsv' | grep -qP '\tharness_sha\tmodel\tsource\$'"
 check "model: dataset row carries it"  "grep -qP '^m1\tmodeller\t.*\tmodel-alpha\trecorded\$' '$DM/dataset/slots.tsv'"
 check "model: dataset pinned seat is empty" "grep -qP '^m1\tgood\t.*\t[0-9a-f]{12}\t\trecorded\$' '$DM/dataset/slots.tsv'"
+# ★ receipts reads a dataset by its HEADER. The new one names `model`, so the
+# split survives aggregation; a dataset written BEFORE this field had `source`
+# in column 12, and reading that blindly would file `recorded` as a model.
+OUT=$(run_cadre "$DM" receipts "$DM/dataset")
+check "model: the dataset still shows the split" \
+  "grep -q '^Model: seat modeller was served by 2 different model sets' <<<\"\$OUT\""
+mkdir -p "$DM/olddataset"
+printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tv\tprompt_sha\tadapter_sha\tharness_sha\tsource\n' > "$DM/olddataset/slots.tsv"
+printf 'o1\tcodex:a\topenai\tok\t1024\t7\t2048\t2\taaaaaaaaaaaa\tbbbbbbbbbbbb\tcccccccccccc\trecorded\no2\tcodex:a\topenai\tok\t1024\t\t\t\t\t\t\treconstructed\n' >> "$DM/olddataset/slots.tsv"
+OUT=$(run_cadre "$DM" receipts "$DM/olddataset")
+check "model: an old dataset's source column is not a model" \
+  "! grep -q '^Model:' <<<\"\$OUT\" && ! grep -q 'recorded\|reconstructed' <<<\"\$OUT\""
 
 # The benchmark path writes the same field.
 DMB=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DMB" modeller "$HITBOTH" "$HITBOTH"
@@ -4537,6 +4553,32 @@ check "claudecr: asks for the JSON result"        "grep -qx -- '--output-format'
 check "claudecr: unwraps the review text"         "grep -q '^src/x.js:3 -- missing await' <<<\"\$OUT\" && [ $RC -eq 0 ]"
 check "claudecr: and none of the envelope"        "! grep -q 'modelUsage\|\"result\"' <<<\"\$OUT\""
 check "claudecr: declares every served model"     "grep -qx 'model=claude-sub-2,claude-test-1' '$CJM/state'"
+# ★ stderr comes FIRST, as it did under 2>&1: a diagnostic after the review
+# would push the Verdict: line out of the classifier's tail window.
+cat > "$CJ/bin/claude" <<'S'
+#!/bin/sh
+echo "some CLI warning" >&2
+printf '{"type":"result","subtype":"success","is_error":false,"result":"**nit**\\nx.js:1 -- t\\nVerdict: no defects found","modelUsage":{"claude-test-1":{}}}\n'
+S
+OUT=$(CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: stderr lands ahead of the review"  "[ \"\$(head -1 <<<\"\$OUT\")\" = 'some CLI warning' ]"
+check "claudecr: and the verdict stays last"        "[ \"\$(tail -1 <<<\"\$OUT\")\" = 'Verdict: no defects found' ] && [ $RC -eq 0 ]"
+# ★ An error object that exited 0 is still an error: its text must not be read
+# as a review that found nothing.
+cat > "$CJ/bin/claude" <<'S'
+#!/bin/sh
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Verdict: no defects found","modelUsage":{}}\n'
+exit 0
+S
+OUT=$(CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: an error object with exit 0 is nonzero" "[ $RC -ne 0 ] && grep -q 'no defects found' <<<\"\$OUT\""
+# A clock kill with only stderr is NOT a partial review.
+printf '#!/bin/sh\necho "still thinking" >&2\nexit 124\n' > "$CJ/bin/claude"
+OUT=$(CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: timeout with only stderr is DID NOT COMPLETE" "head -1 <<<\"\$OUT\" | grep -q '^DID NOT COMPLETE.*timeout with no output' && grep -q 'still thinking' <<<\"\$OUT\""
 # An error object still carries its text, and the exit code still governs.
 cat > "$CJ/bin/claude" <<'S'
 #!/bin/sh

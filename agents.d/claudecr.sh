@@ -125,29 +125,43 @@ run_claudecr() {
   # Anything that is not the result object passes through untouched: an older
   # CLI printing plain text, a box without jq. The model field stays EMPTY then,
   # which is the truth -- it was not determined.
+  local err sub
   if command -v jq >/dev/null 2>&1 \
      && printf '%s' "$out" | jq -e 'type == "object" and has("result")' >/dev/null 2>&1; then
     models=$(printf '%s' "$out" | jq -r '(.modelUsage // {}) | keys | join(",")' 2>/dev/null)
     [ -n "$models" ] && cadre_model "$models"
+    err=$(printf '%s' "$out" | jq -r '.is_error // false')
+    sub=$(printf '%s' "$out" | jq -r '.subtype // "success"')
     out=$(printf '%s' "$out" | jq -r '.result // ""')
+    # ★ The object carries its own verdict: an error that exited 0 is still an
+    # error, and its text -- a usage-window notice, say -- must not be read as
+    # a review that happens to lack findings.
+    if [ "$rc" -eq 0 ] && { [ "$err" = true ] || [ "$sub" != success ]; }; then rc=1; fi
   fi
-  [ -s "$errf" ] && out="$out"$'\n'"$(cat "$errf")"
-  rm -f "$errf"
+  # ★ Empty/partial is judged on what the CLI RETURNED, never on its stderr:
+  # a diagnostic line on a clock kill is not a partial review.
+  local diag=""; [ -s "$errf" ] && diag=$(cat "$errf"); rm -f "$errf"
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     # Whatever arrived before the kill is a review, cut short: the partial
     # contract, same as codex.sh and grok.sh. Nonzero as well as the marker.
     if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+      [ -n "$diag" ] && printf '%s\n' "$diag"
       printf '%s\n\n' "$out"
       echo "_TRUNCATED, claudecr:$level was killed at the ${TIMEOUT}s timeout; this review is INCOMPLETE, not a clean pass. Raise CADRE_TIMEOUT; high and xhigh run subagents and take longer._"
     else
       echo "DID NOT COMPLETE, claudecr:$level was killed at the ${TIMEOUT}s timeout with no output. Raise CADRE_TIMEOUT; high and xhigh run subagents and take longer."
+      [ -n "$diag" ] && printf '%s\n' "$diag"
     fi
     return 1
   fi
   if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     echo "DID NOT COMPLETE, claudecr:$level printed no review (exit $rc)."
+    [ -n "$diag" ] && printf '%s\n' "$diag"
     return 1
   fi
+  # stderr FIRST, as under 2>&1: the CLI's diagnostics precede its result, and
+  # the Verdict: line the classifier reads at the tail stays last.
+  [ -n "$diag" ] && printf '%s\n' "$diag"
   printf '%s\n' "$out"
   return "$rc"
 }
