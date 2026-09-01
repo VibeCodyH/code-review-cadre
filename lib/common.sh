@@ -172,6 +172,49 @@ harness_sha() {
   content_sha "${files[@]}"
 }
 
+# Dominant language of a change, from an extension histogram over the files
+# that changed between <base> and <head> in <dir> (#9). Deterministic: count
+# desc, then name asc, so a tie always picks the same one. Docs, data and lock
+# files are NOT counted -- a change that edits one .ts file and six .md files
+# is a typescript change. EMPTY when nothing recognisable changed; never a
+# guess, because a per-language split downstream would treat a guess as a
+# measurement. Observational by construction: it names the repo people happened
+# to run on, not matched-difficulty ground truth (docs/DATASET.md).
+lang_of_path() {
+  case "${1##*/}" in
+    *.ts|*.tsx|*.mts|*.cts)        echo typescript ;;
+    *.js|*.jsx|*.mjs|*.cjs)        echo javascript ;;
+    *.py)                          echo python ;;
+    *.go)                          echo go ;;
+    *.rs)                          echo rust ;;
+    *.rb)                          echo ruby ;;
+    *.java)                        echo java ;;
+    *.kt|*.kts)                    echo kotlin ;;
+    *.swift)                       echo swift ;;
+    *.cs)                          echo csharp ;;
+    *.php)                         echo php ;;
+    *.scala)                       echo scala ;;
+    *.ex|*.exs)                    echo elixir ;;
+    *.dart)                        echo dart ;;
+    *.lua)                         echo lua ;;
+    *.sh|*.bash|*.zsh)             echo shell ;;
+    *.sql)                         echo sql ;;
+    *.c|*.h)                       echo c ;;
+    *.cc|*.cpp|*.cxx|*.hh|*.hpp)   echo cpp ;;
+    *.m|*.mm)                      echo objective-c ;;
+    *) ;;
+  esac
+}
+detect_language() {  # <dir> <base> <head> -> dominant language, or EMPTY
+  local dir="$1" base="$2" head="${3:-HEAD}"
+  [ -n "$base" ] || return 0
+  # -z: without it git C-quotes a name with non-ASCII or control characters,
+  # and the trailing quote hides the extension from lang_of_path.
+  git -C "$dir" diff -z --name-only "$base" "$head" 2>/dev/null \
+    | while IFS= read -r -d '' f; do lang_of_path "$f"; done \
+    | LC_ALL=C sort | uniq -c | LC_ALL=C sort -k1,1nr -k2,2 | awk 'NR == 1 { print $2 }'
+}
+
 # ★ slots.tsv schema version, stamped on every row THIS harness writes (#20).
 # It describes the ROW, not the run: what the columns mean and which rule
 # produced them. A row without it is not "version 1", it is UNKNOWN -- rows

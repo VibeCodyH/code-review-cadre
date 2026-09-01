@@ -418,6 +418,9 @@ fi
 # made checkable instead of asked for.
 HARNESS_SHA=$(harness_sha)
 PROMPT_SHA=$(content_sha "$PROMPT")
+# Dominant language of the change, from the checkout itself (#9). In target
+# mode the base is the empty tree, so this is the whole target.
+CHANGE_LANG=$(detect_language "$TPL" "$BASE" HEAD)
 
 # ★ Capability preflight BEFORE any paid call. A seat whose adapter (or model)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
@@ -465,6 +468,9 @@ unset _kept _spec _block _decl _reason
   echo "base-tree: $btree"
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "roster:    ${reviewers[*]}"
+  # Blank when nothing recognisable changed -- the same EMPTY the record carries,
+  # not a stand-in word that would read as a detected value.
+  echo "language:  $CHANGE_LANG"
   # Provenance for the one non-model input. A report saying the suite passed is
   # only checkable if the manifest names the command that was run.
   # tr, because the manifest is one field per line and a multi-line command
@@ -527,7 +533,7 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
     adapter_sha="$(sed -n 2p "$shaf" 2>/dev/null)" \
     harness_sha="$HARNESS_SHA" \
     model="$(sed -n 's/^model=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
-    "ts#=$(date +%s)"
+    language="$CHANGE_LANG" "ts#=$(date +%s)"
 }
 
 run_one() {
@@ -557,7 +563,7 @@ run_one() {
   # `complete`, so a dispatch with no completion IS the signal that a seat was
   # cut off mid-flight -- not a gap to be guessed at later.
   record_event "$RUNLOG" event=dispatch panel="$(basename "$OUT")" \
-    seat="$spec" family="$(spec_family "$spec")" slug="$sl" "ts#=$(date +%s)"
+    seat="$spec" family="$(spec_family "$spec")" slug="$sl" language="$CHANGE_LANG" "ts#=$(date +%s)"
   # ★ A roster member that is not installed is a FAILURE, not a skip. run-pass
   # prints "skipping" and moves on, which in a live review is indistinguishable
   # from a reviewer that ran and found nothing.
@@ -722,7 +728,7 @@ for row in "${skipped_rows[@]}"; do
     state=skipped "rc#=" "secs#=" "bytes#=0" "prompt_bytes#=0" \
     "v#=$SLOTS_SCHEMA_V" prompt_sha= \
     adapter_sha="$(adapter_sha "$(spec_agent "$sk_spec")")" \
-    harness_sha="$HARNESS_SHA" model= "ts#=$(date +%s)"
+    harness_sha="$HARNESS_SHA" model= language="$CHANGE_LANG" "ts#=$(date +%s)"
 done
 
 i=0; running=0

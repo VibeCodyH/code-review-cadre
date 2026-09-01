@@ -4604,6 +4604,102 @@ STANDALONE=$(CADRE_AGENTS_D="$DM/agents.d" PATH="$DM/bin:$PATH" \
 check "model: cadre_model is a no-op outside cadre" \
   "grep -q 'a finding' <<<\"\$STANDALONE\" && ! grep -qi 'cadre_model\|CADRE_RUN_META' <<<\"\$STANDALONE\""
 
+echo "== ★ #9: language on the run record, observational slice in the report =="
+# Deterministic detection: count desc, then name asc; docs never count; EMPTY
+# when nothing recognisable changed.
+DLG=$(mktemp -d -p "$SANDBOX"); new_repo "$DLG/r"
+LB=$(git -C "$DLG/r" rev-parse HEAD)
+printf 'x\n' > "$DLG/r/a.py"; printf 'x\n' > "$DLG/r/b.py"; printf 'x\n' > "$DLG/r/c.js"
+printf 'x\n' > "$DLG/r/d.md"; printf 'x\n' > "$DLG/r/e.md"; printf 'x\n' > "$DLG/r/f.md"
+git -C "$DLG/r" add -A; git -C "$DLG/r" commit -qm langs
+LANGF="bash -c 'source \"$ROOT/lib/common.sh\"; detect_language \"\$1\" \"\$2\" HEAD' _"
+check "lang: the dominant code language wins, docs do not count" \
+  "[ \"\$($LANGF '$DLG/r' '$LB')\" = python ]"
+git -C "$DLG/r" checkout -q "$LB" 2>/dev/null; git -C "$DLG/r" checkout -q -B tie
+printf 'x\n' > "$DLG/r/x.rs"; printf 'x\n' > "$DLG/r/y.go"
+git -C "$DLG/r" add -A; git -C "$DLG/r" commit -qm tie
+check "lang: a tie resolves by name, the same way every time" \
+  "[ \"\$($LANGF '$DLG/r' '$LB')\" = go ]"
+git -C "$DLG/r" checkout -q "$LB" 2>/dev/null; git -C "$DLG/r" checkout -q -B docsonly
+printf 'x\n' > "$DLG/r/README.md"; git -C "$DLG/r" add -A; git -C "$DLG/r" commit -qm docs
+check "lang: nothing recognisable is EMPTY, not a guess" \
+  "[ -z \"\$($LANGF '$DLG/r' '$LB')\" ]"
+check "lang: no base is EMPTY too" "[ -z \"\$($LANGF '$DLG/r' '')\" ]"
+# A name git would C-quote without -z: the extension must still be seen.
+git -C "$DLG/r" checkout -q "$LB" 2>/dev/null; git -C "$DLG/r" checkout -q -B unicode
+printf 'x\n' > "$DLG/r/café.py"; git -C "$DLG/r" add -A; git -C "$DLG/r" commit -qm unicode
+check "lang: a non-ASCII filename still counts" "[ \"\$($LANGF '$DLG/r' '$LB')\" = python ]"
+
+# The panel path stamps it on the manifest and on every record line.
+DLP=$(case_dir langpanel)
+git -C "$DLP/src" checkout -qb feature; echo more >> "$DLP/src/app.js"; git -C "$DLP/src" commit -qam feat
+run_cadre "$DLP" review --roster good --synth none --base main --label lp "$DLP/src" >/dev/null
+RLP="$DLP/state/reviews/lp"
+check "lang: the manifest names it"            "grep -q '^language:  javascript$' '$RLP/manifest.txt'"
+check "lang: the dispatch event carries it"    "grep '\"event\":\"dispatch\"' '$RLP/runs.jsonl' | grep -q '\"language\":\"javascript\"'"
+check "lang: the complete event carries it"    "grep '\"event\":\"complete\"' '$RLP/runs.jsonl' | grep -q '\"language\":\"javascript\"'"
+
+# The benchmark path: two passes in two languages, each with a real base so
+# the checkout has a change to classify. The slice appears; a single-language
+# sweep prints no slice at all.
+# `finder`, not `terse`: terse deliberately returns no review, so a pass that
+# actually runs it is unusable and lends nothing to the slice.
+DL2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DL2" finder "$HITBOTH" "$HITBOTH"
+SLT=$(slug finder); JA=$(slug good); JB=$(slug good2)
+echo change >> "$DL2/checkout/app.js"; git -C "$DL2/checkout" commit -qam change
+S1=$(git -C "$DL2/checkout" rev-parse HEAD); B1=$(git -C "$DL2/checkout" rev-parse HEAD~1)
+new_repo "$DL2/checkout2"; printf 'print(1)\n' > "$DL2/checkout2/main.py"
+git -C "$DL2/checkout2" add -A; git -C "$DL2/checkout2" commit -qm py
+S2=$(git -C "$DL2/checkout2" rev-parse HEAD); B2=$(git -C "$DL2/checkout2" rev-parse HEAD~1)
+mkdir -p "$DL2/home/p2"
+printf '%s\n' "$HITBOTH" > "$DL2/home/p2/$SLT-run1.by-$JA.grade.json"
+printf '%s\n' "$HITBOTH" > "$DL2/home/p2/$SLT-run1.by-$JB.grade.json"
+{ printf 'p1|%s|%s|%s|%s\n' "$S1" "$DL2/checkout" "$B1" "$DL2/home/k.md"
+  printf 'p2|%s|%s|%s|%s\n' "$S2" "$DL2/checkout2" "$B2" "$DL2/home/k.md"
+} > "$DL2/home/passes.conf"
+rm -f "$DL2/home/p1/$SLT-run1.md"                 # make both passes actually run
+run_gaunt_all "$DL2" good,good2 finder >/dev/null 2>&1 || true
+RL2=$(ls "$DL2/home"/report-*.md | head -1)
+check "lang: each pass names its language"     "grep -q 'Language: \`javascript\`' '$RL2' && grep -q 'Language: \`python\`' '$RL2'"
+check "lang: the slice renders across two languages" "grep -q '^## By language (observational)' '$RL2'"
+check "lang: one row per language, blocking items only" \
+  "grep -qF '| \`javascript\` | 1 | 2 | 2 | 0 |' '$RL2' && grep -qF '| \`python\` | 1 | 2 | 2 | 0 |' '$RL2'"
+check "lang: and it says what it is not"       "grep -q 'NOT a' '$RL2' && grep -q 'confounded' '$RL2'"
+# A docs-only pass detects nothing, is said so, and is listed apart in the
+# slice rather than folded into a language.
+new_repo "$DL2/checkout3"; printf 'notes\n' > "$DL2/checkout3/NOTES.md"
+git -C "$DL2/checkout3" add -A; git -C "$DL2/checkout3" commit -qm docs
+S3=$(git -C "$DL2/checkout3" rev-parse HEAD); B3=$(git -C "$DL2/checkout3" rev-parse HEAD~1)
+mkdir -p "$DL2/home/p3"
+printf '%s\n' "$HITBOTH" > "$DL2/home/p3/$SLT-run1.by-$JA.grade.json"
+printf '%s\n' "$HITBOTH" > "$DL2/home/p3/$SLT-run1.by-$JB.grade.json"
+printf 'p3|%s|%s|%s|%s\n' "$S3" "$DL2/checkout3" "$B3" "$DL2/home/k.md" >> "$DL2/home/passes.conf"
+run_gaunt_all "$DL2" good,good2 finder >/dev/null 2>&1 || true
+RL2=$(ls -t "$DL2/home"/report-*.md | head -1)
+check "lang: a docs-only change reads 'none detected'" "grep -q '^Language: none detected' '$RL2'"
+check "lang: and is listed apart in the slice" "grep -qF '| none detected / not recorded | 1 | - | - | - |' '$RL2'"
+# ★ The LAST completion decides. An older event naming a language must not
+# outlive a newer one that recorded none.
+printf '{"event":"complete","pass":"p3","seat":"finder","slug":"%s","run":1,"state":"ok","language":"javascript"}\n{"event":"complete","pass":"p3","seat":"finder","slug":"%s","run":1,"state":"ok","language":""}\n' "$SLT" "$SLT" > "$DL2/home/p3/runs.jsonl"
+CADRE_HOME="$DL2/home" CADRE_WORK="$DL2/work" CADRE_AGENTS_D="$DL2/agents.d" CADRE_JUDGE=good,good2 PATH="$DL2/bin:$PATH" \
+  "$ROOT/bin/cadre" grade finder 1 p3 >/dev/null 2>&1 || true
+RL3=$(ls -t "$DL2/home"/report-*-only-p3-*.md | head -1)
+check "lang: a stale earlier value is not resurrected" "grep -q '^Language: none detected' '$RL3' && ! grep -q 'Language: \`javascript\`' '$RL3'"
+# Exactly ONE recorded language is not a split: no slice.
+DL1=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DL1" finder "$HITBOTH" "$HITBOTH"
+echo change >> "$DL1/checkout/app.js"; git -C "$DL1/checkout" commit -qam change
+S4=$(git -C "$DL1/checkout" rev-parse HEAD); B4=$(git -C "$DL1/checkout" rev-parse HEAD~1)
+printf 'p1|%s|%s|%s|%s\n' "$S4" "$DL1/checkout" "$B4" "$DL1/home/k.md" > "$DL1/home/passes.conf"
+rm -f "$DL1/home/p1/$SLT-run1.md"
+run_gaunt_all "$DL1" good,good2 finder >/dev/null 2>&1 || true
+RL1=$(ls "$DL1/home"/report-*.md | head -1)
+check "lang: one recorded language renders no slice" "grep -q 'Language: \`javascript\`' '$RL1' && ! grep -q 'By language' '$RL1'"
+# And a pass with no record at all says so.
+DL0=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DL0" terse "$HITBOTH" "$HITBOTH"
+run_gaunt "$DL0" good,good2 terse >/dev/null 2>&1 || true
+RL0=$(ls "$DL0/home"/report-*.md | head -1)
+check "lang: no record reads 'not recorded'"   "grep -q '^Language: not recorded' '$RL0'"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
