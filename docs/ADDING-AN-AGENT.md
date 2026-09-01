@@ -125,6 +125,20 @@ text, so falling back is the safe direction), and declaring `ok` will not
 rescue an artifact that came back empty. It is also a no-op when `agentcall`
 runs outside cadre, so it costs a standalone caller nothing.
 
+**`cadre_model <id[,id...]>`** rides the same channel and carries the model(s)
+that actually served the run. Most adapters never need it: the spec pins the
+model (`codex:gpt-5`) and the row already says what ran. It exists for a seat
+whose model slot is spent on something else — `claudecr:high` holds the effort
+level, so the CLI's *default* model serves it, and that default can change
+between two passes of one sweep with nothing in the artifacts recording the
+split. Declare it only from something the CLI *reported* (`claudecr` reads
+`modelUsage` out of `--output-format json`); never from a setting, a flag you
+passed, or a guess. If you cannot read it, say nothing — the field stays EMPTY,
+and EMPTY means "not determined", which is a true statement where a default
+would be a claim. It lands on `runs.jsonl`, on column 12 of `slots.tsv`, and in
+the report's Receipts table, and `cadre receipts` names any seat that ran under
+more than one model instead of adding those rows together.
+
 The one thing this asks of you: **do not append your own trailing summary to a
 review.** The check is edge-anchored, so a "review complete, 0 issues" footer your
 wrapper adds would satisfy it on behalf of a model that said nothing.

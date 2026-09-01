@@ -96,6 +96,20 @@ cadre_state() {  # cadre_state <ok|degraded|inconclusive|failed> [note]
   [ -n "${2:-}" ] && printf 'note=%s\n' "$(printf '%s' "$2" | tr -d '\000-\037')" >> "$CADRE_RUN_META"
   return 0
 }
+# cadre_model <id[,id...]>: the model(s) that actually served the run, for an
+# adapter whose spec does not pin one (#51). claudecr's model slot is spent on
+# the effort level, so the seat inherits the CLI's default model and a row
+# saying `claudecr:high` says nothing about which model ran it. Same channel,
+# same trust: it lands on the run record and the slots.tsv row. Never written
+# from a default -- an adapter that cannot read the served model says nothing,
+# and the field stays EMPTY. Control characters (tab included) are stripped
+# because the row is tab-separated.
+cadre_model() {
+  [ -n "${CADRE_RUN_META:-}" ] || return 0
+  [ -n "${1:-}" ] || return 0
+  printf 'model=%s\n' "$(printf '%s' "$1" | tr -d '\000-\037')" >> "$CADRE_RUN_META"
+  return 0
+}
 
 # --print-command: print the native invocation instead of running it.
 DRY="${AGENTCALL_DRY:-}"
