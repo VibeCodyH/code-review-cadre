@@ -513,6 +513,11 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
   [ -s "$art" ] || art="$OUT/$sl.md.failed"
   bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
   shaf="$OUT/.sha-$sl"
+  # ★ `model` is what the ADAPTER declared over the meta channel (cadre_model,
+  # #51), read before the caller deletes the file. EMPTY unless declared: the
+  # spec already names the model for every seat that pins one, and this field
+  # exists for the seat that cannot -- so a value here is a measurement of what
+  # served, never a copy of what was asked for.
   record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
     seat="$spec" family="$(spec_family "$spec")" slug="$sl" \
     state="$state" "rc#=$rc" "secs#=$secs" "bytes#=${bytes:-0}" \
@@ -520,7 +525,9 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
     "v#=$SLOTS_SCHEMA_V" \
     prompt_sha="$(sed -n 1p "$shaf" 2>/dev/null)" \
     adapter_sha="$(sed -n 2p "$shaf" 2>/dev/null)" \
-    harness_sha="$HARNESS_SHA" "ts#=$(date +%s)"
+    harness_sha="$HARNESS_SHA" \
+    model="$(sed -n 's/^model=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
+    "ts#=$(date +%s)"
 }
 
 run_one() {
@@ -715,7 +722,7 @@ for row in "${skipped_rows[@]}"; do
     state=skipped "rc#=" "secs#=" "bytes#=0" "prompt_bytes#=0" \
     "v#=$SLOTS_SCHEMA_V" prompt_sha= \
     adapter_sha="$(adapter_sha "$(spec_agent "$sk_spec")")" \
-    harness_sha="$HARNESS_SHA" "ts#=$(date +%s)"
+    harness_sha="$HARNESS_SHA" model= "ts#=$(date +%s)"
 done
 
 i=0; running=0
@@ -889,16 +896,21 @@ slot_rows=$(
   # no completion event at all. Reading it from the record would blank exactly
   # that row and lose the provenance for the only row whose provenance is in
   # question.
+  # ★ Column 12, `model`, is the served model the adapter declared (#51) and
+  # EMPTY otherwise. Appended after harness_sha so every positional reader of
+  # $1..$11 is untouched; the schema version does not move, because no existing
+  # column changed meaning -- `v` marks a change to what a column MEANS, not
+  # to how many there are.
   all_complete=$(record_rows "$RUNLOG" complete seat family state bytes secs prompt_bytes \
-                   prompt_sha adapter_sha harness_sha)
+                   prompt_sha adapter_sha harness_sha model)
   for spec in "${reviewers[@]}"; do
     rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
     rec_row="${rec_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha <<< "$rec_row"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha r_model <<< "$rec_row"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
       "${r_state:-failed}" "${r_bytes:-0}" "$r_secs" "$r_prompt" \
-      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}"
+      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}" "$r_model"
   done
   # Skipped seats come from the same stream, for the same reason: one source, so
   # a change to how spend is recorded cannot land in one renderer and not the
@@ -908,11 +920,11 @@ slot_rows=$(
     IFS=$'\t' read -r spec _gate _reason <<< "$row"
     rec_row=$(printf '%s\n' "$all_complete" | awk -F '\t' -v s="$spec" '$1 == s { print; exit }')
     rec_row="${rec_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha <<< "$rec_row"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    IFS=$'\034' read -r _seat r_fam r_state r_bytes r_secs r_prompt r_psha r_asha r_hsha r_model <<< "$rec_row"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(basename "$OUT")" "$spec" "${r_fam:-$(spec_family "$spec")}" \
       "${r_state:-skipped}" "${r_bytes:-0}" "$r_secs" "${r_prompt:-0}" \
-      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}"
+      "$SLOTS_SCHEMA_V" "$r_psha" "$r_asha" "${r_hsha:-$HARNESS_SHA}" "$r_model"
   done
 )
 printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
@@ -921,8 +933,8 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
   echo
   echo "## Receipts"
   echo
-  echo "| seat | status | secs | prompt KB | review KB | est. tokens |"
-  echo "|---|---|---|---|---|---|"
+  echo "| seat | model | status | secs | prompt KB | review KB | est. tokens |"
+  echo "|---|---|---|---|---|---|---|"
   total_secs=0; have_secs=0; total_prompt=0; have_prompt=0; total_review=0; total_est=0
   # ★ The SAME rows slots.tsv got, not a second query against the record. Both
   # views owe their row set to the roster, so a seat dispatched and never
@@ -931,7 +943,7 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
     # Tabs are IFS whitespace, so plain `read` collapses the empty secs field in
     # a skipped row. Translate to a non-whitespace delimiter before splitting.
     slot_row="${slot_row//$'\t'/$'\034'}"
-    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes _v _psha _asha _hsha <<< "$slot_row"
+    IFS=$'\034' read -r _run spec _fam st bytes secs prompt_bytes _v _psha _asha _hsha model <<< "$slot_row"
     prompt_kb=""
     if [ -n "${prompt_bytes:-}" ]; then
       prompt_kb=$(awk -v n="$prompt_bytes" 'BEGIN { printf "%.1f", n / 1024 }')
@@ -942,14 +954,16 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
     total_est=$((total_est + est_tokens))
     [ -n "${secs:-}" ] && { total_secs=$((total_secs + secs)); have_secs=1; }
     total_review=$((total_review + ${bytes:-0}))
-    printf '| `%s` | %s | %s | %s | %s | %s |\n' \
-      "$spec" "$st" "${secs:-}" "$prompt_kb" "$review_kb" "$est_tokens"
+    # The model column is blank for every seat that pins its model in the spec;
+    # it is filled only by an adapter that read the served model (#51).
+    printf '| `%s` | %s | %s | %s | %s | %s | %s |\n' \
+      "$spec" "${model:-}" "$st" "${secs:-}" "$prompt_kb" "$review_kb" "$est_tokens"
   done <<< "$slot_rows"
   total_secs_display=""; [ "$have_secs" -eq 1 ] && total_secs_display="$total_secs"
   total_prompt_kb=""; [ "$have_prompt" -eq 1 ] && \
     total_prompt_kb=$(awk -v n="$total_prompt" 'BEGIN { printf "%.1f", n / 1024 }')
   total_review_kb=$(awk -v n="$total_review" 'BEGIN { printf "%.1f", n / 1024 }')
-  printf '| **panel total** | | %s | %s | %s | %s |\n' \
+  printf '| **panel total** | | | %s | %s | %s | %s |\n' \
     "$total_secs_display" "$total_prompt_kb" "$total_review_kb" "$total_est"
   echo
   echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."

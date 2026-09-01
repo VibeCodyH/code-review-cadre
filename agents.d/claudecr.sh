@@ -34,12 +34,18 @@ is not a peer of one that cannot. Recorded, not assumed away -- it is what
 you are measuring when you pick this seat.
 Same ro rails as claude.sh: --strict-mcp-config, advisorModel="", and the
 CLAUDE_DENY list, which is why that adapter must stay loaded.
-★ The seat inherits the CLI's DEFAULT model, so the per-model weekly tier it
-spends is whatever ~/.claude/settings.json points at -- and that can change
-between passes of one sweep, silently. Pinning the model for a benchmark run
-is the caller's job today. When that tier runs out the CLI says "You've
-reached your <Model> limit. Switch to another model to continue.", which
-cadre reads as a usage window and not as a measurement (#48).
+★ The seat inherits the CLI's DEFAULT model: the spec's model slot is spent
+on the level, and --model is deliberately NOT added (#51, decided: record it,
+don't control it). The adapter asks for --output-format json and reads the
+served model out of `modelUsage`, then declares it with cadre_model, so the
+run record and the slots.tsv row name what actually ran -- every model that
+served, comma-joined, since high and xhigh dispatch subagents. A sweep whose
+default model changes mid-run shows up as two rows in `cadre receipts`, not
+as one averaged number. If the CLI's output is not the JSON object (older CLI,
+no jq on the box), the text passes through as before and the field stays
+EMPTY -- never a default. When a model's weekly tier runs out the CLI says
+"You've reached your <Model> limit. Switch to another model to continue.",
+which cadre reads as a usage window and not as a measurement (#48).
 NOTES
 }
 
@@ -86,7 +92,7 @@ run_claudecr() {
   fi
   local arg; arg="/code-review $level"$'\n\n'"$(claudecr_output_contract)"
   if [ -n "$DRY" ]; then
-    _run timeout -k 30 "$TIMEOUT" claude -p "$arg" "${ro[@]}"
+    _run timeout -k 30 "$TIMEOUT" claude -p "$arg" --output-format json "${ro[@]}"
     return 0
   fi
   # ★ The skill reviews HEAD against its parent, and nothing else (probed: a
@@ -108,8 +114,25 @@ run_claudecr() {
   fi
   # < /dev/null: with nothing on stdin the CLI waits 3s and prints a warning
   # that would become line 1 of every review.
-  out=$( cd "$dir" && timeout -k 30 "$TIMEOUT" claude -p "$arg" "${ro[@]}" < /dev/null 2>&1 ); rc=$?
+  # ★ JSON, for one field: `modelUsage` names the model(s) that actually served
+  # the call, which is the only honest source for a seat that pins none (#51).
+  # stderr is kept out of the object (a stray line ahead of it and jq sees
+  # nothing, the cursor.sh rule) and appended afterwards, so a CLI error still
+  # reaches the review text the way it did under 2>&1.
+  local errf models; errf=$(mktemp)
+  out=$( cd "$dir" && timeout -k 30 "$TIMEOUT" claude -p "$arg" --output-format json "${ro[@]}" < /dev/null 2>"$errf" ); rc=$?
   [ -n "$orig" ] && git -C "$dir" checkout -q --detach "$orig" 2>/dev/null
+  # Anything that is not the result object passes through untouched: an older
+  # CLI printing plain text, a box without jq. The model field stays EMPTY then,
+  # which is the truth -- it was not determined.
+  if command -v jq >/dev/null 2>&1 \
+     && printf '%s' "$out" | jq -e 'type == "object" and has("result")' >/dev/null 2>&1; then
+    models=$(printf '%s' "$out" | jq -r '(.modelUsage // {}) | keys | join(",")' 2>/dev/null)
+    [ -n "$models" ] && cadre_model "$models"
+    out=$(printf '%s' "$out" | jq -r '.result // ""')
+  fi
+  [ -s "$errf" ] && out="$out"$'\n'"$(cat "$errf")"
+  rm -f "$errf"
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     # Whatever arrived before the kill is a review, cut short: the partial
     # contract, same as codex.sh and grok.sh. Nonzero as well as the marker.

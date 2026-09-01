@@ -40,7 +40,7 @@ PANELS="$OUT_D/panels.tsv"
 # version and no input hashes, and inventing either would let it compare equal
 # to a row that was actually measured.
 {
-  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tv\tprompt_sha\tadapter_sha\tharness_sha\tsource\n'
+  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tv\tprompt_sha\tadapter_sha\tharness_sha\tmodel\tsource\n'
   for d in "$REVIEWS"/*/; do
     [ -d "$d" ] || continue
     p=$(basename "$d")
@@ -53,7 +53,7 @@ PANELS="$OUT_D/panels.tsv"
       # and awk yields EMPTY for each -- which is the right answer, and the one
       # `cadre receipts` groups on. Nothing here backfills them.
       awk -F '\t' -v OFS='\t' -v panel="$p" '
-        $2 != "" { print panel, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, "recorded" }
+        $2 != "" { print panel, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, "recorded" }
       ' "$d/slots.tsv"
       continue
     fi
@@ -93,7 +93,7 @@ PANELS="$OUT_D/panels.tsv"
       fi
       bytes=0
       [ -n "$art" ] && bytes=$(wc -c < "$art" | tr -d ' ')
-      printf '%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\treconstructed\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\t\treconstructed\n' \
         "$p" "$spec" "$(spec_family "$spec")" "$st" "$bytes"
     done
   done
@@ -118,7 +118,7 @@ PANELS="$OUT_D/panels.tsv"
     # empty -- which matters, because tab is IFS WHITESPACE and a plain read
     # collapses the empty runs further right. The trailing names are declared to
     # match the header, not relied on.
-    while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _v _psha _asha _hsha _src; do
+    while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _v _psha _asha _hsha _model _src; do
       [ "$pp" = "$p" ] || continue
       # A gated-off seat is retained in slots.tsv as operational provenance but
       # was never on the reviewing panel, so it cannot pad the seat denominator.

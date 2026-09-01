@@ -263,6 +263,7 @@ for r in "${reviewers[@]}"; do
       "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" \
       "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
       adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
+      model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       "ts#=$(date +%s)"
     # Same rule as the panel path: the declaration is consumed, the state lives
     # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this

@@ -1196,6 +1196,19 @@ cmd_receipts() {
       # is counted across every row the command was pointed at (#37).
       if (NF >= 11 && $11 != "") { if (!($11 in harness)) harness[$11] = 1 }
       else no_harness++
+      # ★ Served model, per SEAT (#51). The spec pins the model for most seats
+      # and this column is EMPTY for them; it is filled by an adapter that read
+      # what actually ran -- claudecr, whose model slot holds the effort level.
+      # One seat under two models is a benchmark split across a boundary the
+      # spec cannot show, so it is named the way a harness split is named.
+      if (NF >= 12 && $12 != "") {
+        named_model++
+        mk = $2 SUBSEP $12
+        if (!(mk in seatmodel)) {
+          seatmodel[mk] = 1; nmodels[$2]++
+          models_of[$2] = (models_of[$2] == "" ? "" : models_of[$2] ", ") $12
+        }
+      }
     }
     END {
       for (key in keys) {
@@ -1208,6 +1221,8 @@ cmd_receipts() {
       printf "M\t%d\n", missing_prompt
       for (h in harness) printf "H\t%s\n", h
       printf "N\t%d\n", no_harness + 0
+      printf "D\t%d\n", named_model + 0
+      for (s in nmodels) if (nmodels[s] > 1) printf "S\t%s\t%d\t%s\n", s, nmodels[s], models_of[s]
     }
   ' "${slot_files[@]}")
 
@@ -1257,6 +1272,23 @@ cmd_receipts() {
     else
       echo "Harness: every row that names one ran against $harness_list."
     fi
+  fi
+
+  # ★ Same both-branches rule as the harness line (#51). Only rows that NAME a
+  # served model take part: a seat that pins its model in the spec has nothing
+  # to agree or disagree about here, and a silent line would read as a check
+  # that never ran.
+  local named_model model_splits
+  named_model=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "D" { print $2 }')
+  model_splits=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "S"' | sort -t "$tab" -k2,2)
+  if [ -n "$model_splits" ]; then
+    echo
+    printf '%s\n' "$model_splits" | awk -v FS="$tab" '{
+      printf "Model: seat %s ran under %d models (%s). Those rows are one seat measured twice, not one measurement; do not add them together.\n", $2, $3, $4
+    }'
+  elif [ "${named_model:-0}" -gt 0 ]; then
+    echo
+    echo "Model: every seat that names its served model ran under one model."
   fi
   if [ "${no_harness:-0}" -gt 0 ]; then
     [ "${nharness:-0}" -gt 0 ] || echo

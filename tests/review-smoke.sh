@@ -424,7 +424,7 @@ R="$D/state/reviews/$(ls "$D/state/reviews" | head -1)"
 check "gate: below threshold exits clean" "[ $RC -eq 0 ]"
 check "gate: skip is loud in report"      "grep -qF -- '- \`good\` — SKIPPED by its roster gate (?min-lines=2: diff is 1 lines).' '$R/report.md'"
 check "gate: skipped slot has zero spend" "grep -qP '\tgood\t.*\tskipped\t0\t\t0\t2\t' '$R/slots.tsv'"
-check "gate: receipt keeps empty seconds"  "grep -qF '| \`good\` | skipped |  | 0.0 | 0.0 | 0 |' '$R/report.md'"
+check "gate: receipt keeps empty seconds"  "grep -qF '| \`good\` |  | skipped |  | 0.0 | 0.0 | 0 |' '$R/report.md'"
 check "gate: console counts the skip"      "grep -q '0 ok, 0 degraded, 0 inconclusive, 0 failed, 1 skipped' <<<\"\$OUT\""
 check "gate: no prompt reached the seat"   "[ ! -e '$R/good.md' ]"
 
@@ -1894,7 +1894,7 @@ check "timing and prompt captured"  "grep -qP '\tok\t[0-9]+\t[0-9]+\t[1-9][0-9]*
 check "failed seat keeps its prompt"  "grep -qP '\tfailed\t[0-9]+\t[0-9]*\t[1-9][0-9]*\t2\t' '$R/slots.tsv'"
 check "failed seat's time is measured, not blank" \
   "grep -qP '\tfailed\t[0-9]+\t[0-9]+\t[1-9][0-9]*\t2\t' '$R/slots.tsv'"
-check "report has receipt table"    "grep -qF '| seat | status | secs | prompt KB | review KB | est. tokens |' '$R/report.md'"
+check "report has receipt table"    "grep -qF '| seat | model | status | secs | prompt KB | review KB | est. tokens |' '$R/report.md'"
 check "receipt caveat is explicit" "grep -qF '> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill.' '$R/report.md'"
 # ★ A seat that produced NO artifact must still appear. Deriving rows from
 # filenames instead of the roster would silently drop exactly the failure worth
@@ -2104,7 +2104,7 @@ rm -f "$R/slots.tsv"
 OUT=$(run_cadre "$D" dataset "$D/dataset" 2>&1)
 check "aggregate walks the reviews" "[ -s '$D/dataset/slots.tsv' ]"
 check "it reconstructs the panel"   "grep -q reconstructed '$D/dataset/slots.tsv'"
-check "unknown measures stay empty" "grep -qP '\t[0-9]+\t\t\t\t\t\t\treconstructed\$' '$D/dataset/slots.tsv'"
+check "unknown measures stay empty" "grep -qP '\t[0-9]+\t\t\t\t\t\t\t\treconstructed\$' '$D/dataset/slots.tsv'"
 # ★ Explicitly: NOT zeroes. A reconstructed row has neither measurement, and
 # writing 0 would average like a real value and drag every mean toward the floor.
 check "never a fabricated sec zero" "! grep -qP '\t0\t\treconstructed\$' '$D/dataset/slots.tsv'"
@@ -2117,7 +2117,7 @@ mkdir -p "$D/state/reviews/ds-skip"
 printf 'ds-skip\tgood\tstub-good\tok\t100\t1\t100\nds-skip\tgood2\tstub-good2\tskipped\t0\t\t0\n' > "$D/state/reviews/ds-skip/slots.tsv"
 printf 'base-tree: aaaaaaaa11111111\nreviewed-tree: bbbbbbbb22222222\n' > "$D/state/reviews/ds-skip/manifest.txt"
 OUT=$(run_cadre "$D" dataset "$D/dataset" 2>&1)
-check "aggregate keeps skipped slot row" "grep -qP 'ds-skip\tgood2\t.*\tskipped\t0\t\t0\t\t\t\t\trecorded\$' '$D/dataset/slots.tsv'"
+check "aggregate keeps skipped slot row" "grep -qP 'ds-skip\tgood2\t.*\tskipped\t0\t\t0\t\t\t\t\t\trecorded\$' '$D/dataset/slots.tsv'"
 check "aggregate excludes skip from seats" "grep -qP 'ds-skip\t\S+\t1\t1\t0\t0\t0\t' '$D/dataset/panels.tsv'"
 
 RF="$D/receipt-fixtures"
@@ -4448,6 +4448,119 @@ check "meta: cadre_state is a no-op outside cadre" \
   "grep -q 'a partial finding' <<<\"\$STANDALONE\""
 check "meta: and it says nothing on the way through" \
   "! grep -qi 'cadre_state\|CADRE_RUN_META' <<<\"\$STANDALONE\""
+
+echo "== ★ #51: the served model is a field on the record and the row =="
+# An adapter whose spec pins no model declares the one that actually served it.
+# The fixture reads the model from a file so two panels can differ with one
+# adapter -- which is exactly the mid-sweep default-model change #51 is about.
+DM=$(case_dir modelfield)
+cat > "$DM/agents.d/modeller.sh" <<A
+run_modeller() {
+  cadre_model "\$(cat "$DM/served-model")"
+  echo "**should-fix**"
+  echo "app.js:1 -- a finding"
+  echo "Verdict: should-fix"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$DM/bin/modeller"; chmod +x "$DM/bin/modeller"
+git -C "$DM/src" checkout -qb feature
+echo committed >> "$DM/src/app.js"; git -C "$DM/src" commit -qam feat
+echo model-alpha > "$DM/served-model"
+run_cadre "$DM" review --roster modeller,good --synth none --base main --label m1 "$DM/src" >/dev/null
+RM1="$DM/state/reviews/m1"
+check "model: the declaration reaches the record" \
+  "grep -q '\"model\":\"model-alpha\"' '$RM1/runs.jsonl'"
+check "model: and slots.tsv column 12" \
+  "awk -F'\t' '\$2 == \"modeller\" && \$12 == \"model-alpha\" { f=1 } END { exit !f }' '$RM1/slots.tsv'"
+# ★ EMPTY, never a default: the pinned seat's spec already says what ran, and
+# a value copied from it would read as a measurement.
+check "model: a seat that declares nothing is EMPTY" \
+  "awk -F'\t' '\$2 == \"good\" && NF == 12 && \$12 == \"\" { f=1 } END { exit !f }' '$RM1/slots.tsv'"
+check "model: columns 1-11 did not move" \
+  "awk -F'\t' '\$2 == \"modeller\" && \$4 == \"ok\" && \$8 == 2 && \$11 ~ /^[0-9a-f]{12}\$/ { f=1 } END { exit !f }' '$RM1/slots.tsv'"
+check "model: the report's receipts name it" \
+  "grep -qF '| \`modeller\` | model-alpha | ok |' '$RM1/report.md'"
+check "model: and leave the pinned seat blank" \
+  "grep -qF '| \`good\` |  | ok |' '$RM1/report.md'"
+check "model: the meta file does not outlive the run" \
+  "! ls '$RM1'/*.meta >/dev/null 2>&1"
+# The same seat under a different default: two rows, named as such.
+echo model-beta > "$DM/served-model"
+run_cadre "$DM" review --roster modeller,good --synth none --base main --label m2 "$DM/src" >/dev/null
+OUT=$(run_cadre "$DM" receipts "$DM/state/reviews")
+check "model: receipts name the seat that ran under two models" \
+  "grep -q '^Model: seat modeller ran under 2 models (model-alpha, model-beta)' <<<\"\$OUT\""
+check "model: and do not add them together" \
+  "grep -q 'do not add them together' <<<\"\$OUT\""
+check "model: the pinned seat is not accused" \
+  "! grep -q 'seat good ran under' <<<\"\$OUT\""
+# ★ Both branches: agreement is said out loud too, and a table with no model
+# column at all says nothing rather than agreeing about nothing.
+OUT=$(run_cadre "$DM" receipts "$RM1")
+check "model: one model is stated, not implied" \
+  "grep -q '^Model: every seat that names its served model ran under one model' <<<\"\$OUT\""
+mkdir -p "$DM/nomodel"
+printf 'r1\tcodex:a\topenai\tok\t1024\t7\t2048\t2\taaaaaaaaaaaa\tbbbbbbbbbbbb\tcccccccccccc\n' > "$DM/nomodel/slots.tsv"
+OUT=$(run_cadre "$DM" receipts "$DM/nomodel")
+check "model: no column, no Model line" "! grep -q '^Model:' <<<\"\$OUT\""
+# The dataset carries the column, before `source`.
+OUT=$(run_cadre "$DM" dataset "$DM/dataset" 2>&1)
+check "model: dataset header names the column" \
+  "head -1 '$DM/dataset/slots.tsv' | grep -qP '\tharness_sha\tmodel\tsource\$'"
+check "model: dataset row carries it"  "grep -qP '^m1\tmodeller\t.*\tmodel-alpha\trecorded\$' '$DM/dataset/slots.tsv'"
+check "model: dataset pinned seat is empty" "grep -qP '^m1\tgood\t.*\t[0-9a-f]{12}\t\trecorded\$' '$DM/dataset/slots.tsv'"
+
+# The benchmark path writes the same field.
+DMB=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$DMB" modeller "$HITBOTH" "$HITBOTH"
+cp "$DM/agents.d/modeller.sh" "$DMB/agents.d/"; cp "$DM/bin/modeller" "$DMB/bin/"
+echo model-alpha > "$DM/served-model"
+rm -f "$DMB/home/p1/$(slug modeller)-run1.md"
+run_gaunt "$DMB" good,good2 modeller >/dev/null 2>&1 || true
+check "model: the benchmark record carries it" \
+  "grep -q '\"model\":\"model-alpha\"' '$DMB/home/p1/runs.jsonl'"
+
+# ★ claudecr is the seat this exists for. The stub answers as the CLI does under
+# --output-format json; the adapter must unwrap the review and declare every
+# model in modelUsage -- high and xhigh dispatch subagents, so there can be more
+# than one, and naming only the first would hide exactly that.
+CJ=$(case_dir claudecr-json); cp "$ROOT/agents.d/claudecr.sh" "$ROOT/agents.d/claude.sh" "$CJ/agents.d/"
+cat > "$CJ/bin/claude" <<S
+#!/bin/sh
+printf '%s\n' "\$@" > "$CJ/claude.argv"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"**blocking**\\\\nsrc/x.js:3 -- missing await\\\\nVerdict: blocking","modelUsage":{"claude-test-1":{"inputTokens":1},"claude-sub-2":{"inputTokens":1}}}\n'
+S
+chmod +x "$CJ/bin/claude"
+CJM=$(mktemp -d)
+OUT=$(CADRE_RUN_META="$CJM/state" CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: asks for the JSON result"        "grep -qx -- '--output-format' '$CJ/claude.argv' && grep -qx json '$CJ/claude.argv'"
+check "claudecr: unwraps the review text"         "grep -q '^src/x.js:3 -- missing await' <<<\"\$OUT\" && [ $RC -eq 0 ]"
+check "claudecr: and none of the envelope"        "! grep -q 'modelUsage\|\"result\"' <<<\"\$OUT\""
+check "claudecr: declares every served model"     "grep -qx 'model=claude-sub-2,claude-test-1' '$CJM/state'"
+# An error object still carries its text, and the exit code still governs.
+cat > "$CJ/bin/claude" <<'S'
+#!/bin/sh
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"You have reached your Opus limit. Switch to another model to continue.","modelUsage":{}}\n'
+exit 1
+S
+rm -f "$CJM/state"
+OUT=$(CADRE_RUN_META="$CJM/state" CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: an error object keeps its text"  "grep -q 'reached your Opus limit' <<<\"\$OUT\" && [ $RC -ne 0 ]"
+check "claudecr: and an empty modelUsage declares nothing" "[ ! -e '$CJM/state' ]"
+# Plain text (an older CLI, or no jq) passes through and leaves the field
+# undetermined -- never defaulted from a setting.
+printf '#!/bin/sh\necho "**nit**"\necho "x.js:1 -- t"\necho "Verdict: nit"\n' > "$CJ/bin/claude"
+OUT=$(CADRE_RUN_META="$CJM/state" CADRE_AGENTS_D="$CJ/agents.d" PATH="$CJ/bin:$PATH" \
+  "$ROOT/bin/agentcall" claudecr -d /tmp -m ro -M low 2>&1 </dev/null); RC=$?
+check "claudecr: plain text still passes through" "grep -q '^x.js:1 -- t' <<<\"\$OUT\" && [ $RC -eq 0 ]"
+check "claudecr: and the model stays undetermined" "[ ! -e '$CJM/state' ]"
+rm -rf "$CJM"
+# ★ cadre_model outside cadre is a no-op, like cadre_state.
+STANDALONE=$(CADRE_AGENTS_D="$DM/agents.d" PATH="$DM/bin:$PATH" \
+  "$ROOT/bin/agentcall" modeller -d "$DM/src" hi 2>&1)
+check "model: cadre_model is a no-op outside cadre" \
+  "grep -q 'a finding' <<<\"\$STANDALONE\" && ! grep -qi 'cadre_model\|CADRE_RUN_META' <<<\"\$STANDALONE\""
 
 echo
 echo "$PASS passed, $FAIL failed"

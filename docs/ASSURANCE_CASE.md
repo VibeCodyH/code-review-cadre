@@ -162,6 +162,12 @@ Tests: "mixed: one row per schema", "mixed: the two secs never merge",
   gets hashed. What they buy is that a comparison spanning an edit becomes
   visible instead of silent. Nothing here is a signature and nothing verifies
   a tree against a published manifest.
+- **The served-model field records, it does not control.** `claudecr` reads
+  the model out of the CLI's own result and declares it; cadre never passes
+  `--model`, so a sweep whose default changes mid-run is *marked* (two rows,
+  named by `receipts`), not refused. The value is trusted exactly as far as the
+  adapter is — same channel and same posture as `cadre_state`. Nothing here pins
+  a model for a benchmark; that is still the operator's job at sweep start.
 - **A scratch file in the tree is a source file to the harness.** Planning
   notes, TODO dumps and other author-written artifacts ride into the checkout
   like any other file — tracked, or untracked-but-not-gitignored (carried on

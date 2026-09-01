@@ -25,7 +25,7 @@ about which model reviews *better* needs that path, not this file.
 
 ## slots.tsv — one row per reviewer slot
 
-    panel  slot  family  status  bytes  secs  prompt_bytes  v  prompt_sha  adapter_sha  harness_sha  source
+    panel  slot  family  status  bytes  secs  prompt_bytes  v  prompt_sha  adapter_sha  harness_sha  model  source
 
 - **status** — `ok` / `degraded` / `inconclusive` / `failed` / `skipped`.
   `skipped` means the user-declared roster gate did not hold, so no prompt was
@@ -74,6 +74,15 @@ about which model reviews *better* needs that path, not this file.
   not be read in full. The digest of an empty read is *stable*, so a partial
   answer here would make two failed runs compare equal. This is provenance, not
   tamper-proofing — see `docs/ASSURANCE_CASE.md`.
+- **model** — the model(s) that actually served the seat, as the adapter
+  *reported* them (`cadre_model`; claudecr reads `modelUsage` from the CLI's
+  JSON result). **EMPTY for every seat whose spec pins its model** — the spec
+  already says what ran and this column is not a copy of it. It is filled only
+  where the spec cannot say: `claudecr:<level>` spends its model slot on the
+  effort level and inherits the CLI default, which can change mid-sweep. A seat
+  listed under two models is one seat measured twice, and `cadre receipts` says
+  so rather than adding the rows. Not a schema bump: `v` marks a change to what
+  a column *means*, and no existing column moved.
 - **source** — `recorded` (written live by `run-review.sh`, with status and
   timing measured and prompt size present on new rows) or `reconstructed`
   (rebuilt from artifacts after the fact). Reconstructed rows have **no timing
