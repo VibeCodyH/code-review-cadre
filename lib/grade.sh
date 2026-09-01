@@ -396,6 +396,9 @@ remove that directory and re-run."
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
+  # Per-pass blocking tallies keyed by the pass's recorded language (#9), for
+  # the observational slice at the end. One TSV line per graded pass.
+  local lang_rows="" pass_lang="" pass_bhit=0 pass_btotal=0 pass_bunres=0
   # CLEAN passes are counted apart from the keyed score all the way through:
   # they share no denominator with it and must not share a column either.
   local clean_passes=0 clean_fp=0 clean_labels="" clean_extras=""
@@ -582,6 +585,25 @@ remove that directory and re-run."
     # inference from filenames, and the two must not be confused for each other.
     local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
     pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
+    # ★ Read from the RECORD, never re-detected here: the dispatch layer saw the
+    # checkout the reviewers saw. A pass with no record, or one written before
+    # the field, says so rather than getting a value invented at grade time.
+    # ★ The LAST completion's value, not the last non-empty one: a slot can be
+    # re-dispatched, and an older event's language must not outlive a newer
+    # event that recorded none. Two nothings, told apart: a record whose last
+    # completion carries the field EMPTY detected nothing (docs-only change);
+    # a record with no field at all predates it, or there is no record.
+    local pass_lang_field=""
+    pass_lang=$(record_rows "$pass_record" complete language | tail -1)
+    grep '"event":"complete"' "$pass_record" 2>/dev/null | tail -1 | grep -q '"language":' && pass_lang_field=1
+    pass_bhit=0; pass_btotal=0; pass_bunres=0
+    if [ -n "$pass_lang" ]; then
+      { echo "Language: \`$pass_lang\` (dominant, by changed files; observational)"; echo; } >> "$report"
+    elif [ -n "$pass_lang_field" ]; then
+      { echo "Language: none detected (no recognisable source file changed)"; echo; } >> "$report"
+    else
+      { echo "Language: not recorded"; echo; } >> "$report"
+    fi
     local n
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
@@ -831,9 +853,9 @@ remove that directory and re-run."
         [ "$v" = HIT ]        && total_hit=$((total_hit + 1))
         [ "$v" = UNRESOLVED ] && total_unresolved=$((total_unresolved + 1))
         if [ "$sev" = blocking ]; then
-          blocking_total=$((blocking_total + 1))
-          [ "$v" = HIT ]        && blocking_hit=$((blocking_hit + 1))
-          [ "$v" = UNRESOLVED ] && blocking_unresolved=$((blocking_unresolved + 1))
+          blocking_total=$((blocking_total + 1)); pass_btotal=$((pass_btotal + 1))
+          [ "$v" = HIT ]        && { blocking_hit=$((blocking_hit + 1)); pass_bhit=$((pass_bhit + 1)); }
+          [ "$v" = UNRESOLVED ] && { blocking_unresolved=$((blocking_unresolved + 1)); pass_bunres=$((pass_bunres + 1)); }
           # ★ A DEFER disqualifies outright, so it must carry the sentence that
           # earned it. An unquoted DEFER cannot be re-checked by anyone, and
           # this harness's graders have split one item in three -- letting a
@@ -983,6 +1005,11 @@ remove that directory and re-run."
         skipped="$skipped- $label: ran, but produced no usable review at all"$'\n'
         measurement_failed=1
       fi
+    fi
+    # Only a pass that scored something joins the slice; a pass that graded
+    # nothing has no denominator to lend to a language.
+    if [ "$pass_usable" -gt 0 ]; then
+      lang_rows="$lang_rows${pass_lang:-unknown}	$label	$pass_bhit	$pass_btotal	$pass_bunres"$'\n'
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
@@ -1186,6 +1213,37 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   # report already knows how to call out.
   if [ "$nskipped" -gt 0 ] || { [ -n "$scoped" ] && [ "$nfiltered" -gt 0 ]; }; then
     partial_note=" (partial denominator)"
+  fi
+
+  # ★ The per-language slice (#9): rendered only when the graded passes span at
+  # least TWO recorded languages, silent otherwise -- one language is not a
+  # split, and a section that says so would read as a finding. Labelled
+  # observational on the line the numbers sit on, because language and repo are
+  # confounded here: nothing matched these passes for difficulty, and a row
+  # built from one repo says nothing about the language. Passes with no
+  # recorded language are listed, not folded into a guess.
+  local nlangs
+  nlangs=$(printf '%s' "$lang_rows" | awk -F '\t' '$1 != "unknown" && !seen[$1]++ { n++ } END { print n + 0 }')
+  if [ "${nlangs:-0}" -ge 2 ]; then
+    {
+      echo "## By language (observational)"
+      echo
+      echo "The passes you registered happen to span these languages. This is NOT a"
+      echo "cross-language benchmark: language and repo are confounded, difficulty is"
+      echo "unmatched, and a row built from one repo measures that repo. Blocking items"
+      echo "only; UNRESOLVED scores nothing either way."
+      echo
+      echo "| language | passes | blocking hit | blocking total | unresolved |"
+      echo "|---|---|---|---|---|"
+      printf '%s' "$lang_rows" | awk -F '\t' '
+        { p[$1]++; h[$1] += $3; t[$1] += $4; u[$1] += $5 }
+        END {
+          for (l in p) if (l != "unknown") printf "%s\t%d\t%d\t%d\t%d\n", l, p[l], h[l], t[l], u[l]
+        }' | LC_ALL=C sort | awk -F '\t' '{ printf "| `%s` | %d | %d | %d | %d |\n", $1, $2, $3, $4, $5 }'
+      printf '%s' "$lang_rows" | awk -F '\t' '$1 == "unknown" { n++ }
+        END { if (n) printf "| none detected / not recorded | %d | - | - | - |\n", n }'
+      echo
+    } >> "$report"
   fi
 
   {

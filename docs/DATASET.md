@@ -107,6 +107,26 @@ Most panels here have a unique `diff_id`. The one real cluster is four panels
 over `2cfcd0ba..25beedef`, covering five distinct reviewers, with `codex` and
 `grok` each run twice — which is the only repeatability signal in the set.
 
+## `language` — on the run record, observational only
+
+Every `dispatch` and `complete` event in `runs.jsonl` (panel and benchmark
+paths) carries `language`: the dominant language of the change, from an
+extension histogram over the files that changed between base and head in the
+checkout the reviewers saw (`detect_language` in `lib/common.sh`; docs, data
+and lock files are not counted). Deterministic — count desc, then name asc —
+so a tie always resolves the same way. EMPTY when nothing recognisable
+changed, never a guess. The panel manifest carries the same value on a
+`language:` line, blank in that case.
+
+A gauntlet report prints each pass's language and, **only when the graded
+passes span at least two recorded languages**, a `By language (observational)`
+table of blocking hits per language. Read the heading literally. Language and
+repo are confounded — nothing matched those passes for difficulty, and a row
+built from one repo measures that repo — so the table reflects the repos you
+happened to register, not cross-language ground truth. It exists so that
+per-language splits can fall out of ordinary BYO-repo use over time; it is
+not a benchmark claim, and no such claim should be quoted from it.
+
 ## Known blind spots
 
 1. **No ground truth.** Above. This is the big one.

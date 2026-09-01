@@ -80,6 +80,8 @@ PROMPT="$OUT/prompt.txt"
 # panel path. Recomputing per run would describe the tree as it stands after a
 # long pass, which is exactly the difference the field exists to make visible.
 HARNESS_SHA=$(harness_sha)
+# Once per pass, from the checkout the reviewers see (#9). EMPTY is a value.
+CHANGE_LANG=$(detect_language "$CHECKOUT" "$BASE" HEAD)
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   cp "$CADRE_PROMPT_FILE" "$PROMPT"
 else
@@ -141,7 +143,7 @@ for r in "${reviewers[@]}"; do
     # was dispatched. Same guarantee, same shape, as the panel path.
     record_event "$RUNLOG" event=dispatch pass="$label" \
       seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
-      "prompt_bytes#=$prompt_bytes" "ts#=$start"
+      "prompt_bytes#=$prompt_bytes" language="$CHANGE_LANG" "ts#=$start"
     # ★ .failed and .inconclusive, never .partial. Deleting .partial here threw
     # away real findings the moment a retry produced nothing -- the previous
     # attempt's partial review was the only copy, and this feature exists
@@ -264,7 +266,7 @@ for r in "${reviewers[@]}"; do
       "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
       adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
       model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
-      "ts#=$(date +%s)"
+      language="$CHANGE_LANG" "ts#=$(date +%s)"
     # Same rule as the panel path: the declaration is consumed, the state lives
     # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this
     # slot by this one's field.
