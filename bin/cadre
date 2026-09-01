@@ -1139,8 +1139,16 @@ cmd_review() {
 # Sum only what slots.tsv measured. Old and reconstructed rows have no prompt
 # length, and a receipt command that guesses one would turn missing history into
 # a confident spend number.
+#
+# ★ Rows are grouped by (family, SCHEMA), not by family (#20). `secs` changed
+# meaning for one class of row -- a failed seat used to carry a blank and now
+# carries its measured seconds -- and neither value is wrong, so the totals are
+# not wrong either; a single total over both is. Splitting the row is the
+# strongest available answer: there is no unqualified number to misread, and a
+# family that appears twice is itself the notice. Nothing is dropped, so panels
+# that predate the column stay readable, which is the other half of the ask.
 cmd_receipts() {
-  local roots=() d f raw rows missing tab=$'\t'
+  local roots=() d f raw rows missing spanning harness_list nharness no_harness tab=$'\t'
   if [ "$#" -eq 0 ]; then roots=("$CADRE_HOME/reviews")
   else roots=("$@")
   fi
@@ -1156,50 +1164,103 @@ cmd_receipts() {
     NF < 5 || $3 == "" { next }
     {
       fam = $3
-      seats[fam]++
-      run_key = fam SUBSEP FILENAME SUBSEP $1
-      if (!(run_key in seen)) { seen[run_key] = 1; runs[fam]++ }
-      if      ($4 == "ok")           ok[fam]++
-      else if ($4 == "degraded")     degraded[fam]++
-      else if ($4 == "inconclusive") inconclusive[fam]++
-      else if ($4 == "skipped")      skipped[fam]++
-      else                             failed[fam]++
+      # ★ A missing, empty or NON-NUMERIC column 8 is UNKNOWN, printed "?", never
+      # defaulted to a version. Those rows straddle the change this grouping
+      # exists to keep apart, and calling them by any version number would assert
+      # the one thing nothing on disk can tell us.
+      # ★ The numeric test is not belt-and-braces. A dataset written by the old
+      # lib/aggregate.sh puts `source` in column 8, so `recorded` and
+      # `reconstructed` arrived here as two schema names and split every family
+      # in the table -- receipts accepts any directory, and a stale dataset dir
+      # is a directory.
+      v = (NF >= 8 && $8 ~ /^[0-9]+$/) ? $8 : "?"
+      key = fam SUBSEP v
+      if (!(key in keys)) { keys[key] = 1; famof[key] = fam; vof[key] = v; nver[fam]++ }
+      seats[key]++
+      run_key = key SUBSEP FILENAME SUBSEP $1
+      if (!(run_key in seen)) { seen[run_key] = 1; runs[key]++ }
+      if      ($4 == "ok")           ok[key]++
+      else if ($4 == "degraded")     degraded[key]++
+      else if ($4 == "inconclusive") inconclusive[key]++
+      else if ($4 == "skipped")      skipped[key]++
+      else                             failed[key]++
       review = ($5 ~ /^[0-9]+$/) ? $5 : 0
-      review_bytes[fam] += review
-      if ($6 ~ /^[0-9]+$/) { secs[fam] += $6; have_secs[fam] = 1 }
+      review_bytes[key] += review
+      if ($6 ~ /^[0-9]+$/) { secs[key] += $6; have_secs[key] = 1 }
       prompt = 0
       if (NF < 7 || $7 == "") missing_prompt++
-      else if ($7 ~ /^[0-9]+$/) { prompt = $7; prompt_bytes[fam] += prompt }
+      else if ($7 ~ /^[0-9]+$/) { prompt = $7; prompt_bytes[key] += prompt }
       else missing_prompt++
-      est_tokens[fam] += int((prompt + review) / 4)
+      est_tokens[key] += int((prompt + review) / 4)
+      # Harness identity is a property of the COMPARISON, not of a family, so it
+      # is counted across every row the command was pointed at (#37).
+      if (NF >= 11 && $11 != "") { if (!($11 in harness)) harness[$11] = 1 }
+      else no_harness++
     }
     END {
-      for (fam in seats) {
-        sec = have_secs[fam] ? secs[fam] : ""
-        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\n", \
-          fam, runs[fam], seats[fam], ok[fam], degraded[fam], \
-          inconclusive[fam], failed[fam], skipped[fam], sec, prompt_bytes[fam], \
-          review_bytes[fam], est_tokens[fam]
+      for (key in keys) {
+        sec = have_secs[key] ? secs[key] : ""
+        printf "R\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%s\t%d\n", \
+          famof[key], runs[key], seats[key], ok[key], degraded[key], \
+          inconclusive[key], failed[key], skipped[key], sec, prompt_bytes[key], \
+          review_bytes[key], est_tokens[key], vof[key], nver[famof[key]]
       }
       printf "M\t%d\n", missing_prompt
+      for (h in harness) printf "H\t%s\n", h
+      printf "N\t%d\n", no_harness + 0
     }
   ' "${slot_files[@]}")
 
   missing=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "M" { print $2 }')
+  # -k14 breaks the tie so a family split across schemas prints in a stable
+  # order; without it the two halves swap between runs and a diff of two
+  # receipts reads as a change.
   rows=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "R"' \
-    | sort -t "$tab" -k13,13nr -k2,2)
+    | sort -t "$tab" -k13,13nr -k2,2 -k14,14)
 
-  printf '%-24s %5s %5s %4s %8s %12s %6s %7s %8s %10s %10s %11s\n' \
-    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SKIPPED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS'
+  printf '%-24s %5s %5s %4s %8s %12s %6s %7s %8s %10s %10s %11s %7s\n' \
+    FAMILY RUNS SEATS OK DEGRADED INCONCLUSIVE FAILED SKIPPED SECS PROMPT_KB REVIEW_KB 'EST. TOKENS' SCHEMA
   printf '%s\n' "$rows" | awk -v FS="$tab" '
     $1 == "R" {
-      printf "%-24s %5d %5d %4d %8d %12d %6d %7d %8s %10.1f %10.1f %11d\n", \
-        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 / 1024, $12 / 1024, $13
+      printf "%-24s %5d %5d %4d %8d %12d %6d %7d %8s %10.1f %10.1f %11d %7s\n", \
+        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 / 1024, $12 / 1024, $13, $14
     }
   '
   if [ "${missing:-0}" -gt 0 ]; then
     echo
     echo "$missing rows predate prompt-byte capture; their prompt spend is not counted."
+  fi
+
+  spanning=$(printf '%s\n' "$rows" | awk -v FS="$tab" '$1 == "R" && $15 > 1 { print $2 }' \
+    | sort -u | paste -sd, - | sed 's/,/, /g')
+  if [ -n "$spanning" ]; then
+    echo
+    echo "Listed on more than one row, one per slots.tsv schema: $spanning."
+    echo "Those rows are NOT comparable and were not added together. Schema ? predates the column and spans the change to what a failed seat's SECS means."
+  fi
+
+  harness_list=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "H" { print $2 }' \
+    | sort | paste -sd, - | sed 's/,/, /g')
+  nharness=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "H"' | grep -c . || true)
+  no_harness=$(printf '%s\n' "$raw" | awk -v FS="$tab" '$1 == "N" { print $2 }')
+  # ★ Said out loud on BOTH branches. The agreement case is the one worth
+  # printing: an absent warning is indistinguishable from a check that never
+  # ran, and this line is the only place the comparison's harness identity
+  # surfaces at all.
+  if [ "${nharness:-0}" -gt 1 ]; then
+    echo
+    echo "Harness: these rows span ${nharness} versions ($harness_list). Seats measured under different harnesses are not a like-for-like comparison."
+  elif [ "${nharness:-0}" -eq 1 ]; then
+    echo
+    if [ "${no_harness:-0}" -eq 0 ]; then
+      echo "Harness: every row ran against $harness_list."
+    else
+      echo "Harness: every row that names one ran against $harness_list."
+    fi
+  fi
+  if [ "${no_harness:-0}" -gt 0 ]; then
+    [ "${nharness:-0}" -gt 0 ] || echo
+    echo "Harness: ${no_harness} row(s) name none, so whether they match the rest is unknown."
   fi
 }
 

@@ -35,9 +35,12 @@ PANELS="$OUT_D/panels.tsv"
 # specific way: the artifacts carry status and size but NOT elapsed time or the
 # dispatched prompt size, so `secs` and `prompt_bytes` are empty for them.
 # Empty, not zero -- a zero would average like a real measurement and silently
-# pull every mean toward the floor.
+# pull every mean toward the floor. The four provenance columns (#20, #37) obey
+# the same rule and for the same reason: a reconstructed row has no schema
+# version and no input hashes, and inventing either would let it compare equal
+# to a row that was actually measured.
 {
-  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tsource\n'
+  printf 'panel\tslot\tfamily\tstatus\tbytes\tsecs\tprompt_bytes\tv\tprompt_sha\tadapter_sha\tharness_sha\tsource\n'
   for d in "$REVIEWS"/*/; do
     [ -d "$d" ] || continue
     p=$(basename "$d")
@@ -46,8 +49,11 @@ PANELS="$OUT_D/panels.tsv"
       # awk preserves adjacent tab fields. Bash read treats tab as IFS whitespace
       # and collapsed an empty secs field, shifting skipped prompt_bytes=0 into
       # seconds and turning the measured zero back into missing data.
+      # A panel written before the provenance columns existed simply has no $8..$11
+      # and awk yields EMPTY for each -- which is the right answer, and the one
+      # `cadre receipts` groups on. Nothing here backfills them.
       awk -F '\t' -v OFS='\t' -v panel="$p" '
-        $2 != "" { print panel, $2, $3, $4, $5, $6, $7, "recorded" }
+        $2 != "" { print panel, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, "recorded" }
       ' "$d/slots.tsv"
       continue
     fi
@@ -87,7 +93,7 @@ PANELS="$OUT_D/panels.tsv"
       fi
       bytes=0
       [ -n "$art" ] && bytes=$(wc -c < "$art" | tr -d ' ')
-      printf '%s\t%s\t%s\t%s\t%s\t\t\treconstructed\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t\t\t\t\t\t\treconstructed\n' \
         "$p" "$spec" "$(spec_family "$spec")" "$st" "$bytes"
     done
   done
@@ -108,7 +114,11 @@ PANELS="$OUT_D/panels.tsv"
     did="unknown"
     [ -n "$bt" ] && [ -n "$rt" ] && did="${bt:0:8}..${rt:0:8}"
     n=0 o=0 g=0 u=0 f=0
-    while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _src; do
+    # Only $1 and $4 are used, and both sit before the first field that can be
+    # empty -- which matters, because tab is IFS WHITESPACE and a plain read
+    # collapses the empty runs further right. The trailing names are declared to
+    # match the header, not relied on.
+    while IFS=$'\t' read -r pp _s _fam st _b _sec _prompt _v _psha _asha _hsha _src; do
       [ "$pp" = "$p" ] || continue
       # A gated-off seat is retained in slots.tsv as operational provenance but
       # was never on the reviewing panel, so it cannot pad the seat denominator.

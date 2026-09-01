@@ -98,6 +98,49 @@ no diagnostic in the pipeline.
 Tests: "by: without -a the whole review is suppressed", "by: the pre-existing
 claims survive", "by: the finding after the bad byte is claimed".
 
+**12. A published number names the inputs that produced it.** Every row of
+`slots.tsv` and every `complete` record carries a content hash for the rendered
+prompt, for the adapter code that ran, and for the harness files that shape a
+review (`bin/agentcall`, `lib/common.sh`, `lib/run-review.sh`,
+`lib/run-pass.sh`, `lib/grade.sh`, `lib/prompts/*`). `prompt_bytes` was a size,
+so two prompts of equal length were one row; `CADRE_PROMPT_FILE` replaces the
+brief wholesale, which made the highest-leverage input the least described.
+
+`adapter_sha` covers the files `agentcall` would source that define anything for
+that agent — both copies of `<agent>.sh`, and any other file in either directory
+mentioning `_<agent>(`. It sources every `*.sh` in both directories into one
+namespace, so a foreign file defining `run_<agent>()` is a different reviewer
+behind an otherwise unchanged adapter file.
+
+**The hash is EMPTY whenever it could not be fully determined** — a
+reconstructed row, a promptless adapter that received no shared brief, a box
+with no sha256 tool, an unreadable or missing input, or any hashing step that
+exits non-zero. Never a zero, never a partial digest: the digest of an empty
+read is *stable*, so two runs that both failed would compare EQUAL, which is the
+one answer this field must never give. Per-file digests are hashed rather than
+concatenated bytes, so no pair of inputs can straddle a field boundary and
+collide.
+
+`cadre receipts` states whether every row in a comparison ran against the same
+harness, on both branches — agreement and disagreement.
+Tests: "adapter hash is per adapter", "adapter hash sees a foreign override",
+"and ignores an unrelated adapter", "one harness hash for the panel",
+"harness: agentcall is hashed", "sha: an unreadable input is EMPTY",
+"sha: never the digest of nothing", "sha: file boundaries are kept",
+"harness: a split is called out", "harness: agreement is stated".
+
+**13. Receipts do not average across a schema change.** `slots.tsv` rows carry
+the schema version that wrote them, and `cadre receipts` groups by
+(family, schema) rather than by family. Rows written before the column existed
+print schema `?` — unknown, not a default — because they straddle the change to
+what `secs` means on a failed seat and nothing on disk separates the halves.
+Nothing is excluded, so older panels stay readable.
+Column 8 is read as a version only when it *reads* as one: a dataset written by
+the older `lib/aggregate.sh` carries `source` there, and `recorded` /
+`reconstructed` would otherwise have split every family into two named schemas.
+Tests: "mixed: one row per schema", "mixed: the two secs never merge",
+"mixed: pre-#19 panels still read", "olddata: a source word is never a schema".
+
 ## Non-goals, named
 
 - **The preflight reads filenames, plus content for exactly four config
@@ -114,6 +157,11 @@ claims survive", "by: the finding after the bad byte is claimed".
   target-pick time.
 - **Receipts do not measure hidden reasoning tokens, provider billing, or
   in-CLI retries.** METHOD.md §6.
+- **The input hashes are provenance, not tamper-proofing.** They are computed
+  by the same tree they describe, so anyone who can edit `lib/` can edit what
+  gets hashed. What they buy is that a comparison spanning an edit becomes
+  visible instead of silent. Nothing here is a signature and nothing verifies
+  a tree against a published manifest.
 - **A scratch file in the tree is a source file to the harness.** Planning
   notes, TODO dumps and other author-written artifacts ride into the checkout
   like any other file — tracked, or untracked-but-not-gitignored (carried on
