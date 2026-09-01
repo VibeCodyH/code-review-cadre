@@ -82,6 +82,49 @@ wrong, say `DID NOT RUN` and get `failed`, which is stronger information. What
 and the *model* declined the job. One of the three measured examples was an
 unmarked truncation, so no `_TRUNCATED` was ever coming.
 
+### Declaring the state directly, when you know it
+
+The markers above are text, and cadre reads them back out of the artifact. That
+works, and every shipped adapter uses it. It has one weakness: text a *model*
+controls can collide with text the contract reserves. A synthesis asked to say
+which reviewers were truncated quotes `_TRUNCATED` and classifies itself as
+truncated; a short review that merely discusses rate limiting trips the keyword
+scan. No text test can tell those apart, because both are legitimate.
+
+If your adapter *knows* — it read a `stopReason`, it caught its own timeout —
+say so out of band:
+
+```sh
+run_youragent() {
+  ...
+  cadre_state degraded "stopReason=MaxTokens"     # ok | degraded | inconclusive | failed
+}
+```
+
+`cadre_state` outranks the markers, the exit code, and every inference cadre
+would otherwise make. Nothing the model prints can forge one, because printing
+is not calling it.
+
+**How far to trust it.** A declaration is trusted exactly as much as the
+*adapter* is, and no further. Cadre hands the adapter a path and believes what
+it finds there; it cannot tell your `cadre_state` call from anything else that
+wrote to the same file. The agent CLI you spawn runs as the same uid as cadre,
+and several of them will run a shell on request — so a model that goes looking
+can reach that file, and a declared `ok` outranks a `_TRUNCATED` marker and a
+nonzero exit. The path is a private temp directory rather than a bare temp file,
+which stops the blind `for f in /tmp/tmp.*` version, and that is a speed bump,
+not a boundary. Same posture as the rest of the environment scrub:
+mitigation, not a sandbox, docs/METHOD.md §5. The marker contract is the more
+conservative channel precisely because the adapter, not the model, appends it
+after the CLI has already exited.
+
+**It is optional.** Say nothing and the marker contract above is still in
+charge — that is not a deprecated path. Two things it will not do for you: an
+unknown state is ignored rather than believed (a wrong field would outrank the
+text, so falling back is the safe direction), and declaring `ok` will not
+rescue an artifact that came back empty. It is also a no-op when `agentcall`
+runs outside cadre, so it costs a standalone caller nothing.
+
 The one thing this asks of you: **do not append your own trailing summary to a
 review.** The check is edge-anchored, so a "review complete, 0 issues" footer your
 wrapper adds would satisfy it on behalf of a model that said nothing.

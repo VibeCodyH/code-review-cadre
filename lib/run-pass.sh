@@ -32,6 +32,13 @@ BASE="${CADRE_PASS_BASE:-HEAD~1}"
 export CADRE_PASS_BASE="$BASE"   # adapters that need it (coderabbit) read this
 
 OUT="$CADRE_HOME/$label"
+# ★ Same record shape and the same name as the panel path's (lib/run-review.sh).
+# The benchmark side had NO record at all: grade.sh reconstructed every run's
+# state by probing which suffix existed on disk -- .failed, .partial,
+# .inconclusive -- which is a state machine encoded in filenames and cannot
+# carry a duration, an exit code or a prompt size at all. One record shape for
+# both callers, so a consumer does not need to know which command produced a run.
+RUNLOG="$OUT/runs.jsonl"
 
 # Outputs must not land inside the reviewed tree or reviewer #1's findings
 # become reviewer #2's input. docs/METHOD.md §5.
@@ -69,6 +76,10 @@ case "$sha" in "$have"*) ;; *) die "$CHECKOUT is at $have, not $sha" ;; esac
 secrets_preflight "$CHECKOUT"
 
 PROMPT="$OUT/prompt.txt"
+# ★ Frozen once, before the first seat goes out (#37): the same rule as the
+# panel path. Recomputing per run would describe the tree as it stands after a
+# long pass, which is exactly the difference the field exists to make visible.
+HARNESS_SHA=$(harness_sha)
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   cp "$CADRE_PROMPT_FILE" "$PROMPT"
 else
@@ -118,6 +129,19 @@ for r in "${reviewers[@]}"; do
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
     echo "  $r run$n ..."
     start=$(date +%s)
+    # Measured at dispatch, never reconstructed: the prompt is on disk now and
+    # its size cannot be recovered from an artifact later.
+    prompt_bytes=$(wc -c < "$PROMPT" 2>/dev/null | tr -d ' ')
+    # ★ EMPTY for a promptless adapter, never the hash of a prompt it did not
+    # get -- the panel path's rule, for the panel path's reason: a sha of the
+    # empty string would compare equal across every promptless seat as if they
+    # shared an input. prompt_bytes stays a measured 0 there.
+    prompt_sha=""; is_promptless "$agent" || prompt_sha=$(content_sha "$PROMPT")
+    # ★ Before the attempt loop, so a sweep killed mid-run still proves this run
+    # was dispatched. Same guarantee, same shape, as the panel path.
+    record_event "$RUNLOG" event=dispatch pass="$label" \
+      seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
+      "prompt_bytes#=$prompt_bytes" "ts#=$start"
     # ★ .failed and .inconclusive, never .partial. Deleting .partial here threw
     # away real findings the moment a retry produced nothing -- the previous
     # attempt's partial review was the only copy, and this feature exists
@@ -132,11 +156,17 @@ for r in "${reviewers[@]}"; do
     # exists to catch. Free tiers are the reason this loop exists, see README.
     attempt=1
     while :; do
+      # Same channel as the panel path, same reason for the temp path: $OUT
+      # holds every other run's output and the adapter must not learn it.
+      # Private dir, not a bare temp file: see the note in lib/run-review.sh.
+      metad=$(mktemp -d); meta="$metad/state"; rm -f "$f.part.meta"
       "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
-        CADRE_PASS_BASE="$BASE" \
+        CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
         "$CADRE_ROOT/bin/agentcall" "$agent" -d "$CHECKOUT" -m ro "${m[@]}" \
         < "$PROMPT" > "$f.part" 2>&1
       rc=$?
+      [ -s "$meta" ] && mv "$meta" "$f.part.meta"
+      rm -rf "$metad"
       # ★ Same order as the review path, same reason: the adapter's own verdict
       # outranks a keyword scan. A short partial that merely DISCUSSES rate
       # limiting used to drive real retries and then get cadre's own note
@@ -179,7 +209,8 @@ for r in "${reviewers[@]}"; do
     # exists. ★ A degraded run is still NOT SCORED: a benchmark number is a
     # per-model claim, and a run cut short is not a fair sample of the model.
     # It is kept as .partial so the report can say WHICH kind of nothing it was.
-    case "$(classify_run "$f.part" "$rc")" in
+    state=$(classify_run "$f.part" "$rc")
+    case "$state" in
       ok)
         mv "$f.part" "$f"
         # Now, and only now, last attempt's partial is genuinely superseded.
@@ -216,6 +247,27 @@ for r in "${reviewers[@]}"; do
         esac
         echo "    $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed"), not counted as a run" ;;
     esac
+
+    # ★ After the `mv`, so `bytes` describes the artifact under its final name --
+    # the same rule the panel path follows. `run` is the field the benchmark
+    # side has and the panel side does not: a pass asks the SAME seat for N
+    # runs, so seat alone does not identify a row here.
+    art="$f"
+    [ -s "$art" ] || art="$f.partial"
+    [ -s "$art" ] || art="$f.inconclusive"
+    [ -s "$art" ] || art="$f.failed"
+    run_bytes=$(wc -c < "$art" 2>/dev/null | tr -d ' ')
+    record_event "$RUNLOG" event=complete pass="$label" \
+      seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
+      state="$state" "rc#=$rc" "secs#=$took" "bytes#=${run_bytes:-0}" \
+      "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" \
+      "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
+      adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
+      "ts#=$(date +%s)"
+    # Same rule as the panel path: the declaration is consumed, the state lives
+    # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this
+    # slot by this one's field.
+    rm -f "$f.part.meta"
 
     # Out of budget: stop this agent HERE. The remaining runs of this pass, and
     # every later pass in the sweep, would produce the same refusal. Loud, and
