@@ -76,6 +76,10 @@ case "$sha" in "$have"*) ;; *) die "$CHECKOUT is at $have, not $sha" ;; esac
 secrets_preflight "$CHECKOUT"
 
 PROMPT="$OUT/prompt.txt"
+# ★ Frozen once, before the first seat goes out (#37): the same rule as the
+# panel path. Recomputing per run would describe the tree as it stands after a
+# long pass, which is exactly the difference the field exists to make visible.
+HARNESS_SHA=$(harness_sha)
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   cp "$CADRE_PROMPT_FILE" "$PROMPT"
 else
@@ -128,6 +132,11 @@ for r in "${reviewers[@]}"; do
     # Measured at dispatch, never reconstructed: the prompt is on disk now and
     # its size cannot be recovered from an artifact later.
     prompt_bytes=$(wc -c < "$PROMPT" 2>/dev/null | tr -d ' ')
+    # ★ EMPTY for a promptless adapter, never the hash of a prompt it did not
+    # get -- the panel path's rule, for the panel path's reason: a sha of the
+    # empty string would compare equal across every promptless seat as if they
+    # shared an input. prompt_bytes stays a measured 0 there.
+    prompt_sha=""; is_promptless "$agent" || prompt_sha=$(content_sha "$PROMPT")
     # ★ Before the attempt loop, so a sweep killed mid-run still proves this run
     # was dispatched. Same guarantee, same shape, as the panel path.
     record_event "$RUNLOG" event=dispatch pass="$label" \
@@ -251,7 +260,10 @@ for r in "${reviewers[@]}"; do
     record_event "$RUNLOG" event=complete pass="$label" \
       seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
       state="$state" "rc#=$rc" "secs#=$took" "bytes#=${run_bytes:-0}" \
-      "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" "ts#=$(date +%s)"
+      "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" \
+      "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
+      adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
+      "ts#=$(date +%s)"
     # Same rule as the panel path: the declaration is consumed, the state lives
     # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this
     # slot by this one's field.
