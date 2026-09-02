@@ -533,6 +533,7 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
     adapter_sha="$(sed -n 2p "$shaf" 2>/dev/null)" \
     harness_sha="$HARNESS_SHA" \
     model="$(sed -n 's/^model=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
+    "adapter_attempts#=$(sed -n 's/^attempts=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
     language="$CHANGE_LANG" "ts#=$(date +%s)"
 }
 

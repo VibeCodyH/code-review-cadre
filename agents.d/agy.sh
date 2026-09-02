@@ -72,6 +72,11 @@ original closing sentence suppressed the brief's own verdict line.
 ⚠️ It wanders. Given a loose target it has read files outside the directory it
 was pointed at. Scope it with --add-dir and keep the prompt specific.
 
+★ Flaky close: the print stream sometimes ends status=ERROR with the full review
+already written. The adapter retries the same model up to CADRE_AGY_RETRIES (3)
+times, never past cadre's clock or agy's own; the count lands in runs.jsonl as
+adapter_attempts. Read adapter_attempts>1 as a transport retry, not a second review.
+
 Line attribution runs about one off (reported 860 lines for an 859-line file),
 so sanity-check its file:line citations before grading it on them.
 NOTES
@@ -111,12 +116,41 @@ run_agy() {
   # already generated and discarded. The outer `timeout` never fired, so this
   # read as a model failure rather than a clock. Align them, and leave the outer
   # one as the backstop for a CLI that hangs without honouring its own flag.
-  timeout -k 30 "$TIMEOUT" agy -p "$ptr" "${m[@]}" \
-    --add-dir "$dir" --add-dir "$pd" --print-timeout "${TIMEOUT}s" \
-    --dangerously-skip-permissions --output-format json >"$out" 2>/dev/null
-  rc=$?
+  #
+  # ★ And it FLAKES. The print stream intermittently ends status=ERROR ("timeout
+  # waiting for response") with a complete review already in .response, minutes
+  # inside both clocks. Measured twice: 2026-08-19 (ERROR at 185s, identical
+  # retry SUCCESS at 155s) and 2026-09-02 (ERROR at 425s, retry SUCCESS at
+  # 390s; 1 flake in 13 calls). Under runs=1 that flake zeroes the pass and
+  # `cadre run` aborts the whole sweep on it (exit 4), so an unattended agy
+  # sweep could not finish. Retry the SAME model on the SAME prompt when the run
+  # did not end SUCCESS, with two exclusions that keep a retry from masking
+  # something real: the outer clock fired (rc >= 124: cadre's timeout, a hang,
+  # not a flake), or agy's own clock did (the attempt ran out most of TIMEOUT,
+  # so another attempt just triples the wait). A refusal comes back as SUCCESS
+  # text and is never retried. Attempts are recorded over the meta channel and
+  # land in runs.jsonl as adapter_attempts, never on stderr: run-pass merges
+  # stderr into the review and a judge would read it.
+  local attempt=0 max="${CADRE_AGY_RETRIES:-3}" t0
+  # A knob that is not a whole number would print bash's arithmetic diagnostic
+  # INTO the review and never satisfy -ge; fall back to the default instead.
+  case "$max" in ''|*[!0-9]*) max=3 ;; esac
+  while :; do
+    attempt=$((attempt + 1)); t0=$SECONDS
+    timeout -k 30 "$TIMEOUT" agy -p "$ptr" "${m[@]}" \
+      --add-dir "$dir" --add-dir "$pd" --print-timeout "${TIMEOUT}s" \
+      --dangerously-skip-permissions --output-format json >"$out" 2>/dev/null
+    rc=$?
+    status=$(jq -r '.status // "MISSING"' "$out" 2>/dev/null)
+    [ "$status" = SUCCESS ] && break
+    [ "$rc" -ge 124 ] && break
+    [ $((SECONDS - t0)) -ge $((TIMEOUT * 9 / 10)) ] && break
+    [ "$attempt" -ge "$max" ] && break
+  done
+  # Generic key: run-pass / run-review copy it onto the complete record as
+  # adapter_attempts, beside the harness's own rate-limit `attempts`.
+  [ -n "${CADRE_RUN_META:-}" ] && printf 'attempts=%s\n' "$attempt" >> "$CADRE_RUN_META"
 
-  status=$(jq -r '.status // "MISSING"' "$out" 2>/dev/null)
   text=$(jq -r '.response // ""' "$out" 2>/dev/null)
 
   if [ -n "$text" ] && [ "$status" = SUCCESS ]; then

@@ -570,6 +570,13 @@ Budget the wall-clock: on defaults a run that stays limited costs about three
 minutes before giving up. Each wait is printed, so it is not hung. On a tight
 free tier, lower `CADRE_RETRIES` or run one reviewer at a time.
 
+One adapter has a second, narrower retry. `agy`'s print stream sometimes ends
+`status=ERROR` with a complete review already written, minutes inside every
+clock. That is a transport flake, not a limit, so `agents.d/agy.sh` re-runs the
+same model up to `CADRE_AGY_RETRIES` times (default 3) and records the count on
+the run record as `adapter_attempts`. It never retries past cadre's timeout or agy's
+own, and a refusal (which arrives as `SUCCESS` text) is never retried.
+
 ## It won't leak your answers or your secrets
 
 If the key is "the bug the author fixed next," then the fix commit's subject line
