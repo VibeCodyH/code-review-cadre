@@ -948,6 +948,65 @@ check "and aligns agy's own timeout" "grep -q -- '--print-timeout \"\${TIMEOUT}s
 check "and parses status not stdout"  "grep -q \"jq -r '.status\" '$ROOT/agents.d/agy.sh'"
 check "and names its kind of nothing" "grep -q 'DID NOT COMPLETE' '$ROOT/agents.d/agy.sh'"
 check "and exits nonzero on truncation" "grep -q '_TRUNCATED, agy ended' '$ROOT/agents.d/agy.sh'"
+# ★ agy FLAKES: the print stream ends status=ERROR with the review already in
+# .response, minutes inside both clocks (measured 2026-08-19 and 2026-09-02).
+# Under runs=1 that zeroed the pass and `cadre run` aborted the sweep (exit 4).
+# The adapter now retries the same model. Driven end-to-end against a fake agy
+# so the loop's exclusions are tested as behaviour, not pinned as text.
+AF="$SANDBOX/agyfake"; mkdir -p "$AF/bin"
+cat > "$AF/bin/agy" <<'FAKE'
+#!/bin/sh
+# Flaky agy: ERROR until call number $AGYFAKE_OK, SUCCESS from then on. An
+# AGYFAKE_SLEEP that outlives the caller's clock stands in for a real hang.
+c=$(cat "$AGYFAKE_COUNT" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$AGYFAKE_COUNT"
+[ -n "${AGYFAKE_SLEEP:-}" ] && sleep "$AGYFAKE_SLEEP"
+if [ "$c" -lt "${AGYFAKE_OK:-1}" ]; then
+  echo "{\"status\":\"ERROR\",\"response\":\"partial review $c\"}"
+else
+  echo '{"status":"SUCCESS","response":"full review"}'
+fi
+FAKE
+chmod +x "$AF/bin/agy"
+# run_agy with the adapter's variable contract set the way agentcall sets it.
+agyfake() {  # $1 = AGYFAKE_OK, $2 = TIMEOUT, rest = extra env
+  rm -f "$AF/n" "$AF/meta"
+  env -i PATH="$AF/bin:$PATH" HOME="$HOME" AGYFAKE_COUNT="$AF/n" AGYFAKE_OK="$1" "${@:3}" \
+    bash -c "TIMEOUT=$2; DRY=; dir='$AF'; model=''; prompt='review this'; CADRE_RUN_META='$AF/meta'
+             source '$ROOT/agents.d/agy.sh'; run_agy; echo \"rc=\$?\"" > "$AF/out" 2>&1 < /dev/null
+  # ★ </dev/null is not decoration. GNU timeout runs its child in a background
+  # process group, and with this suite's inherited stdin the fake never ran at
+  # all: every case sat out the full clock and filed "DID NOT COMPLETE". The
+  # real path is immune (agentcall's stdin is the prompt file, at EOF).
+}
+# ★ The review is compared WHOLE, not grepped: a stale attempt-1 line surviving
+# in $out, or a retry note on stderr, would both be invisible to a positive grep.
+agyfake 2 60
+check "agy retry: flake then SUCCESS is a clean pass"  "[ \"\$(cat '$AF/out')\" = \$'full review\\nrc=0' ]"
+check "agy retry: took exactly two attempts"           "[ \"\$(cat '$AF/n')\" = 2 ]"
+check "agy retry: attempts recorded in run meta"       "grep -qx 'attempts=2' '$AF/meta'"
+agyfake 1 60
+check "agy retry: SUCCESS first time = one call"       "[ \"\$(cat '$AF/n')\" = 1 ] && grep -qx 'attempts=1' '$AF/meta'"
+agyfake 9 60
+check "agy retry: gives up after CADRE_AGY_RETRIES (3)" "[ \"\$(cat '$AF/n')\" = 3 ]"
+check "agy retry: and the LAST partial is kept, marked" "[ \"\$(cat '$AF/out')\" = \$'partial review 3\\n\\n_TRUNCATED, agy ended with status=ERROR (exit 0); this review is INCOMPLETE, not a clean pass._\\nrc=1' ]"
+agyfake 9 60 CADRE_AGY_RETRIES=1
+check "agy retry: CADRE_AGY_RETRIES=1 disables it"     "[ \"\$(cat '$AF/n')\" = 1 ]"
+agyfake 9 60 CADRE_AGY_RETRIES=0
+check "agy retry: CADRE_AGY_RETRIES=0 is one call too" "[ \"\$(cat '$AF/n')\" = 1 ]"
+# A knob that is not a number falls back to the default and prints NOTHING
+# into the review (bash's arithmetic error would otherwise land there).
+agyfake 2 60 CADRE_AGY_RETRIES=lots
+check "agy retry: a non-numeric knob = default, silent" "[ \"\$(cat '$AF/n')\" = 2 ] && [ \"\$(cat '$AF/out')\" = \$'full review\\nrc=0' ]"
+# The outer clock firing is a hang, not a flake: no retry, and the nothing is named.
+agyfake 2 1 AGYFAKE_SLEEP=5
+check "agy retry: cadre's timeout is NOT retried"      "[ \"\$(cat '$AF/n')\" = 1 ] && grep -q 'DID NOT COMPLETE, agy hit the 1s timeout' '$AF/out'"
+# agy's OWN clock firing looks like ERROR inside the outer timeout. An attempt
+# that used most of TIMEOUT (here 2.5s of 3, past the 90% line) is not retried
+# either, or one slow pass would run three times the budget.
+agyfake 9 3 AGYFAKE_SLEEP=2.5
+check "agy retry: an attempt that ate the clock is NOT retried" "[ \"\$(cat '$AF/n')\" = 1 ] && grep -q '_TRUNCATED, agy ended with status=ERROR' '$AF/out'"
+check "agy retry: loop is env-tunable"                 "grep -q 'CADRE_AGY_RETRIES:-3' '$ROOT/agents.d/agy.sh'"
+check "agy retry: run-pass copies the count onto the record" "grep -q 'adapter_attempts#=' '$ROOT/lib/run-pass.sh'"
 # ⚠️ ro is UNENFORCED here and the adapter must keep saying so. --mode plan does NOT
 # block writes (measured: it created the file anyway), and skip-permissions is
 # mandatory for it to read at all. Containment is cadre's disposable checkout, not
@@ -4484,6 +4543,24 @@ check "model: and leave the pinned seat blank" \
   "grep -qF '| \`good\` |  | ok |' '$RM1/report.md'"
 check "model: the meta file does not outlive the run" \
   "! ls '$RM1'/*.meta >/dev/null 2>&1"
+# ★ Same channel, second key: an adapter that had to retry its CLI (agy.sh)
+# declares attempts=N and the record carries it as adapter_attempts, beside the
+# harness's own rate-limit `attempts`. A seat that declares nothing reads null.
+cat > "$DM/agents.d/retrier.sh" <<A
+run_retrier() {
+  [ -n "\${CADRE_RUN_META:-}" ] && printf 'attempts=2\n' >> "\$CADRE_RUN_META"
+  echo "**should-fix**"
+  echo "app.js:1 -- a finding"
+  echo "Verdict: should-fix"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$DM/bin/retrier"; chmod +x "$DM/bin/retrier"
+run_cadre "$DM" review --roster retrier,good --synth none --base main --label m1r "$DM/src" >/dev/null
+RM1R="$DM/state/reviews/m1r"
+check "attempts: the adapter's count reaches the record" \
+  "grep -q '\"seat\":\"retrier\".*\"adapter_attempts\":2' '$RM1R/runs.jsonl'"
+check "attempts: a seat that declares none is null, not 0" \
+  "grep -q '\"seat\":\"good\".*\"adapter_attempts\":null' '$RM1R/runs.jsonl'"
 # The same seat under a different default: two rows, named as such.
 echo model-beta > "$DM/served-model"
 run_cadre "$DM" review --roster modeller,good --synth none --base main --label m2 "$DM/src" >/dev/null
