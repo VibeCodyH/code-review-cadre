@@ -1,0 +1,17 @@
+{
+  "object": "chat.completion",
+  "id": "synthetic-completion",
+  "model": "synthetic-model",
+  "choices": [{
+    "index": 0,
+    "finish_reason": "tool_calls",
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {"id": "call-a", "type": "function", "function": {"name": "lookup", "arguments": "{\"query\":\"synthetic-only\",\"limit\":2}"}},
+        {"id": "call-b", "type": "function", "function": {"name": "inspect", "arguments": "{\"path\":\"sample.txt\"}"}}
+      ]
+    }
+  }]
+}

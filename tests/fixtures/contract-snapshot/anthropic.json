@@ -1,0 +1,13 @@
+{
+  "id": "synthetic-message",
+  "type": "message",
+  "role": "assistant",
+  "model": "synthetic-model",
+  "content": [
+    {"type": "text", "text": "Synthetic tool call example."},
+    {"type": "tool_use", "id": "tool-a", "name": "lookup", "input": {"query": "synthetic-only", "limit": 2}},
+    {"type": "tool_use", "id": "tool-b", "name": "inspect", "input": {"path": "sample.txt"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null
+}

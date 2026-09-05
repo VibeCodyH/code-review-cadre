@@ -468,6 +468,10 @@ unset _kept _spec _block _decl _reason
   echo "base-tree: $btree"
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "roster:    ${reviewers[*]}"
+  # Only selection provenance, never the raw configuration. Escape unusual
+  # path bytes so a repository name cannot inject extra manifest fields.
+  echo "roster-layer: ${CADRE_ROSTER_LAYER:-direct}"
+  printf 'roster-path: %q\n' "${CADRE_ROSTER_PATH:-}"
   # Blank when nothing recognisable changed -- the same EMPTY the record carries,
   # not a stand-in word that would read as a detected value.
   echo "language:  $CHANGE_LANG"
@@ -793,7 +797,7 @@ done
 
 for row in "${skipped_rows[@]}"; do
   IFS=$'\t' read -r spec gate reason <<< "$row"
-  # Roster gates are ?min-lines / ?min-files / ?untested. Anything else is a
+  # Roster gates start with '?'. Anything else is a
   # capability declaration (role:reviewer, prompt:security-audit, …).
   case "$gate" in
     \?*)

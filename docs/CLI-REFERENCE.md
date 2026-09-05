@@ -61,12 +61,26 @@ so `agentcall --installed` finds them and `command -v cursor` does not.
 ## `cadre review` roster gates
 
 The review roster comes from `--roster`, then `$CADRE_ROSTER`, then
-`$CADRE_HOME/roster`. Each comma- or newline-separated entry is an agent spec
-followed by optional gate tokens:
+the target repository's `.cadre/roster`, then `$CADRE_HOME/roster`. The project
+file is looked up at the target's Git root, including linked worktrees and
+`--full` file or subdirectory targets, regardless of where Cadre is invoked.
+Non-Git targets use the global roster when neither override is set.
+
+A project roster selects which reviewer adapters run: only review projects
+whose policy you trust, or use `--roster` to select your own panel. The file is
+parsed as data with the same validation as the other layers; it is never sourced
+as shell code. An empty, comment-only, unreadable, or malformed project roster
+fails explicitly instead of falling back. The report and `manifest.txt` record
+`roster-layer` (`explicit`, `environment`, `project`, or `global`) and
+`roster-path` (shell-escaped; empty for flag/environment selections).
+
+Each comma- or newline-separated entry is an agent spec followed by optional
+gate tokens; `#` starts a comment:
 
 ```
 codex ?min-lines=200
 opencode:meta/muse-spark-1.1 ?min-files=5 ?untested
+claude ?paths=auth/ ?min-lines=20
 ```
 
 - `?min-lines=N` — run when added plus deleted lines are at least N. Binary
@@ -75,10 +89,22 @@ opencode:meta/muse-spark-1.1 ?min-files=5 ?untested
 - `?untested` — run when at least one non-test file and no test file changed.
   Deliberately crude: a path is a test when its basename or any directory
   segment contains `test` or `spec`, case-insensitively.
+- `?paths=TEXT` — run when any changed repository-relative path contains the
+  nonempty, case-sensitive literal substring TEXT. This is not a glob or regex;
+  `?paths=*.ts` searches for an actual `*.ts` in a filename. Gate tokens cannot
+  contain whitespace, commas, or `#`, which delimit the roster syntax.
+
+Gates measure the diff including tracked edits, deletions, and untracked
+non-ignored files. Renames count as one touched file; both old and new names
+participate in path matching and test classification. Paths retain their raw
+bytes, including spaces, tabs, newlines, and Unicode.
 
 Multiple gates are ANDed. `--all-seats` ignores them. `--full` has no diff to
 measure, so every gated seat runs and the report states that gates do not apply.
 Malformed gates are refused while parsing the roster.
+
+Intent declarations and checks that a change fulfills them belong to issue #8;
+project rosters only select seats and gate them on the diff.
 
 ## Capability preflight
 
@@ -95,6 +121,13 @@ cadre preflight [--roster a,b,c]
 
 prints the table. Seed declarations today: `agy` refuses
 security-audit-shaped prompts; `cerebras/*` works as a judge but not a reviewer.
+Preflight uses the same roster precedence, with the current Git root as its
+project target; without any roster it lists all adapter declarations.
+
+For a behavioral check against a saved tool-call response, use
+`cadre contract-snapshot response.json --compare known-good-snapshot.json`.
+It runs offline and exits nonzero on a mismatch. See
+[contract snapshots](CONTRACT-SNAPSHOT.md) for capture conditions and limits.
 
 Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
 `--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
