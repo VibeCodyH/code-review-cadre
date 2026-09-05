@@ -48,7 +48,8 @@ usage() {
 Code Review Cadre: benchmark AI code reviewers on YOUR repo, staff a panel,
 then run that panel on the code you are about to ship.
 
-  cadre setup <repo-dir> [limit]        mine (target, fix) commit pairs
+  cadre setup <repo-dir> [limit] [--verify]
+                                        mine pairs; optionally execute tests
   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
                                         build the leak-controlled checkout and
                                         DRAFT an answer key for you to correct
@@ -198,12 +199,28 @@ cmd_passes() {
 }
 
 cmd_setup() {
-  local repo="${1:?usage: cadre setup <repo-dir> [limit]}" limit="${2:-200}"
-  [ -d "$repo/.git" ] || die "not a git repo: $repo"
+  local repo='' limit=200 have_limit=0 verify="${CADRE_VERIFY_PAIRS:-0}" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --verify) verify=1 ;;
+      --*) die "unknown setup option: $arg" ;;
+      *) if [ -z "$repo" ]; then repo="$arg"
+         elif [ "$have_limit" -eq 0 ]; then limit="$arg"; have_limit=1
+         else die "usage: cadre setup <repo-dir> [limit] [--verify]"; fi ;;
+    esac
+  done
+  [ -n "$repo" ] || die "usage: cadre setup <repo-dir> [limit] [--verify]"
+  case "$limit" in ''|*[!0-9]*|0) die "setup limit must be a positive integer" ;; esac
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo: $repo"
+  repo=$(git -C "$repo" rev-parse --show-toplevel) || die "setup needs a working-tree repository"
+  if [ "$verify" = 1 ]; then
+    . "$CADRE_ROOT/lib/verify-pair.sh"
+    verify_pairs_check "$repo"
+  fi
   init_home
   local out="$CADRE_HOME/shortlist-$(basename "$(readlink -f "$repo")").tsv"
   echo "mining fix-commit pairs in $repo (last $limit fix-shaped commits)…"
-  "$CADRE_ROOT/lib/mine-fixes.sh" "$repo" "$limit" | tee "$out"
+  CADRE_VERIFY_PAIRS="$verify" "$CADRE_ROOT/lib/mine-fixes.sh" "$repo" "$limit" | tee "$out" || return $?
   echo
   # ★ Do not tell someone to "pick a row" from an empty table. The miner has
   # already explained on stderr WHICH filter emptied it; this only has to stop
@@ -220,9 +237,9 @@ EOF
   echo "saved: $out"
   cat <<EOF
 
-Each of the $rows row(s) is a candidate pass: the author broke something in
-target_sha and repaired it in fix_sha, WITH a test change proving the defect
-was real.
+Each of the $rows row(s) is a candidate pass with a source and test change.
+The verification column says whether tests passed at fix_sha and failed with
+its source changes reverted. Unverified rows remain candidates, not proven bugs.
 
 Pick a row where the fix is a behavioural repair you would have wanted a
 reviewer to catch, then:

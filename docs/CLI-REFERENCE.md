@@ -15,6 +15,27 @@ Versions captured **2026-07-26** on the machine cadre was built on. `agentcall
 (`~/.local/state/cadre/agents.d/` here, per `lib/common.sh:18`) did not exist, so
 every row below is a shipped adapter with no local override in front of it.
 
+## Mining verification
+
+`cadre setup <repo-dir> [limit] [--verify]` mines candidates without executing
+code by default. `--verify` or `CADRE_VERIFY_PAIRS=1` enables the optional
+green-at-fix/red-with-source-reverted check. The shortlist TSV appends a
+`verification` column (`verified`, `unverified`, or `no-test-cmd`). Existing
+columns keep their positions. `CADRE_TEST_CMD` overrides detection;
+`CADRE_VERIFY_TIMEOUT` is a positive integer in seconds (default 120 per arm).
+
+Verification retains tests, configuration and other non-source files at the
+fix revision. Source means the miner's supported code extensions outside test
+paths, conventional Go/Python/Ruby/Java test filenames, and type declarations.
+This is file-level separation. Rust source containing `test` or `doctest` is
+left unverified because its assertions may be embedded in the source being
+reverted. Other embedded-test conventions are not detected; inspect the saved
+patch before treating the result as a test of the original assertion.
+It handles additions, deletions and renames by
+reversing their source-file patch. Separate fresh copies avoid generated-file
+contamination between arms. No dependencies are installed automatically.
+See the README execution warning before enabling this on a third-party repo.
+
 ## Roster
 
 | adapter | binary | version here | docs | changelog |

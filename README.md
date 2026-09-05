@@ -225,6 +225,24 @@ and a model grades measures agreement with the model, so you read the draft
 before the pass will register. The setup step needs a human. `cadre run` after
 it does not.
 
+`cadre setup ~/my-repo --verify` optionally runs each shortlisted fix's tests
+twice: once at the fix, then on a fresh copy with only its source changes
+reverted and its tests retained. `verified` means the first command passed and
+the second failed. Rows that cannot establish that stay `unverified` (or
+`no-test-cmd`); they are not dropped. Review the saved logs before accepting a
+key: a failure can still be environmental, and one green/red pair does not
+establish that a suite is free of flakes or that the blamed target introduced
+the bug.
+
+**Verification executes repository code on your machine, without a sandbox.**
+Test scripts can access your environment and network. It is off by default;
+`CADRE_VERIFY_PAIRS=1` also enables it. Both copies live temporarily under
+`CADRE_WORK`, outside the source repo and `CADRE_HOME`. Cadre does not install
+dependencies. Use `CADRE_TEST_CMD` to override the detected full-suite command
+and `CADRE_VERIFY_TIMEOUT` to change the 120-second limit per arm. Timeouts,
+signals, and command launch errors never count as proof. Commands, exit codes,
+logs, and the source-revert patch stay in `CADRE_HOME/verification/`.
+
 ## Where the answer key comes from
 
 Not from a model's opinion. From what the author actually fixed next.

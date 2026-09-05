@@ -7,14 +7,24 @@
 # is what makes A a plausible reviewable diff whose defect the author repaired
 # next. The two non-obvious filters below are argued in docs/METHOD.md §2.
 #
-# Usage: mine-fixes.sh <repo-dir> [max-fix-commits] [max-age-days]
+# Usage: mine-fixes.sh <repo-dir> [max-fix-commits] [max-age-days] [--verify]
 set -uo pipefail
 
 REPO="${1:?repo dir}"
 LIMIT="${2:-150}"
 MAXAGE="${3:-120}"
+VERIFY="${CADRE_VERIFY_PAIRS:-0}"
+[ "${4:-}" != --verify ] || VERIFY=1
+case "$VERIFY" in 0|1) ;; *) echo 'CADRE_VERIFY_PAIRS must be 0 or 1' >&2; exit 2 ;; esac
 
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git repo: $REPO" >&2; exit 1; }
+REPO=$(git -C "$REPO" rev-parse --show-toplevel) || exit 1
+if [ "$VERIFY" = 1 ]; then
+  CADRE_ROOT="${CADRE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
+  . "$CADRE_ROOT/lib/common.sh"
+  . "$CADRE_ROOT/lib/verify-pair.sh"
+  verify_pairs_init "$REPO"
+fi
 
 # Fix-shaped commits, excluding merges and version bumps.
 # Reverts are dropped here, not left for the reader to spot: the "defect" is the
@@ -30,7 +40,7 @@ mapfile -t FIXES < <(
   | grep -viE 'tsc|type ?check|deno type|\bCI\b|failing test|flaky|satisfy .* types|jsdoc|comment' || true
 )
 
-printf 'fix_sha\ttarget_sha\tsrc\ttest\tshare\tage\tfix_subject\n'
+printf 'fix_sha\ttarget_sha\tsrc\ttest\tshare\tage\tfix_subject\tverification\n'
 
 # ★ Every filter below is a place the table can silently become empty. Without
 # a tally the output is a bare header and the reader cannot tell an empty repo
@@ -57,8 +67,8 @@ for line in "${FIXES[@]}"; do
          | grep -viE '(^|/)(tests?|__tests__|spec|e2e)/|\.(test|spec)\.|\.d\.ts$' -c) || nsrc=0
   [ "${nsrc:-0}" -ge 1 ] || { d_nosrc=$((d_nosrc + 1)); continue; }
 
-  # Require the fix to carry a test change too, the author proving the defect
-  # was real. This is the single strongest signal that the target is gradeable.
+  # A test change is a useful proxy, not proof that the test detects the defect.
+  # Optional execution verification below checks both directions.
   has_test=$(git -C "$REPO" diff --name-only "$B^" "$B" 2>/dev/null \
              | grep -ciE '(^|/)(tests?|__tests__|spec|e2e)/|\.(test|spec)\.') || has_test=0
   [ "${has_test:-0}" -ge 1 ] || { d_notest=$((d_notest + 1)); continue; }
@@ -100,7 +110,11 @@ for line in "${FIXES[@]}"; do
   [ "$age" -ge 0 ] && [ "$age" -le "$MAXAGE" ] || { d_age=$((d_age + 1)); continue; }
 
   n_kept=$((n_kept + 1))
-  printf '%s\t%s\t%s\t%s\t%s%%\t%s\t%s\n' "${B:0:9}" "${A:0:9}" "$nsrc" "$has_test" "$share" "$age" "$BS"
+  verification=unverified
+  if [ "$VERIFY" = 1 ]; then
+    verification=$(verify_pair "$REPO" "$B") || exit $?
+  fi
+  printf '%s\t%s\t%s\t%s\t%s%%\t%s\t%s\t%s\n' "${B:0:9}" "${A:0:9}" "$nsrc" "$has_test" "$share" "$age" "$BS" "$verification"
 done
 
 # ---- why the table is the size it is ------------------------------------
