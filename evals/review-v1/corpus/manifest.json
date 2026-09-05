@@ -1,0 +1,151 @@
+{
+  "schema": "cadre/review-corpus@1",
+  "description": "Original synthetic fixtures. Keys are provisional guidance, not an independently validated quality benchmark. Holdout is a tuning convention, not a secret corpus.",
+  "cases": [
+    {
+      "id": "tenant-scope-buggy",
+      "scenario": "tenant-scope",
+      "variant": "buggy",
+      "split": "development",
+      "base": "tenant-scope/base",
+      "target": "tenant-scope/target",
+      "oracle": "tenant-scope/oracle.mjs",
+      "key": {
+        "id": "cross-tenant-rename",
+        "severity": "blocking",
+        "claim": "The document lookup no longer restricts results to the caller tenant.",
+        "trigger": "A tenant-a caller supplies the ID of a tenant-b document.",
+        "consequence": "The caller can rename a document owned by another tenant.",
+        "path": "documents.mjs",
+        "line": 2
+      }
+    },
+    {
+      "id": "tenant-scope-fixed",
+      "scenario": "tenant-scope",
+      "variant": "fixed",
+      "split": "development",
+      "base": "tenant-scope/base",
+      "target": "tenant-scope/fixed",
+      "oracle": "tenant-scope/oracle.mjs",
+      "key": null
+    },
+    {
+      "id": "batch-cleanup-buggy",
+      "scenario": "batch-cleanup",
+      "variant": "buggy",
+      "split": "development",
+      "base": "batch-cleanup/base",
+      "target": "batch-cleanup/target",
+      "oracle": "batch-cleanup/oracle.mjs",
+      "key": {
+        "id": "partial-stage-leak",
+        "severity": "should-fix",
+        "claim": "The staged list is assigned only when every parallel upload succeeds.",
+        "trigger": "One stage rejects while another succeeds, including success after rejection.",
+        "consequence": "Cleanup sees an empty staged list and failed batches retain uploaded objects.",
+        "path": "publish.mjs",
+        "line": 4
+      }
+    },
+    {
+      "id": "batch-cleanup-fixed",
+      "scenario": "batch-cleanup",
+      "variant": "fixed",
+      "split": "development",
+      "base": "batch-cleanup/base",
+      "target": "batch-cleanup/fixed",
+      "oracle": "batch-cleanup/oracle.mjs",
+      "key": null
+    },
+    {
+      "id": "revision-race-buggy",
+      "scenario": "revision-race",
+      "variant": "buggy",
+      "split": "development",
+      "base": "revision-race/base",
+      "target": "revision-race/target",
+      "oracle": "revision-race/oracle.mjs",
+      "key": {
+        "id": "non-atomic-revision-check",
+        "severity": "blocking",
+        "claim": "A separate revision read and unconditional write replace the atomic update.",
+        "trigger": "Two concurrent updates read the same revision before either write.",
+        "consequence": "Both callers report success and one accepted update is lost.",
+        "path": "drafts.mjs",
+        "line": 5
+      }
+    },
+    {
+      "id": "revision-race-fixed",
+      "scenario": "revision-race",
+      "variant": "fixed",
+      "split": "development",
+      "base": "revision-race/base",
+      "target": "revision-race/fixed",
+      "oracle": "revision-race/oracle.mjs",
+      "key": null
+    },
+    {
+      "id": "vacuous-test-buggy",
+      "scenario": "vacuous-test",
+      "variant": "buggy",
+      "split": "holdout",
+      "base": "vacuous-test/base",
+      "target": "vacuous-test/target",
+      "oracle": "vacuous-test/oracle.mjs",
+      "key": {
+        "id": "empty-deliveries-vacuous-pass",
+        "severity": "should-fix",
+        "claim": "The regression test has no subscribed recipients and every() accepts zero deliveries.",
+        "trigger": "sendDigest regresses to a no-op that never delivers.",
+        "consequence": "The regression test still passes while subscribed users receive no digest.",
+        "path": "digest.test.mjs",
+        "line": 6
+      }
+    },
+    {
+      "id": "vacuous-test-fixed",
+      "scenario": "vacuous-test",
+      "variant": "fixed",
+      "split": "holdout",
+      "base": "vacuous-test/base",
+      "target": "vacuous-test/fixed",
+      "oracle": "vacuous-test/oracle.mjs",
+      "key": null
+    }
+  ],
+  "hashes": {
+    "batch-cleanup/base/README.md": "b24f996e44bf53519b21c903360482077ae9effa62d3b27447c86154e8df35b6",
+    "batch-cleanup/base/publish.mjs": "f02a98002012273a4938fd0bece2aa5b5a28b6b32ddc2867b486f4189bcaa19e",
+    "batch-cleanup/fixed/README.md": "b24f996e44bf53519b21c903360482077ae9effa62d3b27447c86154e8df35b6",
+    "batch-cleanup/fixed/publish.mjs": "314d3e46895fef8790f0a243fb14ac29e6c21207070c2a1ba9e1bc18f93ecd03",
+    "batch-cleanup/oracle.mjs": "d26519b191c11d890d3f00e086b1702e6dfaa46276a44a02d8251133a7ad2d99",
+    "batch-cleanup/target/README.md": "b24f996e44bf53519b21c903360482077ae9effa62d3b27447c86154e8df35b6",
+    "batch-cleanup/target/publish.mjs": "a95b6d8928382363379d85fbd8359b1e1f9384d98013c14be721cef923e135fb",
+    "revision-race/base/README.md": "b5093bba2eab94ae25848934d0c058f7eb5f0de180ee4e0dfe73410f29f75dbc",
+    "revision-race/base/drafts.mjs": "2c6ae7f1570887124755b6984bf5f34092e805e3a052a43929a349cdb16fed31",
+    "revision-race/fixed/README.md": "b5093bba2eab94ae25848934d0c058f7eb5f0de180ee4e0dfe73410f29f75dbc",
+    "revision-race/fixed/drafts.mjs": "c2256ab58655997ed0b8c0b44a69d9e40c134ae4ffc1933dfba75f0bf992ee61",
+    "revision-race/oracle.mjs": "00e2233dd35e75df12082e6da6b68d73bbc2f4e2da3a63752984186ebca39f90",
+    "revision-race/target/README.md": "b5093bba2eab94ae25848934d0c058f7eb5f0de180ee4e0dfe73410f29f75dbc",
+    "revision-race/target/drafts.mjs": "194ae65cd98b26998cca70983f79146720836218bc7f6d011302ee39191cf800",
+    "tenant-scope/base/README.md": "a6d01a12bda6f66aa0b314c2e2da728ff0e016c82dccf110c8233a75d8236dab",
+    "tenant-scope/base/documents.mjs": "3bd2cb73ef4a841c1e7a6e1f8acddb1658e31e96cb64611168f07b6375d9f372",
+    "tenant-scope/fixed/README.md": "a6d01a12bda6f66aa0b314c2e2da728ff0e016c82dccf110c8233a75d8236dab",
+    "tenant-scope/fixed/documents.mjs": "c247a675b5fd96157de2c1dbb4c2d38404c28ce67896217ddb34c87ec754ca9b",
+    "tenant-scope/oracle.mjs": "b3996ee9cfd9dc851ca7f138cca6e8fb7d4bca8f8e710ef96674323f442a8e03",
+    "tenant-scope/target/README.md": "a6d01a12bda6f66aa0b314c2e2da728ff0e016c82dccf110c8233a75d8236dab",
+    "tenant-scope/target/documents.mjs": "68f0a5ffea22f1de4ebc500af9c966e75c567b83fb34ff1fcd0941816e06883b",
+    "vacuous-test/base/README.md": "2f3408cd52a9b6ace89febcb8c2c0ac03f6c445acb49189f91b5710ea8ec8f7f",
+    "vacuous-test/base/digest.mjs": "0dea1ac71521c3dea10502a2896f00f92f9b73a442382c48aeceafebe0f82dc9",
+    "vacuous-test/base/digest.test.mjs": "9668ed8da6d1d1b9ee82053dfad401f94c7a1947686782e66ab0613bb4fd8ea1",
+    "vacuous-test/fixed/README.md": "2f3408cd52a9b6ace89febcb8c2c0ac03f6c445acb49189f91b5710ea8ec8f7f",
+    "vacuous-test/fixed/digest.mjs": "5f6fc651907950199ddfd4ef0060d44a9542b14efb1e0fa2385821baf53a2fc6",
+    "vacuous-test/fixed/digest.test.mjs": "88d0e0e1b38a1d518a1c83164ac9d6d28349658a595c10ff7185b5fcdd13656b",
+    "vacuous-test/oracle.mjs": "2ce258cd124851ab99c149e92a5b1148be5e12d34d999d6c0994b8a52e2066ea",
+    "vacuous-test/target/README.md": "2f3408cd52a9b6ace89febcb8c2c0ac03f6c445acb49189f91b5710ea8ec8f7f",
+    "vacuous-test/target/digest.mjs": "5f6fc651907950199ddfd4ef0060d44a9542b14efb1e0fa2385821baf53a2fc6",
+    "vacuous-test/target/digest.test.mjs": "3a9de8e8c3969afec2ff090cb82abeed23d8388cd521158d6beb398d1e15f54f"
+  }
+}

@@ -139,6 +139,12 @@ adapter_files() {
       fi
     done
   done
+  # The optional SDK adapter executes these files; its shell shim alone is not its identity.
+  if [ "$a" = pireview ]; then
+    for f in cli.mjs review.mjs package.json package-lock.json; do
+      printf '%s\n' "$CADRE_ROOT/integrations/pi-review/$f"
+    done
+  fi
 }
 
 adapter_sha() {

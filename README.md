@@ -204,6 +204,9 @@ one you are paying for twice under different branding.
 
 ## Quick start
 
+For the optional Pi SDK reviewer and its frozen comparison corpus, see
+[Pi review adapter and matched evaluation](docs/PI-REVIEW.md).
+
 ```bash
 git clone https://github.com/VibeCodyH/code-review-cadre ~/code-review-cadre
 export PATH="$HOME/code-review-cadre/bin:$PATH"
