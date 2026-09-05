@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, 
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { compare, parseArgs, parseStock, preflightModel, prepareCheckout, settings } from './compare.mjs';
+import { compare, execute, parseArgs, parseStock, preflightModel, preflightTemporaryDirectoryIsolation, prepareCheckout, privateTmpCommand, settings } from './compare.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const temp = () => mkdtempSync(join(tmpdir(), 'cadre-comparison-test-'));
@@ -159,4 +159,108 @@ test('outer deadline degrades SDK exit-zero success just as it degrades stock su
     assert.match(normalized, /_TRUNCATED: timeout/);
     assert.match(readFileSync(join(result.out, sdk.run_id, 'sdk/review.md'), 'utf8'), /Verdict: no defects found/);
   } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('private /tmp hides host and previous attempt files while exposing current checkout, config and outputs for both arms', async () => {
+  preflightTemporaryDirectoryIsolation();
+  const work = mkdtempSync('/tmp/cadre-private-tmp-test-');
+  const sharedScratch = `/tmp/${work.split('/').at(-1)}-scratch.mjs`;
+  const sentinel = join(work, 'host-sentinel');
+  const previous = join(work, 'previous-attempt');
+  mkdirSync(previous); writeFileSync(join(previous, 'publish.mjs'), 'stale fixture');
+  writeFileSync(sentinel, 'host only');
+  let previousOut = join(work, 'nonexistent-output');
+  try {
+    for (const arm of ['stock', 'review']) {
+      const runWork = join(work, `attempt-${arm}`);
+      const cwd = join(runWork, 'checkout');
+      const config = join(runWork, 'config');
+      const runOut = join(work, `output-${arm}`);
+      mkdirSync(cwd, { recursive: true }); mkdirSync(config); mkdirSync(runOut);
+      writeFileSync(join(cwd, 'fixture.mjs'), arm);
+      writeFileSync(join(config, 'settings.json'), '{}');
+      const stdout = join(runOut, 'stdout.txt'); const stderr = join(runOut, 'stderr.txt');
+      writeFileSync(stdout, ''); writeFileSync(stderr, '');
+      const script = `
+        const fs = require('node:fs');
+        const hidden = ${JSON.stringify([sentinel, join(previous, 'publish.mjs'), previousOut, sharedScratch])};
+        const checks = {
+          hidden: hidden.every(path => !fs.existsSync(path)),
+          checkout: fs.readFileSync(${JSON.stringify(join(cwd, 'fixture.mjs'))}, 'utf8') === ${JSON.stringify(arm)},
+          config: fs.readFileSync(${JSON.stringify(join(config, 'settings.json'))}, 'utf8') === '{}',
+          temp: process.env.TMPDIR === '/tmp' && process.env.TMP === '/tmp' && process.env.TEMP === '/tmp'
+        };
+        fs.writeFileSync(${JSON.stringify(sharedScratch)}, 'private reproduction');
+        fs.writeFileSync(${JSON.stringify(join(runOut, 'sdk-result.json'))}, JSON.stringify(checks));
+        console.log(JSON.stringify(checks));
+        if (Object.values(checks).some(value => !value)) process.exitCode = 1;
+      `;
+      const wrapped = privateTmpCommand(process.execPath, ['-e', script], { cwd, runWork, runOut });
+      assert.equal(wrapped.command, '/usr/bin/bwrap');
+      assert.deepEqual(wrapped.args.slice(0, 5), ['--bind', '/', '/', '--tmpfs', '/tmp']);
+      const result = await execute(process.execPath, ['-e', script], {
+        cwd, runWork, runOut, env: { ...process.env, TMPDIR: '/host/temp' }, prompt: '', timeout: 5, stdout, stderr,
+      });
+      assert.equal(result.exit_code, 0, readFileSync(stderr, 'utf8'));
+      assert.deepEqual(JSON.parse(readFileSync(stdout)), { hidden: true, checkout: true, config: true, temp: true });
+      assert.equal(existsSync(join(runOut, 'sdk-result.json')), true);
+      assert.equal(existsSync(sharedScratch), false);
+      previousOut = runOut;
+    }
+    assert.equal(readFileSync(sentinel, 'utf8'), 'host only');
+    assert.equal(readFileSync(join(previous, 'publish.mjs'), 'utf8'), 'stale fixture');
+  } finally { rmSync(work, { recursive: true, force: true }); rmSync(sharedScratch, { force: true }); }
+});
+
+test('failed private /tmp preflight prevents model preflight and all dispatch', async () => {
+  const work = temp();
+  let modelCalled = false;
+  try {
+    await assert.rejects(compare({ model: 'provider/model', out: join(work, 'output'), runs: 1,
+      split: 'development', case: 'tenant-scope-buggy', thinking: 'off', timeout: 10, 'agent-dir': work }, {
+      preflightIsolation: () => { throw Error('bubblewrap unavailable'); },
+      preflightModel: async () => { modelCalled = true; },
+    }), /bubblewrap unavailable/);
+    assert.equal(modelCalled, false);
+    assert.equal(existsSync(join(work, 'output')), false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+
+test('stock verdict accepts ATX headings, bullets and overall labels', () => {
+  const verdicts = ['blocking', 'should-fix', 'no defects found'];
+  for (const verdict of verdicts) {
+    const headings = Array.from({ length: 6 }, (_, depth) => `${'#'.repeat(depth + 1)} Verdict: ${verdict}`);
+    for (const text of [...headings,
+      `## **Verdict:** ${verdict}`, `## Verdict: ${verdict} ##`,
+      `### **Verdict:** **${verdict}** ###`, `- **Verdict:** ${verdict}`, `* Verdict: ${verdict}`,
+      `Overall verdict: ${verdict}`, `## **Overall verdict:** ${verdict}`, `- ## Verdict: ${verdict}`,
+    ]) {
+      const result = parseStock(stream(message(text), { type: 'agent_end' }), 0);
+      assert.equal(result.status, 'ok', text);
+      assert.equal(result.verdict, verdict, text);
+      assert.equal(result.review, text);
+    }
+  }
+});
+
+test('stock heading normalization preserves quote, example and conflict exclusions', () => {
+  for (const text of [
+    '####### Verdict: blocking', '##Verdict: blocking', '+ Verdict: no defects found',
+    '> ## Verdict: no defects found', '    ## Verdict: no defects found',
+    '```markdown\n## Verdict: no defects found\n```',
+    '~~~\n- **Verdict:** no defects found\n~~~',
+    '## Verdict: no defects found\nOverall verdict: blocking',
+    '- Verdict: no defects found\n## Verdict: should-fix',
+    '## Verdict: blocking##',
+  ]) {
+    const result = parseStock(stream(message(text), { type: 'agent_end' }), 0);
+    assert.equal(result.status, 'inconclusive', text);
+    assert.equal(result.verdict, null, text);
+  }
+  const review = '> ## Verdict: no defects found\n```\n## Verdict: no defects found\n```\n## Verdict: blocking';
+  assert.equal(parseStock(stream(message(review), { type: 'agent_end' }), 0).verdict, 'blocking');
+  for (const [exitCode, timedOut, stopReason] of [[124, true, 'stop'], [1, false, 'stop'], [0, false, 'length']]) {
+    assert.equal(parseStock(stream(message('## Verdict: no defects found', stopReason), { type: 'agent_end' }), exitCode, timedOut).status, 'degraded');
+  }
 });

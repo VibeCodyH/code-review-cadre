@@ -83,6 +83,13 @@ node evals/review-v1/verify-corpus.mjs
 
 Then run the development comparison against an explicitly configured model:
 
+The comparison requires Linux and `bwrap` (Bubblewrap), with working mount
+namespaces. Each arm gets a private `/tmp`, with only its current checkout,
+configuration, and output directory made visible there. This prevents a
+reproduction from importing another attempt's temporary files. The runner checks
+this support before dispatching a model; it does not fall back to a shared `/tmp`.
+The standalone SDK adapter does not require Bubblewrap.
+
 ```sh
 node evals/review-v1/compare.mjs --model provider/model --out /path/to/new-results
 ```
@@ -100,11 +107,14 @@ same enabled coding tools and effective thinking setting. Unsupported thinking
 settings are rejected before either arm runs. Alternating arm order reduces a
 consistent first-run cache advantage; it does not eliminate server-load effects.
 
+The private temporary directory is not a host filesystem sandbox. Other host
+paths and network access remain available to the tools.
+
 The intervention is the submission and receipt tools with their instructions, plus the
 CLI-to-SDK lifecycle change. A difference cannot be attributed to any one of
 those changes without a later experiment.
 
-The runner checks the corpus and execution-code fingerprints before every arm.
+The runner checks the corpus and execution-code fingerprints before and after every arm.
 Changed code stops the comparison. It preserves failed observations, validates
 observed model identity, and marks tracked checkout mutations invalid. Untracked
 reproduction files are allowed. `report.md` links both reviews, while `runs.jsonl`

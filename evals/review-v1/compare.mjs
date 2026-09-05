@@ -48,7 +48,11 @@ function stockVerdict(review) {
       continue;
     }
     if (fence) continue;
-    const match = line.replace(/\*\*|__/g, '').match(/^Verdict:\s*(blocking|should-fix|no defects found)\s*$/i);
+    let normalized = line.replace(/^[-*][ \t]+/, '');
+    if (/^#{1,6}[ \t]+/.test(normalized)) {
+      normalized = normalized.replace(/^#{1,6}[ \t]+/, '').replace(/[ \t]+#+[ \t]*$/, '');
+    }
+    const match = normalized.replace(/\*\*|__/g, '').match(/^(?:Overall[ \t]+)?Verdict:\s*(blocking|should-fix|no defects found)\s*$/i);
     if (match) verdicts.add(match[1].toLowerCase());
   }
   return verdicts.size === 1 ? [...verdicts][0] : null;
@@ -160,12 +164,37 @@ function copyConfig(source, target, provider) {
   return digest(JSON.stringify(providerConfig));
 }
 
-export async function execute(command, args, { cwd, env, prompt, timeout, stdout, stderr }) {
+export function preflightTemporaryDirectoryIsolation() {
+  const result = spawnSync('/usr/bin/bwrap', ['--bind', '/', '/', '--tmpfs', '/tmp', '--chdir', '/', '--', '/usr/bin/true'], {
+    encoding: 'utf8', timeout: 5000,
+  });
+  if (result.error || result.status !== 0) {
+    throw Error('Comparison requires working /usr/bin/bwrap for a private /tmp per attempt. Install bubblewrap and enable unprivileged user namespaces, then retry; no model arms were dispatched.');
+  }
+}
+
+export function privateTmpCommand(command, args, { cwd, runWork, runOut }) {
+  if (!runWork || !runOut) throw Error('Private /tmp execution requires the current attempt and artifact directories');
+  if (!resolve(cwd).startsWith(resolve(runWork) + '/')) throw Error('Checkout must be inside the current attempt directory');
+  return { command: '/usr/bin/bwrap', args: [
+    '--bind', '/', '/', '--tmpfs', '/tmp',
+    // Re-expose only this attempt's checkout/config and artifacts after hiding
+    // host /tmp. Never bind the parent containing other attempts or results.
+    '--bind', resolve(runWork), resolve(runWork), '--bind', resolve(runOut), resolve(runOut),
+    '--chdir', cwd, '--', command, ...args,
+  ] };
+}
+
+export async function execute(command, args, { cwd, env, prompt, timeout, stdout, stderr, runWork, runOut }) {
+  const isolated = privateTmpCommand(command, args, { cwd, runWork, runOut });
   return new Promise((resolveRun, reject) => {
     const started = Date.now();
     let timedOut = false;
     let killTimer;
-    const child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(isolated.command, isolated.args, {
+      cwd, env: { ...env, TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp' },
+      detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
+    });
     const kill = signal => { try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, signal); } catch {} };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -190,6 +219,7 @@ export function report(rows, manifest) {
     'Quality grades are intentionally absent until findings are checked against the case oracle and code.', '',
     `Model requested: ${manifest.model}. Repetitions: ${manifest.runs}. Split: ${manifest.split}.`,
     'Stock Pi CLI and the SDK adapter use the same pinned Pi release, checkout, common brief, provider configuration, thinking setting, and wall-clock limit.',
+    'Both arms get a fresh private /tmp through bubblewrap, exposing only the current attempt and its artifacts there. Host networking and the rest of the filesystem remain available; this is not a full sandbox.',
     'The intervention adds structured submission, execution receipts, and their instructions. This compares that bundle, not the SDK alone.', '',
     '| Case | Repeat | Arm | Output | Seconds | Review |', '|---|---:|---|---|---:|---|'];
   for (const row of rows) lines.push(`| ${row.case} | ${row.repeat} | ${row.arm} | ${row.status} | ${row.seconds.toFixed(1)} | [read](${row.run_id}/review.md) |`);
@@ -204,6 +234,7 @@ export async function compare(options, dependencies = {}) {
   const corpusManifest = json(join(corpus, 'manifest.json'));
   const cases = corpusManifest.cases.filter(c => (options.split === 'all' || c.split === options.split) && (!options.case || c.id === options.case));
   if (!cases.length) throw Error('No cases selected');
+  if (!dependencies.execute) await (dependencies.preflightIsolation ?? preflightTemporaryDirectoryIsolation)();
   const out = resolve(options.out);
   if (out.startsWith(root + '/') || out === root) throw Error('Put comparison artifacts outside the Cadre worktree');
   mkdirSync(out, { mode: 0o700 });
@@ -220,6 +251,7 @@ export async function compare(options, dependencies = {}) {
     corpus_sha256: corpusFingerprint(corpus), software: softwareHashes(),
     prompt_sha256: digest(prompt), cases: cases.map(c => c.id), started_at: new Date().toISOString(),
     intervention: 'submit_review and execution_receipts tools plus their instructions; stock CLI versus SDK lifecycle',
+    temporary_directory_isolation: dependencies.execute ? 'injected executor' : 'per-attempt private /tmp via bubblewrap; current attempt and artifact directories rebound; host network unchanged',
   };
   const rows = [];
   const append = row => appendFileSync(join(out, 'runs.jsonl'), JSON.stringify(row) + '\n', { mode: 0o600 });
@@ -255,7 +287,7 @@ export async function compare(options, dependencies = {}) {
           append({ event: 'dispatch', ...baseRecord, at: new Date().toISOString() });
           let execution;
           const launchTime = Date.now();
-          try { execution = await (dependencies.execute ?? execute)(process.execPath, args, { cwd, env, prompt, timeout: options.timeout, stdout, stderr }); }
+          try { execution = await (dependencies.execute ?? execute)(process.execPath, args, { cwd, env, prompt, timeout: options.timeout, stdout, stderr, runWork, runOut }); }
           catch { execution = { exit_code: null, signal: null, timed_out: false, seconds: (Date.now() - launchTime) / 1000, launch_error: true }; }
           let result;
           if (arm === 'stock') result = parseStock(readFileSync(stdout, 'utf8'), execution.exit_code, execution.timed_out);
