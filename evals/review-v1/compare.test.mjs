@@ -183,12 +183,14 @@ test('private /tmp hides host and previous attempt files while exposing current 
       writeFileSync(stdout, ''); writeFileSync(stderr, '');
       const script = `
         const fs = require('node:fs');
+        const subprocess = require('node:child_process').spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', 'git --version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
         const hidden = ${JSON.stringify([sentinel, join(previous, 'publish.mjs'), previousOut, sharedScratch])};
         const checks = {
           hidden: hidden.every(path => !fs.existsSync(path)),
           checkout: fs.readFileSync(${JSON.stringify(join(cwd, 'fixture.mjs'))}, 'utf8') === ${JSON.stringify(arm)},
           config: fs.readFileSync(${JSON.stringify(join(config, 'settings.json'))}, 'utf8') === '{}',
-          temp: process.env.TMPDIR === '/tmp' && process.env.TMP === '/tmp' && process.env.TEMP === '/tmp'
+          temp: process.env.TMPDIR === '/tmp' && process.env.TMP === '/tmp' && process.env.TEMP === '/tmp',
+          nested_bash_git: !subprocess.error && subprocess.status === 0 && /^git version /.test(subprocess.stdout)
         };
         fs.writeFileSync(${JSON.stringify(sharedScratch)}, 'private reproduction');
         fs.writeFileSync(${JSON.stringify(join(runOut, 'sdk-result.json'))}, JSON.stringify(checks));
@@ -202,7 +204,7 @@ test('private /tmp hides host and previous attempt files while exposing current 
         cwd, runWork, runOut, env: { ...process.env, TMPDIR: '/host/temp' }, prompt: '', timeout: 5, stdout, stderr,
       });
       assert.equal(result.exit_code, 0, readFileSync(stderr, 'utf8'));
-      assert.deepEqual(JSON.parse(readFileSync(stdout)), { hidden: true, checkout: true, config: true, temp: true });
+      assert.deepEqual(JSON.parse(readFileSync(stdout)), { hidden: true, checkout: true, config: true, temp: true, nested_bash_git: true });
       assert.equal(existsSync(join(runOut, 'sdk-result.json')), true);
       assert.equal(existsSync(sharedScratch), false);
       previousOut = runOut;
@@ -263,4 +265,40 @@ test('stock heading normalization preserves quote, example and conflict exclusio
   for (const [exitCode, timedOut, stopReason] of [[124, true, 'stop'], [1, false, 'stop'], [0, false, 'length']]) {
     assert.equal(parseStock(stream(message('## Verdict: no defects found', stopReason), { type: 'agent_end' }), exitCode, timedOut).status, 'degraded');
   }
+});
+
+test('bubblewrap deadline permits a SIGTERM finalizer to persist artifacts while retaining timed_out', async () => {
+  preflightTemporaryDirectoryIsolation();
+  const work = mkdtempSync('/tmp/cadre-private-tmp-signal-test-');
+  try {
+    const runWork = join(work, 'attempt');
+    const cwd = join(runWork, 'checkout');
+    const runOut = join(work, 'output');
+    mkdirSync(cwd, { recursive: true }); mkdirSync(runOut);
+    const stdout = join(runOut, 'stdout.txt'); const stderr = join(runOut, 'stderr.txt');
+    const artifact = join(runOut, 'partial-result.json');
+    writeFileSync(stdout, ''); writeFileSync(stderr, '');
+    const script = `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {
+        setTimeout(() => {
+          fs.writeFileSync(${JSON.stringify(artifact)}, JSON.stringify({ status: 'degraded', reason: 'external_abort' }));
+          process.exit(0);
+        }, 25);
+      });
+      console.log('ready');
+      setInterval(() => {}, 1000);
+    `;
+    const result = await execute(process.execPath, ['-e', script], {
+      cwd, runWork, runOut, env: process.env, prompt: '', timeout: 0.3, stdout, stderr,
+    });
+    assert.match(readFileSync(stdout, 'utf8'), /ready/);
+    assert.equal(result.timed_out, true);
+    assert.deepEqual(JSON.parse(readFileSync(artifact)), { status: 'degraded', reason: 'external_abort' });
+    // Group termination includes bwrap itself; the Node child finalizes and
+    // exits zero, while execute conservatively records its wrapper's SIGTERM.
+    assert.equal(result.exit_code, null, readFileSync(stderr, 'utf8'));
+    assert.equal(result.signal, 'SIGTERM');
+    assert.equal(parseStock(stream(message('Verdict: no defects found'), { type: 'agent_end' }), 0, result.timed_out).status, 'degraded');
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });

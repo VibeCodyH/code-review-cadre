@@ -13,7 +13,7 @@ From the Cadre repository:
 
 ```sh
 npm ci --prefix integrations/pi-review
-agentcall pireview -d /path/to/disposable-checkout -M provider/model < review-prompt.md
+./bin/agentcall pireview -d /path/to/disposable-checkout -M provider/model < review-prompt.md
 ```
 
 Configure the provider and credentials in Pi first. An explicit model is required;
@@ -24,7 +24,7 @@ accepts `minimal`, `low`, `medium`, `high`, or `xhigh` when the model supports i
 To put it on a Cadre panel:
 
 ```sh
-cadre review --roster pireview:provider/model --synth none
+./bin/cadre review --roster pireview:provider/model --synth none
 ```
 
 Cadre supplies the disposable checkout in this path. The adapter uses Pi's normal
@@ -84,10 +84,11 @@ node evals/review-v1/verify-corpus.mjs
 Then run the development comparison against an explicitly configured model:
 
 The comparison requires Linux and `bwrap` (Bubblewrap), with working mount
-namespaces. Each arm gets a private `/tmp`, with only its current checkout,
+namespaces. Each arm gets a private `/tmp` and standard `/dev`, with only its current checkout,
 configuration, and output directory made visible there. This prevents a
 reproduction from importing another attempt's temporary files. The runner checks
-this support before dispatching a model; it does not fall back to a shared `/tmp`.
+this support, including nested Bash/Git execution, before dispatching a model;
+it does not fall back to a shared `/tmp`.
 The standalone SDK adapter does not require Bubblewrap.
 
 ```sh

@@ -165,11 +165,12 @@ function copyConfig(source, target, provider) {
 }
 
 export function preflightTemporaryDirectoryIsolation() {
-  const result = spawnSync('/usr/bin/bwrap', ['--bind', '/', '/', '--tmpfs', '/tmp', '--chdir', '/', '--', '/usr/bin/true'], {
+  const probe = `const {spawnSync}=require('node:child_process'); const result=spawnSync('/bin/bash',['--noprofile','--norc','-c','git --version'],{stdio:['ignore','pipe','pipe']}); if(result.error || result.status !== 0) process.exit(1);`;
+  const result = spawnSync('/usr/bin/bwrap', ['--bind', '/', '/', '--tmpfs', '/tmp', '--dev', '/dev', '--chdir', '/', '--', process.execPath, '-e', probe], {
     encoding: 'utf8', timeout: 5000,
   });
   if (result.error || result.status !== 0) {
-    throw Error('Comparison requires working /usr/bin/bwrap for a private /tmp per attempt. Install bubblewrap and enable unprivileged user namespaces, then retry; no model arms were dispatched.');
+    throw Error('Comparison requires working /usr/bin/bwrap with standard /dev and bash/git subprocesses for a private /tmp per attempt. Install bubblewrap and enable unprivileged user namespaces, then retry; no model arms were dispatched.');
   }
 }
 
@@ -177,7 +178,9 @@ export function privateTmpCommand(command, args, { cwd, runWork, runOut }) {
   if (!runWork || !runOut) throw Error('Private /tmp execution requires the current attempt and artifact directories');
   if (!resolve(cwd).startsWith(resolve(runWork) + '/')) throw Error('Checkout must be inside the current attempt directory');
   return { command: '/usr/bin/bwrap', args: [
-    '--bind', '/', '/', '--tmpfs', '/tmp',
+    '--bind', '/', '/', '--tmpfs', '/tmp', '--dev', '/dev',
+    // Root binds are nodev: standard /dev is necessary for ignored stdio
+    // (/dev/null), including Pi bash tools and git's own subprocesses.
     // Re-expose only this attempt's checkout/config and artifacts after hiding
     // host /tmp. Never bind the parent containing other attempts or results.
     '--bind', resolve(runWork), resolve(runWork), '--bind', resolve(runOut), resolve(runOut),
@@ -219,7 +222,7 @@ export function report(rows, manifest) {
     'Quality grades are intentionally absent until findings are checked against the case oracle and code.', '',
     `Model requested: ${manifest.model}. Repetitions: ${manifest.runs}. Split: ${manifest.split}.`,
     'Stock Pi CLI and the SDK adapter use the same pinned Pi release, checkout, common brief, provider configuration, thinking setting, and wall-clock limit.',
-    'Both arms get a fresh private /tmp through bubblewrap, exposing only the current attempt and its artifacts there. Host networking and the rest of the filesystem remain available; this is not a full sandbox.',
+    'Both arms get a fresh private /tmp and standard /dev through bubblewrap, exposing only the current attempt and its artifacts under /tmp. Host networking and other filesystem paths remain available; this is not a full sandbox.',
     'The intervention adds structured submission, execution receipts, and their instructions. This compares that bundle, not the SDK alone.', '',
     '| Case | Repeat | Arm | Output | Seconds | Review |', '|---|---:|---|---|---:|---|'];
   for (const row of rows) lines.push(`| ${row.case} | ${row.repeat} | ${row.arm} | ${row.status} | ${row.seconds.toFixed(1)} | [read](${row.run_id}/review.md) |`);
@@ -251,7 +254,7 @@ export async function compare(options, dependencies = {}) {
     corpus_sha256: corpusFingerprint(corpus), software: softwareHashes(),
     prompt_sha256: digest(prompt), cases: cases.map(c => c.id), started_at: new Date().toISOString(),
     intervention: 'submit_review and execution_receipts tools plus their instructions; stock CLI versus SDK lifecycle',
-    temporary_directory_isolation: dependencies.execute ? 'injected executor' : 'per-attempt private /tmp via bubblewrap; current attempt and artifact directories rebound; host network unchanged',
+    temporary_directory_isolation: dependencies.execute ? 'injected executor' : 'per-attempt private /tmp and standard /dev via bubblewrap; current attempt and artifact directories rebound; host network unchanged',
   };
   const rows = [];
   const append = row => appendFileSync(join(out, 'runs.jsonl'), JSON.stringify(row) + '\n', { mode: 0o600 });
