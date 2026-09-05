@@ -198,6 +198,30 @@ gets said plainly here rather than left for a reader to infer.
 
 `cadre panel` **generates hypotheses. It does not estimate decorrelation.**
 
+The `FILES % (runs)` cell shows each candidate's mean changed-file mention
+coverage for that pass, with the number of measured runs. Shared-basename
+ambiguity is excluded from the denominator; missing measurements and older
+reports show `-`. This is a separate signal to weigh beside item hits, not an
+automatic seating threshold. Mentioning a file does not prove it was reviewed.
+
+Grade reports also check supported `path:line`, `path:start-end`, and
+`path#Lstart-Lend` citations against that file's diff hunks (three context lines).
+Paths are matched literally, including spaces and regex punctuation. A basename
+unique across the old and new trees also works; shared basenames, unknown paths,
+unsupported citation syntax, binary changes, and missing diffs provide no position
+measurement. Supported paths start a line or follow whitespace, a backtick, or
+a quote; other wrapping is deliberately left unclassified. Paths containing
+tabs, newlines, double quotes, or backslashes are also unclassified. Renames are
+compared as deletion and addition so an old-path citation can still resolve.
+
+Any part of a cited range overlapping a hunk on either the old or new side is
+enough to avoid a drift flag, because these citations do not establish which
+side they mean. Zero-length sides contain no lines. An anchor outside all such
+hunks is **possible position drift**, not an invalid finding: unchanged code
+outside a hunk can be relevant. The check is advisory and never changes grades,
+DEFER gates, or the slot verdict. The denominator counts supported occurrences,
+not findings, and makes no claim that every citation was recognized.
+
 The defaults are two runs against a handful of key items. That is on the order of
 tens of binary outcomes — nowhere near enough to estimate co-failure structure,
 separate lineage effects from run-to-run variance, or put an interval on "covers

@@ -214,11 +214,6 @@ cost_per_hit() {
 #  - Empty denominator (no base, git failure, zero changed files) is "-", never
 #    0/0 -- same rule cost_per_hit follows: a number would be a claim the
 #    measurement does not support.
-# ★ DEFERRED (issue #5, criterion b): anchor/position-drift validation. A first
-# cut manufactured false drift four ways (substring file mis-attribution, an
-# anchor regex that fragments metachar paths, range anchors tested only at their
-# start, and pure-deletion files judged against another file's hunks). Left out
-# rather than shipped noisy; it is its own follow-up.
 # ★ NAMED NON-GOAL: mention detection is TEXT matching, not comprehension. A
 # reviewer can name a file without reviewing it. Coverage bounds attention from
 # below (never mentioned => never reviewed); it does not certify a read.
@@ -251,6 +246,44 @@ coverage_scan() {
       COV_UNCOVERED_LIST="${COV_UNCOVERED_LIST:+$COV_UNCOVERED_LIST, }$f"
     fi
   done <<< "$changed"
+}
+
+# Anchor checks deliberately use a separate, stricter matcher than mentions.
+# A substring may safely CREDIT attention; it cannot safely accuse drift.
+# Only literal full paths / unique basenames and supported line syntax count.
+# Per-file diffs avoid inferring file identity from quoted patch headers.
+anchor_scan() { # <review> <repo> <base> <sha>; sets ANCHOR_* (advisory only)
+  local review="$1" dir="$2" base="$3" sha="$4" paths treepaths oldtree f bn shares blockers patch result
+  ANCHOR_CHECKED=0 ANCHOR_DRIFT=0 ANCHOR_DRIFT_LIST=""
+  [ -n "$base" ] && [ -r "$review" ] || return 0
+  # Keep Git's C-quoted unusual paths out of this newline-based interface.
+  # Tabs/newlines/backslashes/quotes in names are unavailable, never drift.
+  paths=$(git -C "$dir" -c core.quotePath=false diff --name-only --no-renames "$base...$sha" 2>/dev/null) || return 0
+  oldtree=$(git -C "$dir" merge-base "$base" "$sha" 2>/dev/null) || return 0
+  treepaths=$(git -C "$dir" -c core.quotePath=false ls-tree -r --name-only "$oldtree" 2>/dev/null) || return 0
+  treepaths+=$'\n'$(git -C "$dir" -c core.quotePath=false ls-tree -r --name-only "$sha" 2>/dev/null) || return 0
+  treepaths=$(LC_ALL=C sort -u <<< "$treepaths")
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in *\\*|*\"*|*$'\t'*) continue ;; esac
+    bn=${f##*/}
+    shares=$(awk -v b="$bn" '{p=$0; sub(/.*\//,"",p); if(p==b)n++} END{print n+0}' <<< "$treepaths")
+    # A space/backtick/apostrophe can be filename text as well as a delimiter.
+    # Do not fragment a known longer name into this file's shorter citation.
+    blockers=$(awk -v f="$f" -v b="$bn" '
+      function suffix(s,t){return length(s)>length(t) && substr(s,length(s)-length(t)+1)==t}
+      {p=$0; sub(/.*\//,"",p); if(suffix($0,f) || suffix($0,b)) print; if(suffix(p,b)) print p}
+      ' <<< "$treepaths")
+    patch=$(git -C "$dir" diff --no-ext-diff --no-textconv --no-renames --unified=3 "$base...$sha" -- ":(literal)$f" 2>/dev/null) || continue
+    patch=$(awk '/^@@ /' <<< "$patch")
+    result=$(CADRE_ANCHOR_PATH="$f" CADRE_ANCHOR_BASENAME="$bn" CADRE_ANCHOR_PATCH="$patch" CADRE_ANCHOR_BLOCKERS="$blockers" \
+      awk -v unique="$shares" -f "$CADRE_ROOT/lib/anchor-scan.awk" "$review") || continue
+    local checked drift anchors
+    IFS=$'\t' read -r checked drift anchors <<< "$result"
+    ANCHOR_CHECKED=$((ANCHOR_CHECKED + checked))
+    ANCHOR_DRIFT=$((ANCHOR_DRIFT + drift))
+    [ -z "$anchors" ] || ANCHOR_DRIFT_LIST="${ANCHOR_DRIFT_LIST:+$ANCHOR_DRIFT_LIST, }$anchors"
+  done <<< "$paths"
 }
 
 # Which band a hit count falls in. Named so the range logic can ask the question
@@ -721,6 +754,14 @@ remove that directory and re-run."
         [ "$COV_UNCOVERED" -gt 0 ] && echo "  - never mentioned: $COV_UNCOVERED_LIST" >> "$report"
         passcov_runs=$((passcov_runs + 1))
         passcov_pctsum=$((passcov_pctsum + (100 * COV_COVERED / cov_denom)))
+      fi
+
+      anchor_scan "$rf" "$target" "$base" "$sha"
+      if [ "$ANCHOR_CHECKED" -gt 0 ]; then
+        echo "- run $n anchor positions: $ANCHOR_DRIFT/$ANCHOR_CHECKED outside diff hunks (possible position drift; advisory)" >> "$report"
+        [ "$ANCHOR_DRIFT" -eq 0 ] || echo "  - outside hunks: $ANCHOR_DRIFT_LIST" >> "$report"
+      else
+        echo "- run $n anchor positions: — (no supported anchors with resolvable text hunks)" >> "$report"
       fi
 
       # ---- grade this run with EVERY judge ------------------------------------

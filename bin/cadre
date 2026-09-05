@@ -422,6 +422,7 @@ cmd_panel() {
 
   local rows=() passes=() invalid=() r line pass base judge spec rowid
   declare -A grade seen rowspec passitems firstv flip
+  declare -A filecov_sum filecov_runs
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
     # ★ An INVALID report measured nothing about the candidate. Its surviving
@@ -450,6 +451,15 @@ cmd_panel() {
         continue
       fi
       [ -n "$pass" ] || continue
+      # Same measured-run mean as the grade report. Older reports and empty
+      # denominators stay unavailable; absence is never fabricated as zero.
+      if [[ "$line" =~ ^-\ run\ [0-9]+\ coverage:\ ([0-9]+)/([0-9]+)\ changed\ files\ mentioned ]]; then
+        local covered_files=${BASH_REMATCH[1]} measured_files=${BASH_REMATCH[2]}
+        if [ "$measured_files" -gt 0 ] && [ "$covered_files" -le "$measured_files" ]; then
+          filecov_sum[$rowid,$pass]=$(( ${filecov_sum[$rowid,$pass]:-0} + 100 * covered_files / measured_files ))
+          filecov_runs[$rowid,$pass]=$(( ${filecov_runs[$rowid,$pass]:-0} + 1 ))
+        fi
+      fi
       local kv k v
       for kv in $(grep -oE '\bK[0-9]+=(HIT|DEFER|MISS)' <<<"$line"); do
         k=${kv%%=*}; v=${kv#*=}
@@ -500,18 +510,25 @@ cmd_panel() {
       echo "${pfx}pass $p"
       printf '%s%-44s' "$pfx" 'CANDIDATE'
       for ki in $(panel_items "$p"); do printf '%-8s' "$ki"; done
-      echo
+      echo 'FILES % (runs)'
       for s in "${rows[@]}"; do
         printf '%s%-44s' "$pfx" "$s"
         for ki in $(panel_items "$p"); do
           printf '%-8s' "${grade[$s,$p,$ki]:-.}${flip[$s,$p,$ki]:+*}"
         done
-        echo
+        if [ "${filecov_runs[$s,$p]:-0}" -gt 0 ]; then
+          echo "$((filecov_sum[$s,$p] / filecov_runs[$s,$p]))% (${filecov_runs[$s,$p]})"
+        else
+          echo '-'
+        fi
       done
       echo "$pfx"
     done
   }
   panel_matrix ''
+  echo 'FILES: mean changed-file mention coverage across measured runs; - is unavailable.'
+  echo 'Shared basenames are excluded. Mentions do not prove a file was reviewed.'
+  echo
 
   local gaps=() deferrers=() p ki s
   for p in "${passes[@]}"; do
@@ -571,6 +588,7 @@ cmd_panel() {
   echo
   echo "Pick the smallest set of rows that covers every column. Prefer a"
   echo "candidate that covers a column no one else does, even at a lower total."
+  echo "Weigh FILES alongside item hits; a high hit rate can still leave files unmentioned."
   echo "cadre does not choose for you."
 
   [ "$save" = 1 ] || return 0
