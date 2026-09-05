@@ -970,7 +970,9 @@ chmod +x "$AF/bin/agy"
 # run_agy with the adapter's variable contract set the way agentcall sets it.
 agyfake() {  # $1 = AGYFAKE_OK, $2 = TIMEOUT, rest = extra env
   rm -f "$AF/n" "$AF/meta"
-  env -i PATH="$AF/bin:$PATH" HOME="$HOME" AGYFAKE_COUNT="$AF/n" AGYFAKE_OK="$1" "${@:3}" \
+  # A user's shell startup can reset PATH and select the real CLI. Keep this
+  # fixture's home empty as well as its environment so it always runs the fake.
+  env -i PATH="$AF/bin:$PATH" HOME="$AF" AGYFAKE_COUNT="$AF/n" AGYFAKE_OK="$1" "${@:3}" \
     bash -c "TIMEOUT=$2; DRY=; dir='$AF'; model=''; prompt='review this'; CADRE_RUN_META='$AF/meta'
              source '$ROOT/agents.d/agy.sh'; run_agy; echo \"rc=\$?\"" > "$AF/out" 2>&1 < /dev/null
   # ★ </dev/null is not decoration. GNU timeout runs its child in a background
@@ -2870,6 +2872,10 @@ OUT=$(run_gaunt "$D" good,good2,trunc terse)
 check "three judges refused"           "grep -q 'Two is the most this scores' <<<\"\$OUT\""
 check "and it says why"                "grep -q 'becomes a vote' <<<\"\$OUT\""
 # Two graders of one lineage are one grader in two seats: warn, never refuse.
+# This checks the warning, not a live provider. Supply both the install probe
+# and the adapter so it works without opencode installed and never calls it.
+printf '#!/bin/sh\nexit 0\n' > "$D/bin/opencode"; chmod +x "$D/bin/opencode"
+printf 'run_opencode() { echo "DID NOT RUN, offline lineage fixture."; }\n' > "$D/agents.d/opencode.sh"
 OUT=$(run_gaunt "$D" 'opencode:openai/gpt-5,opencode:openai/gpt-5-mini' terse)
 check "same-lineage judges warned"     "grep -q 'are both .* models' <<<\"\$OUT\""
 check "warned, not refused"            "! grep -q 'Two is the most' <<<\"\$OUT\""

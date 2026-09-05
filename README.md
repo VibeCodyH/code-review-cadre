@@ -321,6 +321,12 @@ review plus a combined `report.md`. `--base <rev>` picks a different base,
 `--roster a,b,c` skips the file, `--synth <agent-spec>` merges the reviews into
 one document that tags each finding with **which** reviewers raised it.
 
+For a project default, put the same roster syntax in `.cadre/roster` at the
+target repository's root. Selection is `--roster`, then `$CADRE_ROSTER`, then
+the project's `.cadre/roster`, then `$CADRE_HOME/roster`. The report records
+which source supplied the roster. See [roster resolution](docs/CLI-REFERENCE.md#cadre-review-roster-gates)
+for target lookup and validation rules.
+
 ### Optional seats: roster gates
 
 A roster line can reserve a seat for changes that justify its cost:
@@ -328,6 +334,7 @@ A roster line can reserve a seat for changes that justify its cost:
 ```
 codex ?min-lines=200
 opencode:meta/muse-spark-1.1 ?min-files=5 ?untested
+claude ?paths=auth/
 ```
 
 `?min-lines=N` requires at least N added plus deleted lines, `?min-files=N`
@@ -335,6 +342,11 @@ requires at least N touched files, and `?untested` requires a non-test change
 with no test file in the diff. Gates on one line are ANDed. The test-file rule
 is deliberately crude: any basename or directory segment containing `test` or
 `spec`, case-insensitively, counts as a test file.
+
+`?paths=TEXT` requires a changed repository-relative path containing that
+literal, case-sensitive substring. Renames check both names. This lets you
+reserve a seat for paths such as `auth/` or `migrations/`; it does not detect
+whether a change is security-sensitive.
 
 A small diff should not pay the full panel price, but the gate is yours, not
 cadre's. `--all-seats` runs every seat anyway. `--full` also runs every gated

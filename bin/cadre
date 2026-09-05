@@ -16,6 +16,8 @@
 #   cadre passes                          list registered passes
 #   cadre agents                          list adapters
 #   cadre preflight [--roster a,b,c]      show each seat's capability declarations
+#   cadre contract-snapshot <response.json> [--compare <snapshot.json>]
+#                                         check a captured tool-call contract
 #   cadre doctor [--probe]                check the install and the passes
 #   cadre onboard [--brief]               add a second reviewer for free
 #   cadre ledger [show|path]              findings you have already ruled on
@@ -75,7 +77,7 @@ then run that panel on the code you are about to ship.
                          .gitignore is honoured; refuses a target over
                          CADRE_TARGET_MAX_FILES (2000) or _MAX_KB (20480).
       --all-seats        ignore roster seat gates and run every seat
-      --roster a,b,c     override $CADRE_HOME/roster
+      --roster a,b,c     override env, project, and $CADRE_HOME rosters
       --jobs N           reviewers in parallel (default 1; they share rate limits)
       --synth <spec>     merge the reviews with this agent (default $CADRE_SYNTH)
       --label <name>     output dir name; labels are single-use, and a label
@@ -94,6 +96,10 @@ then run that panel on the code you are about to ship.
                                         Without --roster, uses the staffed
                                         roster; with none, lists every adapter
                                         plus known model-level quirks.
+  cadre contract-snapshot <response.json> [--compare <snapshot.json>]
+                                        offline tool-call contract smoke check;
+                                        needs python3. Exits 1 on mismatch,
+                                        2 on malformed or unsupported input.
   cadre doctor [--probe]                check the install and the passes
   cadre onboard [--brief]               walk through adding a second reviewer
                                         for free. --brief prints a prompt to
@@ -619,18 +625,43 @@ cmd_panel() {
   echo "wrote $roster (all commented). Uncomment your lineup, then: cadre review"
 }
 
-# Roster for the live path: --roster, then $CADRE_ROSTER, then the file.
+# Select once in the caller, so provenance survives roster parsing in a subshell.
+# The project policy belongs to the target's git root, including worktrees and
+# --full files/subdirectories. Never walk from the invocation directory instead.
+select_roster() {
+  ROSTER_RAW=""; ROSTER_SOURCE=""; ROSTER_LAYER=""; ROSTER_PATH=""
+  local target="${2:-.}" project_root="" project_file=""
+  [ ! -f "$target" ] || target=$(dirname "$target")
+  if [ -n "${1:-}" ]; then
+    ROSTER_RAW="$1"; ROSTER_SOURCE="--roster"; ROSTER_LAYER=explicit
+  elif [ -n "${CADRE_ROSTER:-}" ]; then
+    ROSTER_RAW="$CADRE_ROSTER"; ROSTER_SOURCE='$CADRE_ROSTER'; ROSTER_LAYER=environment
+  else
+    project_root=$(git -C "$target" rev-parse --show-toplevel 2>/dev/null) || project_root=""
+    [ -z "$project_root" ] || project_file="$project_root/.cadre/roster"
+    if [ -n "$project_file" ] && { [ -e "$project_file" ] || [ -L "$project_file" ]; }; then
+      ROSTER_LAYER=project; ROSTER_PATH="$project_file"
+    elif [ -s "$CADRE_HOME/roster" ]; then
+      ROSTER_LAYER=global; ROSTER_PATH=$(readlink -m "$CADRE_HOME/roster")
+    else
+      return 1
+    fi
+    ROSTER_SOURCE="$ROSTER_PATH"
+    [ -f "$ROSTER_PATH" ] && [ -r "$ROSTER_PATH" ] \
+      || die "cannot read $ROSTER_LAYER roster: $ROSTER_PATH"
+    ROSTER_RAW=$(cat "$ROSTER_PATH") || die "cannot read $ROSTER_LAYER roster: $ROSTER_PATH"
+  fi
+}
+
+# Parse the selected live roster as data, never source it as shell code.
 # Accepts commas or newlines, ignores '#' comments and blanks, rejects
 # duplicates by SPEC (two seats for one spec would double-count synthesis even
 # when their gates differ), and validates gates before any review work begins.
 # The default output remains one bare spec per line. The internal "entries"
 # mode preserves validated gates for cmd_review without changing that contract.
 resolve_roster() {
-  local raw="" src="" seen=" " s out=() mode="${2:-specs}" line=0
-  if [ -n "${1:-}" ]; then raw="$1"; src="--roster"
-  elif [ -n "${CADRE_ROSTER:-}" ]; then raw="$CADRE_ROSTER"; src="\$CADRE_ROSTER"
-  elif [ -s "$CADRE_HOME/roster" ]; then raw=$(cat "$CADRE_HOME/roster"); src="$CADRE_HOME/roster"
-  else
+  local raw="$ROSTER_RAW" src="$ROSTER_SOURCE" seen=" " s out=() mode="${1:-specs}" line=0
+  if [ -z "$ROSTER_LAYER" ]; then
     # ★ 'cadre panel --save' needs registered passes, and someone hitting this
     # on a fresh install has none. Pointing a first-time user at the one path
     # that is closed to them reads as "this tool is not ready for you", when
@@ -672,6 +703,8 @@ resolve_roster() {
             *) case "$n" in *[1-9]*) ;; *) die "roster line $line ($src): malformed gate '$gate'" ;; esac ;;
           esac ;;
         \?untested) ;;
+        \?paths=*)
+          [ -n "${gate#*=}" ] || die "roster line $line ($src): malformed gate '$gate'" ;;
         *) die "roster line $line ($src): malformed gate '$gate'" ;;
       esac
       entry="$entry"$'\t'"$gate"
@@ -680,7 +713,7 @@ resolve_roster() {
     seen="$seen$spec "
     if [ "$mode" = entries ]; then out+=("$entry"); else out+=("$spec"); fi
   done < <(printf '%s\n' "$raw" | tr ',' '\n')
-  [ ${#out[@]} -gt 0 ] || die "every line in $src is commented out. Uncomment the reviewers you want."
+  [ ${#out[@]} -gt 0 ] || die "every line in $src is empty or commented out. Uncomment the reviewers you want."
   printf '%s\n' "${out[@]}"
 }
 
@@ -876,7 +909,8 @@ cmd_review() {
   done
 
   local roster_entries=() rl
-  rl=$(resolve_roster "$roster_arg" entries) || exit 2
+  select_roster "$roster_arg" "$repo" || :
+  rl=$(resolve_roster entries) || exit 2
   mapfile -t roster_entries <<< "$rl"
 
   # Resolve the base here so the error names something the user typed.
@@ -908,13 +942,13 @@ cmd_review() {
     [ "${#parts[@]}" -gt 1 ] && has_gates=1
   done
 
-  local diff_lines=0 diff_files=0 diff_nontest=0 diff_test=0
+  local diff_lines=0 diff_files=0 diff_nontest=0 diff_test=0 diff_paths=()
   if [ "$full" != 1 ] && [ "$all_seats" != 1 ] && [ "$has_gates" = 1 ]; then
     # Build the same content tree run-review.sh will build: stash-create captures
     # tracked work without touching it, then a temporary index adds untracked,
     # non-ignored files. One numstat call supplies every gate measurement. Binary
     # rows carry '-' and deliberately add zero lines.
-    local gate_snap gate_index gate_tree diff_numstat stats rc
+    local gate_snap gate_index gate_tree diff_numstat rc row added deleted path old_path
     gate_snap=$(git -C "$repo" stash create "cadre seat gates" 2>/dev/null); rc=$?
     if [ "$rc" -ne 0 ]; then
       die "git stash create failed in $repo (exit $rc).
@@ -933,19 +967,29 @@ cmd_review() {
     gate_tree=$(GIT_INDEX_FILE="$gate_index" git -C "$repo" write-tree) \
       || { rm -f "$gate_index"; die "could not write the review tree for seat gates"; }
     rm -f "$gate_index"
-    diff_numstat=$(git -C "$repo" diff --numstat "${base}^{tree}" "$gate_tree") \
-      || die "could not measure the review diff for seat gates"
-    stats=$(printf '%s\n' "$diff_numstat" | awk -F '\t' '
-      NF >= 3 {
-        files++
-        if ($1 ~ /^[0-9]+$/) lines += $1
-        if ($2 ~ /^[0-9]+$/) lines += $2
-        path = tolower($3)
-        if (path ~ /test|spec/) test = 1; else nontest = 1
-      }
-      END { printf "%d %d %d %d\n", lines, files, nontest, test }
-    ')
-    read -r diff_lines diff_files diff_nontest diff_test <<< "$stats"
+    # NUL records preserve tabs, newlines, Unicode, and both names of a rename.
+    # A file is needed: command substitution strips NULs, and process
+    # substitution would hide git's failure status.
+    diff_numstat=$(mktemp) || die "cannot create a diff file for seat gates"
+    git -C "$repo" diff --numstat -z --find-renames "${base}^{tree}" "$gate_tree" > "$diff_numstat" \
+      || { rm -f "$diff_numstat"; die "could not measure the review diff for seat gates"; }
+    while IFS= read -r -d '' row; do
+      added="${row%%$'\t'*}"; row="${row#*$'\t'}"
+      deleted="${row%%$'\t'*}"; path="${row#*$'\t'}"
+      diff_files=$((diff_files + 1))
+      [ "$added" = - ] || diff_lines=$((diff_lines + added))
+      [ "$deleted" = - ] || diff_lines=$((diff_lines + deleted))
+      if [ -z "$path" ]; then
+        IFS= read -r -d '' old_path
+        IFS= read -r -d '' path
+        diff_paths+=("$old_path")
+      fi
+      diff_paths+=("$path")
+    done < "$diff_numstat"
+    rm -f "$diff_numstat"
+    for path in "${diff_paths[@]}"; do
+      case "${path,,}" in *test*|*spec*) diff_test=1 ;; *) diff_nontest=1 ;; esac
+    done
   fi
 
   local failed_gate="" failed_reason="" n
@@ -970,6 +1014,13 @@ cmd_review() {
           elif [ "$diff_test" -ne 0 ]; then
             failed_gate="$gate"; failed_reason="diff includes a test file"; break
           fi ;;
+        \?paths=*)
+          n="${gate#*=}"
+          local matched=0
+          for path in "${diff_paths[@]}"; do
+            case "$path" in *"$n"*) matched=1; break ;; esac
+          done
+          [ "$matched" = 1 ] || { failed_gate="$gate"; failed_reason="no changed path contains the literal substring"; break; } ;;
       esac
     done
     if [ -n "$failed_gate" ]; then
@@ -1111,6 +1162,7 @@ cmd_review() {
   # response to it.
   local rrc=0
   CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
+    CADRE_ROSTER_LAYER="$ROSTER_LAYER" CADRE_ROSTER_PATH="$ROSTER_PATH" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
     rm -f "$out/.claim"
@@ -1554,27 +1606,26 @@ cmd_preflight() {
   # Model-level quirks first: they apply to every adapter that reaches the model.
   printf '%-36s %s\n' 'model:cerebras/*' 'role:reviewer — cerebras rejects reasoning_content on the 2nd assistant turn after a tool call'
 
-  if [ -n "$roster_arg" ] || [ -n "${CADRE_ROSTER:-}" ] || [ -s "$CADRE_HOME/roster" ]; then
+  if select_roster "$roster_arg" .; then
     local rl
-    # resolve_roster dies when empty; preflight should still show model quirks.
-    if rl=$(resolve_roster "$roster_arg" specs 2>/dev/null); then
-      mapfile -t specs <<< "$rl"
-      for s in "${specs[@]}"; do
-        decls=$(seat_declarations "$s" | tr '\n' ' ')
-        decls=$(trim "$decls")
-        if [ -z "$decls" ]; then
-          printf '%-36s %s\n' "$s" '(none)'
-        else
-          reason_line=""
-          while IFS= read -r d; do
-            [ -n "$d" ] || continue
-            reason_line="${reason_line:+$reason_line; }$d — $(declaration_reason "$s" "$d")"
-          done < <(seat_declarations "$s")
-          printf '%-36s %s\n' "$s" "$reason_line"
-        fi
-      done
-      return 0
-    fi
+    rl=$(resolve_roster specs) || return 2
+    printf 'Roster source: %s%s\n' "$ROSTER_LAYER" "${ROSTER_PATH:+ ($ROSTER_PATH)}"
+    mapfile -t specs <<< "$rl"
+    for s in "${specs[@]}"; do
+      decls=$(seat_declarations "$s" | tr '\n' ' ')
+      decls=$(trim "$decls")
+      if [ -z "$decls" ]; then
+        printf '%-36s %s\n' "$s" '(none)'
+      else
+        reason_line=""
+        while IFS= read -r d; do
+          [ -n "$d" ] || continue
+          reason_line="${reason_line:+$reason_line; }$d — $(declaration_reason "$s" "$d")"
+        done < <(seat_declarations "$s")
+        printf '%-36s %s\n' "$s" "$reason_line"
+      fi
+    done
+    return 0
   fi
 
   # No roster: list every shipped/user adapter with its bare declarations.
@@ -1609,6 +1660,10 @@ case "${1:-}" in
   passes)    shift; cmd_passes "$@" ;;
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
   preflight) shift; cmd_preflight "$@" ;;
+  contract-snapshot)
+    shift
+    command -v python3 >/dev/null 2>&1 || die "contract-snapshot requires python3"
+    python3 "$CADRE_ROOT/lib/contract-snapshot.py" "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   onboard)   shift; cmd_onboard "$@" ;;
   ledger)    shift; cmd_ledger "$@" ;;
