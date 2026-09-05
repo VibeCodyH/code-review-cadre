@@ -2974,6 +2974,13 @@ printf 'Individual quota reached. Please upgrade your subscription to increase y
 check "window: agy bundled quota caught" "$WC"
 check "window: agy is NOT a budget"      "! $QE"
 check "window: agy is NOT a rate limit"  "! $RL"
+# ★ muse free tier, verbatim from the WOWnet review bot 2026-09-05. It carries
+# a 429 AND "quota exhausted", so rate_limited claims it -- and did, three
+# retries at 60/120s per review against a window that reopens in two days.
+# The reset is stated to the second; the window matcher has to take it first.
+printf 'agent loop failed: model failed: API error 429 [request_id=b6e40701]: Subscription quota exhausted. Your usage window resets at 2026-09-07T00:00:00Z. (rate_limit_error)\n' > "$QB"
+check "window: muse quota window caught" "$WC"
+check "window: muse is NOT a budget"     "! $QE"
 # ★★ THE SHADOWING TEST. quota_exhausted's pattern list contains `usage limit`,
 # which is a WINDOW phrasing sitting in the BUDGET matcher, added speculatively in
 # 96b9697 rather than from any observed string. Both functions claim this one, so

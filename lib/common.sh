@@ -1036,7 +1036,17 @@ provider_window_closed() {
   if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
      && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f" \
      && ! rate_limited "$f" && ! quota_exhausted "$f"; then return 0; fi
-  grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) limit|quota reached' "$f" || return 1
+  # ★ muse on the free tier, verbatim from the WOWnet bot 2026-09-05:
+  #
+  #   API error 429 [...]: Subscription quota exhausted. Your usage window
+  #   resets at 2026-09-07T00:00:00Z. (rate_limit_error)
+  #
+  # "usage window" is not "usage limit", "quota exhausted" is not "quota
+  # reached", and the sentence break before "usage window" keeps it out of
+  # quota_exhausted's period-word tail. So it fell through to rate_limited on
+  # the 429 and was retried 60/120s against a window two days out -- on every
+  # review. A stated reset is the test, and this one states it to the second.
+  grep -qiE '(session|weekly|daily|hourly|usage|[0-9]+[ -]?hour) (limit|window)|quota (reached|exhausted)' "$f" || return 1
   grep -qiE 'reset' "$f"
 }
 
