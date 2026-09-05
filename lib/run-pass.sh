@@ -266,6 +266,7 @@ for r in "${reviewers[@]}"; do
       "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
       adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
       model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
+      adapter_note="$(sed -n 's/^note=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       "adapter_attempts#=$(sed -n 's/^attempts=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       language="$CHANGE_LANG" "ts#=$(date +%s)"
     # Same rule as the panel path: the declaration is consumed, the state lives

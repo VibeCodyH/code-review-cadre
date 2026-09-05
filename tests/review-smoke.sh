@@ -20,6 +20,9 @@ trap 'rm -rf "$SANDBOX"' EXIT
 # One stub agent that echoes what it can see, one that truncates, one that dies.
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
+  # The optional SDK may be installed locally, and Node survives the tests'
+  # /usr/bin-only PATH. Keep adapter inventory dependent on these stubs alone.
+  printf 'bin_pireview() { echo cadre-smoke-pireview-not-installed; }\n' > "$1/agents.d/pireview.sh"
   local n
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
@@ -1279,7 +1282,7 @@ D=$(case_dir nudge)
 # stubs to delete, so adding a stub anywhere else in this file silently gave the
 # case two reviewers and the nudge stopped firing.
 find "$D/bin" -type f ! -name good -delete
-find "$D/agents.d" -type f ! -name good.sh -delete
+find "$D/agents.d" -type f ! -name good.sh ! -name pireview.sh -delete
 OUT=$(env -i PATH="$D/bin:/usr/bin:/bin" CADRE_HOME="$D/state" CADRE_WORK="$D/work" \
         CADRE_AGENTS_D="$D/agents.d" "$ROOT/bin/cadre" doctor 2>&1); RC=$?
 check "nudge shown at one reviewer" "grep -q 'one reviewer installed' <<<\"\$OUT\""

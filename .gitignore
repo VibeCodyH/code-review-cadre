@@ -7,3 +7,4 @@
 /report-*.md
 /shortlist-*.tsv
 *.grade.json
+/integrations/pi-review/node_modules/
