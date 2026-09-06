@@ -158,8 +158,8 @@ copilot      copilot -p "$prompt"                                             [a
 cursor       agent -p --output-format json --force --workspace . --mode plan   [prompt on stdin]
 devin        devin -p --permission-mode dangerous --prompt-file PROMPTFILE     [file]
 grok         env HOME=$CADRE_GROK_HOME grok --cwd . \
-                  --disallowed-tools edit,write --no-subagents \
-                  --always-approve --no-auto-update --no-alt-screen \
+                  --disallowed-tools search_replace,write --no-subagents \
+                  --session-id UUID --always-approve --no-auto-update --no-alt-screen \
                   --output-format json --prompt-file PROMPTFILE                [file]
 kimi         kimi -p "$prompt"                                                [argv]
 kiro         kiro-cli chat --no-interactive --trust-all-tools "$prompt"        [argv]

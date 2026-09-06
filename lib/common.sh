@@ -1050,6 +1050,94 @@ provider_window_closed() {
   grep -qiE 'reset' "$f"
 }
 
+# ★ The reset a closed window STATES, kept as an epoch, so the next review skips
+# the seat instead of eating the same refusal (#61). Measured on the live bot
+# 2026-09-05: muse's window was closed for the week, and every review in
+# between dispatched it, classified the refusal correctly, and moved on -- one
+# wasted call per review, correctly labelled. Three phrasings are in the corpus:
+#
+#   ISO       "resets at 2026-09-07T00:00:00Z"          muse
+#   relative  "Resets in 4h22m55s"                       agy
+#   clock     "resets 7:10pm (America/New_York)"        claude
+#
+# A clock time is today's, or tomorrow's once it has passed, in the zone the
+# message names (UTC when it names none). Anything else -- or a `date` that
+# cannot parse, which is BSD date with no -d -- gets ONE HOUR: long enough to
+# stop the per-review waste, short enough that a misread never benches a seat
+# for a day. An ISO reset already in the past is treated the same way, because
+# "closed until yesterday" is a message that cannot be right.
+window_reset_epoch() {
+  local f="$1" now s t h m sec tz clock iso
+  now=$(date +%s)
+  # The timestamp NEXT TO "reset", not the first one in the file: a log line
+  # stamps its own time ahead of the message, and that one is in the past.
+  iso='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})'
+  s=$(grep -oiE "resets?( at| on)? $iso" "$f" 2>/dev/null | head -1 | grep -oE "$iso")
+  [ -n "$s" ] || s=$(grep -oE "$iso" "$f" 2>/dev/null | head -1)
+  if [ -n "$s" ] && t=$(date -d "$s" +%s 2>/dev/null) && [ "$t" -gt "$now" ]; then
+    echo "$t"; return 0
+  fi
+  s=$(grep -oiE 'resets? in( ?[0-9]+ ?(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)[, ]*)+' "$f" 2>/dev/null | head -1)
+  if [ -n "$s" ]; then
+    h=$(printf '%s' "$s" | grep -oiE '[0-9]+ ?h' | head -1 | tr -dc 0-9)
+    m=$(printf '%s' "$s" | grep -oiE '[0-9]+ ?m' | head -1 | tr -dc 0-9)
+    sec=$(printf '%s' "$s" | grep -oiE '[0-9]+ ?s' | head -1 | tr -dc 0-9)
+    # 10#: "08m09s" is decimal, and bash reads a leading zero as octal.
+    t=$(( 10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${sec:-0} ))
+    if [ "$t" -gt 0 ]; then echo $((now + t)); return 0; fi
+  fi
+  s=$(grep -oiE 'resets? (at )?[0-9]{1,2}(:[0-9]{2})? ?[ap]\.?m\.?( ?\([A-Za-z0-9_/+-]+\))?' "$f" 2>/dev/null | head -1)
+  if [ -n "$s" ]; then
+    tz=$(printf '%s' "$s" | grep -oE '\([A-Za-z0-9_/+-]+\)' | tr -d '()')
+    clock=$(printf '%s' "$s" | grep -oiE '[0-9]{1,2}(:[0-9]{2})? ?[ap]\.?m\.?' | head -1)
+    if t=$(TZ="${tz:-UTC}" date -d "$clock" +%s 2>/dev/null); then
+      # "tomorrow 5am" in the zone, not +86400: across a DST change those
+      # differ by an hour, and the message means the clock time.
+      [ "$t" -le "$now" ] && t=$(TZ="${tz:-UTC}" date -d "tomorrow $clock" +%s 2>/dev/null || echo $((t + 86400)))
+      echo "$t"; return 0
+    fi
+  fi
+  echo $((now + 3600))
+}
+
+epoch_iso() {  # <epoch> -> UTC ISO, or "epoch N" where date cannot render it
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "epoch $1"
+}
+
+# One file per SEAT SPEC under $CADRE_HOME/windows/, holding the reset epoch.
+# Per spec rather than per agent on purpose: a model-tier window (#48) closes
+# one model on an account and leaves the others open, and a seat is the only
+# thing dispatch knows how to skip.
+window_file() { printf '%s/windows/%s' "$CADRE_HOME" "$(slug "$1")"; }
+
+# window_record <spec> <refusal-file>: remember when this seat's window lifts.
+# Prints the reset as UTC ISO for the log. Bookkeeping, so it never fails the
+# caller: a seat that cannot be remembered is dispatched next time, which is
+# exactly what happened before this existed.
+window_record() {
+  local wf t; wf=$(window_file "$1")
+  t=$(window_reset_epoch "$2")
+  if mkdir -p "${wf%/*}" 2>/dev/null; then
+    printf '%s\n' "$t" > "$wf.tmp" 2>/dev/null && mv -f "$wf.tmp" "$wf" 2>/dev/null
+  fi
+  epoch_iso "$t"
+}
+
+# window_closed_until <spec>: prints the reset epoch and succeeds while the
+# recorded window is still closed. Otherwise FORGETS the record and fails, so a
+# seat is never benched past what its own refusal said, and a stale or
+# unreadable file clears itself on the first look.
+window_closed_until() {
+  local wf t; wf=$(window_file "$1")
+  [ -s "$wf" ] || return 1
+  t=$(tr -dc 0-9 < "$wf")
+  if [ -n "$t" ] && [ "$(date +%s)" -lt "$t" ]; then echo "$t"; return 0; fi
+  rm -f "$wf"; return 1
+}
+
+
 # ★ The same question for a SYNTHESIS, which needs a different answer. A
 # reviewer that trips the keyword scan can be rescued by its adapter's marker; a
 # synthesis carries no marker, so the scan is the last word and it is wrong more
