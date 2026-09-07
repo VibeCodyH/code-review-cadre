@@ -1,0 +1,104 @@
+{
+  "files": {
+    "root:agents.d/agy.sh": {
+      "computedHash": "6b16721e647ffe02d0afb7df3bc502831976b7463e26bfb56f627966c4d098ee"
+    },
+    "root:agents.d/claude.sh": {
+      "computedHash": "5ca843e0c8a167f0db3abef01d8d6f49e20e2c58f9fc97d6400c2ac61265370a"
+    },
+    "root:agents.d/claudecr.sh": {
+      "computedHash": "d6f2e2263b139cecf5e5b48ed8d11db4fc0e81644c6dee62fb6b7b7b87a7a0ae"
+    },
+    "root:agents.d/coderabbit.sh": {
+      "computedHash": "d8cca34c1a58322ee778594d9e592a24b51d3d85bb1a8aa96aac5c9c83566d33"
+    },
+    "root:agents.d/codex.sh": {
+      "computedHash": "b2f9aaafdb0ec070763d3c3fd2a7b96561e76d2a349d8ea5591a9671c6b38520"
+    },
+    "root:agents.d/copilot.sh": {
+      "computedHash": "5683bf5c9fa2fa8c548b78c65f251795dbecfaa67a3df4d0ab7e9081b89a4bb4"
+    },
+    "root:agents.d/cursor.sh": {
+      "computedHash": "669269c1a3bedf4ecdeaea3191a23a96bbdc108a7475f46298b57235bb0f12a9"
+    },
+    "root:agents.d/devin.sh": {
+      "computedHash": "56f97a63629ce16c7e2ecc00ea159263e9306f5865201ec6e5fda553370150f4"
+    },
+    "root:agents.d/dsh.sh": {
+      "computedHash": "4c71822d790aec9930c178311143040fe91b9a6952e514399d085b9324028191"
+    },
+    "root:agents.d/grok.sh": {
+      "computedHash": "7dc36e9840476362799288c1fa9fbb33c45ac8b7f0cf7bf4a73d3b16578a0ea2"
+    },
+    "root:agents.d/kilo.sh": {
+      "computedHash": "04c351170d6c488f16b5c0ba2fee78993d9cf8a2418ccf5e253c8b722d5a4db7"
+    },
+    "root:agents.d/kimi.sh": {
+      "computedHash": "d3132daa312b17c91c3dd199120bbab859438062b6c065bbc2ae57c2bf6e4e8c"
+    },
+    "root:agents.d/kiro.sh": {
+      "computedHash": "4a7468dc458ae2d6e7f77cbccb07459294649f6ac709b9f81aadd6f3c5ba1621"
+    },
+    "root:agents.d/muse.sh": {
+      "computedHash": "bb116484328991058e74b793316a70fd2d23316ac0095db4a04d845252b7d825"
+    },
+    "root:agents.d/ollama.sh": {
+      "computedHash": "6cbfa131b1c8660d6cfda03a2b04e8482e0b25a0ddaa36a3bb8000eed637fcb9"
+    },
+    "root:agents.d/opencode.sh": {
+      "computedHash": "a9efb7611b40679a7553c1d1cb7fa7cbe59e7995f61381959400e97c33570f9e"
+    },
+    "root:agents.d/pi.sh": {
+      "computedHash": "b5f79c6fd44d22b0c4c7fc0ff30a5fbfd0c6fde0f4b6b4b9abe36b2247aec039"
+    },
+    "root:agents.d/pireview.sh": {
+      "computedHash": "d323f26cb7bae42e74bb8ed65f4dfcd8b222e19a5d6df598bdbbaea8192ed991"
+    },
+    "root:agents.d/qwen.sh": {
+      "computedHash": "ff1acca8316430a4593333428e574445a91f8e65416ed5269acecad47d3cec03"
+    },
+    "root:agents.d/vibe.sh": {
+      "computedHash": "ee5f0bffe01776b7dc913e7559f99360acaffc82c31e4cf45b4b5a3d4f642560"
+    },
+    "root:integrations/pi-review/cli.mjs": {
+      "computedHash": "33edbabfe716a3560761ee4b2256f59cf960a93fb098fc1434c5e0d97b14a734"
+    },
+    "root:integrations/pi-review/package-lock.json": {
+      "computedHash": "22956109d61774b28d081eafaabaea0ffc692e068e5daece9ea83b510b053da2"
+    },
+    "root:integrations/pi-review/package.json": {
+      "computedHash": "d11a3560c1353cc441ae2b3ecc81b00096b93bf967a1d9515758ff3e41a8f9f9"
+    },
+    "root:integrations/pi-review/review.mjs": {
+      "computedHash": "58ed11bbbe078e35fb14939d3cae53c446900570a7b21b87430babd2d9ba8c0a"
+    },
+    "root:lib/prompts/adjudicate.md": {
+      "computedHash": "abdc63a5a49d798a58388fbdeef6e63cefe6c8f95260e3e976138c1fd54644f7"
+    },
+    "root:lib/prompts/judge.md": {
+      "computedHash": "3b08ee356ae417e48cc1395d1626ef2f0a0c6759a814ff858e6ec2d2133767ef"
+    },
+    "root:lib/prompts/keygen.md": {
+      "computedHash": "44b6c887b0e59e08da422f660bf1409f247b83110df36a2412e4ba955526fd0a"
+    },
+    "root:lib/prompts/review-live.md": {
+      "computedHash": "0320077c74885610929afdb1d3aa027f2e8bd6b176fff91a2c30598f73daf420"
+    },
+    "root:lib/prompts/review-plan.md": {
+      "computedHash": "5c69a826f69af4b95f3499e3e99aa58cc6cbdbf04349dacbdf6cc3ecc2a56007"
+    },
+    "root:lib/prompts/review-target.md": {
+      "computedHash": "60758f103d5a927e239eedd5e62561d0d59f28092fe2fda0b8b48ccaef5b4bbf"
+    },
+    "root:lib/prompts/review.md": {
+      "computedHash": "26a086fd08f2cc8fceef664c681e2b7ce162a3acd046d477cbf5a80d37be0730"
+    },
+    "root:lib/prompts/settle.md": {
+      "computedHash": "3f847112a940d7f20b1391838b4d5a979a83936578240c58f7505784e2126b1b"
+    },
+    "root:lib/prompts/synthesize.md": {
+      "computedHash": "5456578c4f9979e4f64155f47fe703810d8c3000eb0475d1bc9ab00aa1ea9f44"
+    }
+  },
+  "schema": "cadre/input-lock@1"
+}

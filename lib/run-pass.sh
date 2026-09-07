@@ -27,6 +27,10 @@ for reviewer in "${reviewers[@]}"; do
   case "$reviewer" in *\?*) die "seat gates are for 'cadre review'; a graded pass needs every seat present" ;; esac
 done
 
+input_lock check >/dev/null || die "input lock check failed before dispatch"
+PASS_LOCK_SHA=$(content_sha "${CADRE_LOCK_FILE:-$CADRE_ROOT/cadre.lock.json}")
+[ -n "$PASS_LOCK_SHA" ] || die "cannot fingerprint the input lock"
+
 CHECKOUT="${CADRE_PASS_DIR:?CADRE_PASS_DIR must point at the checkout to review}"
 BASE="${CADRE_PASS_BASE:-HEAD~1}"
 export CADRE_PASS_BASE="$BASE"   # adapters that need it (coderabbit) read this
@@ -83,9 +87,10 @@ HARNESS_SHA=$(harness_sha)
 # Once per pass, from the checkout the reviewers see (#9). EMPTY is a value.
 CHANGE_LANG=$(detect_language "$CHECKOUT" "$BASE" HEAD)
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
-  cp "$CADRE_PROMPT_FILE" "$PROMPT"
+  cp "$CADRE_PROMPT_FILE" "$PROMPT" || die "cannot copy the locked review prompt"
 else
-  render_review_prompt "$CADRE_ROOT/lib/prompts/review.md" "$BASE" "$CHECKOUT" > "$PROMPT"
+  render_review_prompt "$CADRE_ROOT/lib/prompts/review.md" "$BASE" "$CHECKOUT" > "$PROMPT" \
+    || die "cannot render the locked review prompt"
 fi
 
 echo "pass $label @ ${sha:0:9} | reviewers: ${reviewers[*]} | $runs run(s)"
@@ -129,6 +134,17 @@ for r in "${reviewers[@]}"; do
   for n in $(seq 1 "$runs"); do
     f="$OUT/$(slug "$r")-run$n.md"
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
+    [ "$(content_sha "${CADRE_LOCK_FILE:-$CADRE_ROOT/cadre.lock.json}")" = "$PASS_LOCK_SHA" ] \
+      || die "input lock changed during the pass; start a new pass with the new inputs"
+    lock_receipt=$(input_lock check --agent "$agent") || die "input lock check failed before $r run$n"
+    lock_sha=$(jq -r .lock_sha <<< "$lock_receipt")
+    lock_adapter_sha=$(jq -r .lock_adapter_sha <<< "$lock_receipt")
+    lock_prompt_sha=$(jq -r .lock_prompt_sha <<< "$lock_receipt")
+    run_adapter_sha=$(adapter_sha "$agent")
+    prompt_source="${CADRE_PROMPT_FILE:-$CADRE_ROOT/lib/prompts/review.md}"
+    prompt_source_sha=$(content_sha "$prompt_source")
+    [ "$run_adapter_sha" = "$lock_adapter_sha" ] && [ "$prompt_source_sha" = "$lock_prompt_sha" ] \
+      || die "input hashes changed after the lock check for $r"
     # An operator assertion belongs to the old attempt, not this reusable slot.
     # Preserve its reason and artifacts before a real dispatch replaces them.
     # Regrading or reusing an existing review never reaches this archive step.
@@ -149,11 +165,14 @@ for r in "${reviewers[@]}"; do
     # get -- the panel path's rule, for the panel path's reason: a sha of the
     # empty string would compare equal across every promptless seat as if they
     # shared an input. prompt_bytes stays a measured 0 there.
-    prompt_sha=""; is_promptless "$agent" || prompt_sha=$(content_sha "$PROMPT")
+    prompt_sha=""
+    if is_promptless "$agent"; then prompt_bytes=0
+    else prompt_sha=$(content_sha "$PROMPT"); fi
     # ★ Before the attempt loop, so a sweep killed mid-run still proves this run
     # was dispatched. Same guarantee, same shape, as the panel path.
     record_event "$RUNLOG" event=dispatch pass="$label" \
       seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
+      lock_sha="$lock_sha" lock_adapter_sha="$lock_adapter_sha" lock_prompt_sha="$lock_prompt_sha" \
       "prompt_bytes#=$prompt_bytes" language="$CHANGE_LANG" "ts#=$start"
     # ★ .failed and .inconclusive, never .partial. Deleting .partial here threw
     # away real findings the moment a retry produced nothing -- the previous
@@ -275,7 +294,9 @@ for r in "${reviewers[@]}"; do
       state="$state" "rc#=$rc" "secs#=$took" "bytes#=${run_bytes:-0}" \
       "prompt_bytes#=$prompt_bytes" "attempts#=$attempt" \
       "v#=$SLOTS_SCHEMA_V" prompt_sha="$prompt_sha" \
-      adapter_sha="$(adapter_sha "$agent")" harness_sha="$HARNESS_SHA" \
+      adapter_sha="$run_adapter_sha" harness_sha="$HARNESS_SHA" \
+      lock_sha="$lock_sha" lock_adapter_sha="$lock_adapter_sha" \
+      prompt_source_sha="$prompt_source_sha" lock_prompt_sha="$lock_prompt_sha" \
       model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       adapter_note="$(sed -n 's/^note=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       "adapter_attempts#=$(sed -n 's/^attempts=//p' "$f.part.meta" 2>/dev/null | tail -1)" \

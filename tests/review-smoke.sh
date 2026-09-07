@@ -17,6 +17,14 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 SANDBOX=$(mktemp -d) || exit 1
 trap 'rm -rf "$SANDBOX"' EXIT
 
+# These fixtures deliberately replace adapters between cases. Pin each fixture
+# before invoking the graded runner; input-lock.sh tests refusal on actual drift.
+locked_run() {
+  local -x CADRE_LOCK_FILE="$CADRE_HOME/test-input.lock.json"
+  "$ROOT/bin/cadre" lock --update >/dev/null || return
+  "$ROOT/bin/cadre" run "$@"
+}
+
 # One stub agent that echoes what it can see, one that truncates, one that dies.
 setup_agents() {
   mkdir -p "$1/bin" "$1/agents.d"
@@ -2878,7 +2886,7 @@ gauntlet_case() {  # gauntlet_case <dir> <spec> <judgeA-verdicts> <judgeB-verdic
 run_gaunt() {  # run_gaunt <dir> <judge-spec> <candidate>
   local d="$1" j="$2" c="$3"
   CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
-  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" "$ROOT/bin/cadre" run "$c" 1 p1 2>&1
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" locked_run "$c" 1 p1 2>&1
 }
 HITBOTH='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"the write is dropped","K2":"the token leaks"},"verdict":"found","extras":[]}'
 SPLITK2='{"items":{"K1":"HIT","K2":"MISS"},"quotes":{"K1":"the write is dropped"},"verdict":"found","extras":[]}'
@@ -3242,7 +3250,7 @@ A
 }
 D=$(mktemp -d -p "$SANDBOX"); budget_case "$D"
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 2 2>&1); RC=$?
 check "budget: asked exactly ONCE"    "[ \$(wc -l < '$D/calls') -eq 1 ]"
 check "budget: says out of budget"    "grep -q 'OUT OF BUDGET, not a rate limit' <<<\"\$OUT\""
 check "budget: aborts the sweep"      "grep -q 'ABORTING the sweep here' <<<\"\$OUT\""
@@ -3271,7 +3279,7 @@ run_broke() {
 }
 A
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 2 2>&1); RC=$?
 check "window: asked exactly ONCE"    "[ \$(wc -l < '$D/calls') -eq 1 ]"
 check "window: says window CLOSED"    "grep -q 'usage window is CLOSED' <<<\"\$OUT\""
 check "window: not called a budget"   "! grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
@@ -3304,7 +3312,7 @@ run_broke() {
 }
 A
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 2 2>&1); RC=$?
 check "tier: asked exactly ONCE"       "[ \$(wc -l < '$D/calls') -eq 1 ]"
 check "tier: says window CLOSED"       "grep -q 'usage window is CLOSED' <<<\"\$OUT\""
 check "tier: not called a budget"      "! grep -q 'OUT OF BUDGET' <<<\"\$OUT\""
@@ -3327,7 +3335,7 @@ run_resetter() {
 }
 A
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run resetter 1 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run resetter 1 2>&1); RC=$?
 check "tier: agent name is not a reset"  "! grep -q 'Resume after the reset time quoted above' <<<\"\$OUT\""
 check "tier: resetter still exits 6"     "[ '$RC' -eq 6 ]"
 
@@ -3349,7 +3357,7 @@ SLB=$(slug broke)
 printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
 printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 1 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 1 2>&1); RC=$?
 check "partial window: p1 still scored"  "grep -q 'K1=HIT' <<<\"\$OUT\""
 check "partial window: NO seat off it"   "! grep -q 'Verdict: SEAT' <<<\"\$OUT\""
 check "partial window: says INCOMPLETE"  "grep -q 'Verdict: INCOMPLETE, not slottable' <<<\"\$OUT\""
@@ -3368,7 +3376,7 @@ SLB=$(slug broke)
 printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
 printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 p1 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 2 p1 2>&1); RC=$?
 check "partial: run1 still scored"    "grep -q 'K1=HIT' <<<\"\$OUT\""
 check "partial: run2 is UNUSABLE"     "grep -q 'run 2: \*\*UNUSABLE\*\*' <<<\"\$OUT\""
 check "partial: did NOT abort"        "! grep -q 'ABORTING' <<<\"\$OUT\""
@@ -3397,7 +3405,7 @@ A
 printf 'blocking - the write is dropped\n' > "$D/home/p1/$SLB-run1.md"
 printf '%s\n' "$HITBOTH" > "$D/home/p1/$SLB-run1.by-$(slug good).grade.json"
 OUT=$(CADRE_HOME="$D/home" CADRE_WORK="$D/work" CADRE_AGENTS_D="$D/agents.d" \
-      CADRE_JUDGE=good PATH="$D/bin:$PATH" "$ROOT/bin/cadre" run broke 2 p1 2>&1); RC=$?
+      CADRE_JUDGE=good PATH="$D/bin:$PATH" locked_run broke 2 p1 2>&1); RC=$?
 check "run: filed .md.inconclusive"   "ls '$D/home/p1'/$SLB-run2.md.inconclusive >/dev/null 2>&1"
 check "run: NOT a scorable review"    "! ls '$D/home/p1'/$SLB-run2.md >/dev/null 2>&1"
 check "run: NOT filed as failed"      "! ls '$D/home/p1'/$SLB-run2.md.failed >/dev/null 2>&1"
@@ -3537,7 +3545,7 @@ check "clean: and the count is zero"      \
 run_gaunt_all() {  # run_gaunt_all <dir> <judge-spec> <candidate>
   local d="$1" j="$2" c="$3"
   CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
-  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" "$ROOT/bin/cadre" run "$c" 1 2>&1
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" locked_run "$c" 1 2>&1
 }
 D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
 OUT=$(run_gaunt_all "$D" good,good2 terse)
@@ -4417,8 +4425,6 @@ FJ="$D/state/reviews/one/findings.json"
 check "one: findings.json written"      "[ -s '$FJ' ]"
 check "one: status says skipped"        "[ \"\$(jq -r .synthesis.status '$FJ')\" = 'skipped' ]"
 check "one: claims survived"            "[ \$(jq '.claims | length' '$FJ') -eq 4 ]"
-=======
-
 # ============================================================================
 # #2: the benchmark path gets the same record the panel path has.
 # ============================================================================
