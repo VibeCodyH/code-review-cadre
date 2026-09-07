@@ -101,6 +101,8 @@ then run that panel on the code you are about to ship.
                                         needs python3. Exits 1 on mismatch,
                                         2 on malformed or unsupported input.
   cadre doctor [--probe]                check the install and the passes
+  cadre lock --update                   pin current adapters and prompt sources
+  cadre selfcheck                       check those inputs against the lock
   cadre onboard [--brief]               walk through adding a second reviewer
                                         for free. --brief prints a prompt to
                                         hand your own coding agent instead.
@@ -129,6 +131,9 @@ Environment:
                 point it at the candidate being adjudicated.
   CADRE_STACK   one line of context added to the review brief
   CADRE_TEST_CMD  override the detected test command
+  CADRE_LOCK_FILE   input lock (default $CADRE_ROOT/cadre.lock.json).
+                    Graded runs require matching inputs and python3. Use a
+                    separate lock for user adapters or a custom review prompt.
   CADRE_RETRIES     attempts when a call comes back rate limited (default 3)
   CADRE_RETRY_WAIT  first backoff in seconds, doubling, capped at 600 (default 60)
   CADRE_PANEL_MIN   `cadre review` exits 10 when fewer usable seats than this
@@ -354,6 +359,7 @@ cmd_run() {
   local spec="${1:?usage: cadre run <agent-spec> [runs] [pass-label]}"
   local runs="${2:-2}" only="${3:-}"
   case "$spec" in *\?*) die "seat gates are for 'cadre review'; a graded pass needs every seat present" ;; esac
+  input_lock check >/dev/null || die "input lock check failed before dispatch"
   init_home; need_judge; need jq
   need_runs "$runs"
 
@@ -1660,6 +1666,14 @@ case "${1:-}" in
   passes)    shift; cmd_passes "$@" ;;
   agents)    shift; "$CADRE_ROOT/bin/agentcall" --list ;;
   preflight) shift; cmd_preflight "$@" ;;
+  lock)
+    shift
+    [ "$#" -eq 1 ] && [ "$1" = --update ] || die "usage: cadre lock --update"
+    input_lock update ;;
+  selfcheck)
+    shift
+    [ "$#" -eq 0 ] || die "usage: cadre selfcheck"
+    input_lock check ;;
   contract-snapshot)
     shift
     command -v python3 >/dev/null 2>&1 || die "contract-snapshot requires python3"

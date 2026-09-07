@@ -154,6 +154,15 @@ adapter_sha() {
   content_sha "${files[@]}"
 }
 
+input_lock() {
+  command -v python3 >/dev/null 2>&1 || die "input locks require python3"
+  CADRE_ROOT="$CADRE_ROOT" CADRE_HOME="$CADRE_HOME" \
+    CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
+    CADRE_PROMPT_FILE="${CADRE_PROMPT_FILE:-}" \
+    CADRE_LOCK_FILE="${CADRE_LOCK_FILE:-$CADRE_ROOT/cadre.lock.json}" \
+    python3 "$CADRE_ROOT/lib/input-lock.py" "$@"
+}
+
 # One hash over every harness file that shapes a review.
 # ★ `cadre:` in the manifest is a git short sha, and it says nothing at all
 # while lib/ is dirty -- which is the normal state of the tree whenever any of
@@ -169,7 +178,7 @@ adapter_sha() {
 # report, `receipts`. Folding it in would invalidate every stored comparison on
 # any CLI edit, which is a false "these are not like-for-like" -- the one error
 # this field must not make, since its whole job is to be believed when it fires.
-HARNESS_FILES=(bin/agentcall lib/common.sh lib/run-review.sh lib/run-pass.sh lib/grade.sh)
+HARNESS_FILES=(bin/agentcall lib/common.sh lib/input-lock.py lib/run-review.sh lib/run-pass.sh lib/grade.sh)
 harness_sha() {
   local f files=()
   for f in "${HARNESS_FILES[@]}"; do files+=("$CADRE_ROOT/$f"); done
@@ -1681,7 +1690,7 @@ retry_wait() {
 # from supplying one: it names a file cadre will read a state field out of, so a
 # value arriving from outside would let a caller pre-declare the outcome of a
 # run it does not own.
-CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE
+CADRE_SCRUB_ENV=(CADRE_HOME CADRE_ROOT CADRE_JUDGE CADRE_PROMPT_FILE CADRE_LOCK_FILE
                  CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
                  CADRE_RUN_META
                  CADRE_PASS_DIR CADRE_AGENTS_D CADRE_WORK

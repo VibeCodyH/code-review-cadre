@@ -56,7 +56,7 @@ AGENTS=$(printf '%s\n' $AGENTS | sort | tr '\n' ' ')
 # keeping the values here, so the agent we spawn cannot read the key path off
 # its own environment. CADRE_PASS_BASE stays: a git rev, and coderabbit needs it.
 export -n CADRE_HOME CADRE_ROOT CADRE_AGENTS_D 2>/dev/null || true
-unset CADRE_JUDGE CADRE_PASS_DIR CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS
+unset CADRE_JUDGE CADRE_PASS_DIR CADRE_STACK CADRE_TEST_CMD CADRE_ALLOW_SECRETS CADRE_LOCK_FILE
 
 # ★ An adapter's way to DECLARE what happened, out of band (#2 criterion 2).
 #

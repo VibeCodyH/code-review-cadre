@@ -102,9 +102,17 @@ claims survive", "by: the finding after the bad byte is claimed".
 `slots.tsv` and every `complete` record carries a content hash for the rendered
 prompt, for the adapter code that ran, and for the harness files that shape a
 review (`bin/agentcall`, `lib/common.sh`, `lib/run-review.sh`,
-`lib/run-pass.sh`, `lib/grade.sh`, `lib/prompts/*`). `prompt_bytes` was a size,
+`lib/run-pass.sh`, `lib/grade.sh`, `lib/input-lock.py`, `lib/prompts/*`). `prompt_bytes` was a size,
 so two prompts of equal length were one row; `CADRE_PROMPT_FILE` replaces the
 brief wholesale, which made the highest-leverage input the least described.
+
+Before a benchmark run, the input lock also checks every loaded adapter file
+and prompt source, including local overrides. A mismatch stops dispatch;
+completion records carry the lock fingerprint and the expected adapter/source
+hashes. `tests/input-lock.sh` exercises added, deleted, and modified inputs,
+malformed locks, custom inputs, refusal before adapter execution, and receipt
+agreement. This checks drift before dispatch, not concurrent writes after the
+check or external CLI/provider changes. See [input locks](INPUT-LOCK.md).
 
 `adapter_sha` covers the files `agentcall` would source that define anything for
 that agent — both copies of `<agent>.sh`, and any other file in either directory

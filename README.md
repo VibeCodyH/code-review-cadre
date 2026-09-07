@@ -220,8 +220,14 @@ cadre run codex 2                 # run it, grade it, get a slot
 cadre panel                       # compare everything graded, staff the team
 ```
 
-You need `git`, `jq`, `awk`, GNU coreutils, bash 4.4+, and at least two agent
+You need `git`, `jq`, `awk`, GNU coreutils, bash 4.4+, Python 3 for benchmark input
+locks, and at least two agent
 CLIs. One to review, one to judge. Neither has to be paid.
+
+`cadre run` checks adapters and prompt sources against the shipped
+`cadre.lock.json` before dispatch. Use `cadre selfcheck` to inspect drift and
+`cadre lock --update` after reviewing intentional changes. User adapters and
+custom prompts need their own pin; see [input locks](docs/INPUT-LOCK.md).
 
 `$EDITOR` on line four is not optional and not automatable. A key a model wrote
 and a model grades measures agreement with the model, so you read the draft

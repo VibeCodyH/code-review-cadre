@@ -216,6 +216,8 @@ export CADRE_AGENTS_D="$TMP/agents" PATH="$TMP/bin:/usr/bin:/bin"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/candidate"
 chmod +x "$TMP/bin/candidate"
 printf 'run_candidate() { echo unusable-garbage; return 1; }\n' > "$TMP/agents/candidate.sh"
+export CADRE_LOCK_FILE="$TMP/input.lock.json"
+input_lock update >/dev/null || exit 1
 printf 'p2|%s|%s|%s|key.md\n' "$SHA" "$TMP/repo" "$SHA" >> "$CADRE_HOME/passes.conf"
 RC=0
 CADRE_RETRIES=1 run_gauntlet candidate 2 0 > "$TMP/output" 2>&1 || RC=$?
@@ -236,6 +238,7 @@ cp "$(runfile 1).invalid.json" "$TMP/prior.invalid.json"
 grade 1
 has 'p1 run 1: Operator used an account with no remaining quota.'
 printf 'run_candidate() { echo "Verdict: ship it"; }\n' > "$TMP/agents/candidate.sh"
+input_lock update >/dev/null || exit 1
 RC=0
 run_gauntlet candidate 1 0 > "$TMP/output" 2>&1 || RC=$?
 check test "$RC" -eq 0

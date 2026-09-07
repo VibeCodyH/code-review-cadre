@@ -1,5 +1,11 @@
 # CLI reference
 
+`cadre selfcheck` checks adapter and prompt bytes against `cadre.lock.json`.
+`cadre lock --update` regenerates the lock after an intentional input change.
+Set `CADRE_LOCK_FILE` for a separate experiment lock covering user adapters or
+`CADRE_PROMPT_FILE`. Graded runs require a matching lock and Python 3.
+See [input locks and receipts](INPUT-LOCK.md).
+
 Where the vendor documents each CLI on the roster, what version of it was
 working here, and the exact call cadre makes. One place to look when an upstream
 release changes a flag and an adapter stops behaving.
