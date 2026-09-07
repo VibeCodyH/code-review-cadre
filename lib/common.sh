@@ -1609,7 +1609,8 @@ classify_run() {
     # `ok`, which is the only direction that destroys a real review. Keep the
     # two in step if either one moves.
     if provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; then echo failed; return 0; fi
-  elif provider_refused "$f" "$rc"; then
+  elif provider_refused "$f" "$rc" \
+       || { provider_window_closed "$f" && [ "$(review_findings "$f")" -eq 0 ] && ! has_verdict "$f"; }; then
     echo failed; return 0
   fi
   if [ "$rc" -ne 0 ]; then echo failed; return 0; fi

@@ -426,7 +426,7 @@ CHANGE_LANG=$(detect_language "$TPL" "$BASE" HEAD)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
 # skipped-seat path as roster gates: slots.tsv status, report line, out of
 # panel seat counts and synthesis. See seat_declarations in common.sh.
-_kept=(); _block=""; _decl=""; _reason=""
+_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0
 for _spec in "${reviewers[@]}"; do
   _block=""
   if _block=$(capability_block "$_spec" reviewer "$PROMPT"); then
@@ -444,6 +444,7 @@ for _spec in "${reviewers[@]}"; do
   if _until=$(window_closed_until "$_spec"); then
     _reason="usage window closed until $(epoch_iso "$_until")"
     skipped_rows+=("$_spec"$'\t'"window"$'\t'"$_reason")
+    window_skipped=$((window_skipped + 1))
     echo "  $_spec: SKIPPED, $_reason"
     continue
   fi
@@ -1008,6 +1009,12 @@ fi
 # Degraded counts toward having something to synthesize: partial findings are
 # still findings. Only a panel with nothing at all is a dead run.
 [ $((ok_count + degraded_count)) -gt 0 ] || {
-  [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  # Intentional roster/capability exclusions can leave no work to do. A
+  # requested panel benched by quota still owes the caller a failed run.
+  [ "$window_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  if [ "$window_skipped" -gt 0 ]; then
+    echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+    exit 1
+  fi
   echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }
 exit 0

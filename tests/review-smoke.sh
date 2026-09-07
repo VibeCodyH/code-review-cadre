@@ -1802,6 +1802,69 @@ OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster window,g
 check "window: an expired record dispatches again" "grep -q 'usage window CLOSED' <<<\"\$OUT\""
 check "window: and was not skipped"            "! grep -q 'window: SKIPPED' <<<\"\$OUT\""
 
+# A quota closure is unavailable coverage, not an intentional scope exclusion.
+# Repeating an all-failed panel must not turn it into a successful empty panel.
+OUT=$(run_cadre "$D" review --roster window --synth none --base main --label windowonly "$S"); RC=$?
+check "window: an entirely cached panel still fails" "[ $RC -eq 1 ]"
+check "window: empty panel names the closed windows" "grep -q 'no usable reviews; 1 reviewer(s) skipped because usage windows are closed' <<<\"\$OUT\""
+check "window: empty panel keeps its report" "[ -s '$D/state/reviews/windowonly/report.md' ]"
+OUT=$(run_cadre "$D" review --roster window,dead --synth none --base main --label windowdead "$S"); RC=$?
+check "window: cached seat plus a failed peer still fails" "[ $RC -eq 1 ]"
+check "window: failed peer artifact survives" "ls '$D/state/reviews/windowdead'/dead-*.md.failed >/dev/null 2>&1"
+
+# The synthesizer is charged to the same spec. A cached reviewer must not be
+# immediately dispatched again as the synthesizer; a synth-only refusal must
+# create that same cache and stop after one attempt, including a zero exit.
+cat > "$D/agents.d/window.sh" <<A
+run_window() {
+  echo called >> "$D/window.calls"
+  printf 'Subscription quota exhausted. Your usage window resets at 2099-01-01T00:00:00Z.\\n'
+}
+A
+: > "$D/window.calls"
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster window,good,good2 --synth window \
+      --base main --label windowsynthcached "$S")
+R2="$D/state/reviews/windowsynthcached"
+check "window synth: cached spec is not dispatched in either role" "[ ! -s '$D/window.calls' ]"
+check "window synth: skip is explicit in console and report" "grep -q 'synthesis SKIPPED, usage window closed until' <<<\"\$OUT\" && grep -q 'Synthesis.*SKIPPED, usage window closed until' '$R2/report.md'"
+check "window synth: engine records skipped synthesis" "jq -e '.synthesis.status == \"skipped\"' '$R2/findings.json' >/dev/null"
+check "window synth: both original reviews remain" "ls '$R2'/good-*.md '$R2'/good2-*.md >/dev/null 2>&1"
+rm -f "$D"/state/windows/window-*
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynthnew "$S")
+R2="$D/state/reviews/windowsynthnew"
+check "window synth: a fresh refusal gets exactly one call" "[ \$(wc -l < '$D/window.calls') -eq 1 ]"
+check "window synth: a zero-exit refusal is failed" "jq -e '.synthesis.status == \"failed\"' '$R2/findings.json' >/dev/null && [ -s '$R2/synthesis.md.failed' ]"
+check "window synth: raw refusal survives" "grep -q 'Subscription quota exhausted' '$R2/synthesis.md.failed'"
+check "window synth: refusal records its reset" "[ \"\$(cat '$D'/state/windows/window-*)\" = 4070908800 ]"
+check "window synth: refusal does not wait or retry" "! grep -q 'synthesis rate limited' <<<\"\$OUT\""
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynthnext "$S")
+check "window synth: next panel reuses the synth-only refusal" "[ \$(wc -l < '$D/window.calls') -eq 1 ] && grep -q 'synthesis SKIPPED, usage window closed until' <<<\"\$OUT\""
+rm -f "$D"/state/windows/window-*
+sed 's/Subscription quota exhausted/API error 429: Subscription quota exhausted/' "$D/agents.d/window.sh" > "$D/agents.d/window.sh.tmp"
+mv "$D/agents.d/window.sh.tmp" "$D/agents.d/window.sh"
+: > "$D/window.calls"
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynth429 "$S")
+check "window synth: a 429 with a reset is not retried" "[ \$(wc -l < '$D/window.calls') -eq 1 ] && ! grep -q 'synthesis rate limited' <<<\"\$OUT\""
+check "window synth: the 429 refusal is preserved as failed" "grep -q 'API error 429' '$D/state/reviews/windowsynth429/synthesis.md.failed'"
+
+# A healthy merge can discuss the window implementation itself. Its verdict
+# keeps that prose out of the refusal cache, just as on the reviewer path.
+cp "$D/bin/good" "$D/bin/windowtalk"
+cat > "$D/agents.d/windowtalk.sh" <<'A'
+run_windowtalk() {
+  echo 'The usage window resets at 2099-01-01T00:00:00Z in this fixture.'
+  for i in $(seq 1 15); do echo 'The reviewers agree that the implementation preserves their findings.'; done
+  echo 'Verdict: ship it'
+}
+A
+OUT=$(run_cadre "$D" review --roster good,good2 --synth windowtalk \
+      --base main --label windowsynthtalk "$S")
+check "window synth: a merge discussing reset logic remains usable" "[ -s '$D/state/reviews/windowsynthtalk/synthesis.md' ]"
+check "window synth: review prose does not create a window record" "! ls '$D'/state/windows/windowtalk-* >/dev/null 2>&1"
+
 echo "== ★ a synthesis QUOTING a marker is not a truncated synthesis =="
 # The synthesis prompt asks the model to report which reviewers were cut off, so
 # a correct merge can legitimately END by quoting a _TRUNCATED line -- the exact
