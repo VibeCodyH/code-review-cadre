@@ -203,7 +203,8 @@ class InputLockTest(unittest.TestCase):
         (self.user / "testseat.sh").write_text("run_testseat() { testseat; }\n")
         cli = self.base / "bin/testseat"
         cli.write_text('#!/bin/sh\nprintf "%s\\n" "${CADRE_LOCK_FILE-unset}"\n')
-        result = self.command(str(self.root / "bin/agentcall"), "testseat", "-d", str(self.base / "checkout"))
+        result = self.command(str(self.root / "bin/agentcall"), "testseat", "-d", str(self.base / "checkout"),
+                              "Inspect this checkout")
         self.assertEqual(result.stdout.strip(), "unset")
 
 
