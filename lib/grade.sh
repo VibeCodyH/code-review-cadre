@@ -94,6 +94,73 @@ leak_check() {
   echo "$n"
 }
 
+# Inspect the current artifact before allowing an operator exclusion. Failed
+# output can leak the key too; an invalid marker must never hide that evidence.
+scan_run_evidence() { # <keyfile> <review-path> <last-recorded-rc>
+  local keyfile="$1" rf="$2" rc="$3" artifact="" suffix
+  RUN_LEAKED=0 RUN_INVALID_REASON="" RUN_INVALID_ERROR="" RUN_FAILURE_KIND="" RUN_DELIVERY_KIND=""
+  for suffix in '' .failed .inconclusive .partial; do
+    if [ -s "$rf$suffix" ] || { [ "$suffix" = .failed ] && [ -e "$rf$suffix" ]; }; then
+      artifact="$rf$suffix"; break
+    fi
+  done
+  [ ! -s "$artifact" ] || RUN_LEAKED=$(leak_check "$keyfile" "$artifact")
+  [ "$RUN_LEAKED" -lt 2 ] || return 0
+  if [ -e "$rf.invalid.json" ]; then
+    if ! RUN_INVALID_REASON=$(jq -ser '
+      if length != 1 then error("expected one object") else .[0] end
+      | if type != "object" or (.reason | type) != "string"
+        then error("reason must be a string") else .reason end
+      | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
+      | if length == 0 then error("reason is empty") else . end
+      | if (explode | any(. < 32 or . == 127)) then error("control character in reason") else . end
+      ' "$rf.invalid.json" 2>/dev/null); then
+      RUN_INVALID_REASON=""
+      RUN_INVALID_ERROR="$(basename "$rf").invalid.json must contain one JSON object with a nonblank string reason; exclusion rejected"
+    else
+      return 0
+    fi
+  fi
+  if [ ! -s "$rf" ] && [ -e "$rf.failed" ]; then
+    RUN_FAILURE_KIND=$(failure_kind "$rf.failed" "$rc")
+    RUN_DELIVERY_KIND="$RUN_FAILURE_KIND"
+    # The renderer calls empty timeouts no-output. Arithmetic must still
+    # exclude a known harness clock kill, preserving the original wording.
+    case "$rc" in 124|137) RUN_DELIVERY_KIND="" ;; esac
+  fi
+}
+
+hit_rate_cell() { # <hit> <total> <unresolved>
+  local hit="$1" total="$2" unresolved="$3"
+  if [ "$total" -eq 0 ]; then echo '- (no eligible items)'
+  elif [ "$unresolved" -gt 0 ]; then echo "$hit to $((hit + unresolved)) / $total ($unresolved UNRESOLVED)"
+  else echo "$hit / $total"; fi
+}
+
+# These subsections belong AFTER Verdict, where the panel parser stops reading
+# matrix rows. An operator's explanation can itself contain text like K1=HIT.
+report_run_exclusions() { # <invalid-notes> <invalid-errors> <suspect-notes> <count>
+  if [ -n "$1" ]; then
+    echo "### Operator-invalid runs"
+    echo
+    echo "$4 run(s) excluded from both hit rates by operator assertion:"
+    echo
+    printf '%s\n' "$1"
+  fi
+  if [ -n "$2" ]; then
+    echo "### Rejected invalid-run markers"
+    echo
+    printf '%s\n' "$2"
+    echo "No exclusion was applied for these markers. Fix or remove them and re-grade."
+    echo
+  fi
+  if [ -n "$3" ]; then
+    echo "### Suspected answer-key leaks"
+    echo
+    printf '%s\n' "$3"
+  fi
+}
+
 # review_findings() lives in lib/common.sh now: classify_run uses it too.
 
 # ★ A judge that credits nothing in the key, lists no extras, and is reading a
@@ -427,6 +494,8 @@ remove that directory and re-run."
   fi
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
+  local delivery_miss=0 delivery_blocking_miss=0 delivery_no_output=0 delivery_failed=0
+  local operator_invalid=0 invalid_notes="" invalid_errors="" suspect_notes=""
   local skipped="" nskipped=0 unquoted_defer=0
   local blocking_unresolved=0 total_unresolved=0 split_notes=""
   # Per-pass blocking tallies keyed by the pass's recorded language (#9), for
@@ -548,6 +617,7 @@ remove that directory and re-run."
         die "$label: the key is inside the reviewed checkout ($keyfile). Move it out of $target." ;;
     esac
 
+    local prc=0
     if [ "$rescore" != 1 ]; then
       echo "==> $label: running $spec"
       # ★ Was `|| return 1`, which had never fired because run-pass.sh always
@@ -555,41 +625,78 @@ remove that directory and re-run."
       # review on this pass will produce none on the next eleven either, and
       # grinding through them is the fifty silent minutes this whole change is
       # about. Recorded as a skipped pass so the denominator guard below sees it.
-      local prc=0
       CADRE_PASS_DIR="$target" CADRE_PASS_BASE="$base" \
         "$CADRE_ROOT/lib/run-pass.sh" "$label" "$sha" "$runs" "$spec" || prc=$?
-      if [ "$prc" -ne 0 ]; then
-        echo "  $label: run-pass.sh exited $prc, ABORTING the sweep here"
-        nskipped=$((nskipped + 1)); aborted="$label"
-        # ★ 6 aborts the sweep like 4 does, but it is not a failed measurement
-        # and must not be reported as one: the cause is a provider usage window
-        # that clears on its own, so the next move is to wait and resume, not to
-        # go looking for a defect. Kept out of $measurement_failed for exactly
-        # that reason -- see provider_window_closed() in lib/common.sh.
-        if [ "$prc" -eq 6 ]; then
-          skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume once it reopens)"$'\n'
-          window_closed=1
-        # ★ 7 gets the same treatment as 6 and for the same reason: the pass
-        # measured nothing, but the cause is on the provider's side and clears
-        # on its own, so calling it a failed measurement sends the operator
-        # looking for a defect that is not there. This is the ONLY route by
-        # which `cadre run` can reach the outage verdict -- it aborts here and
-        # never reaches the grading loop that computes the other one.
-        elif [ "$prc" -eq 7 ]; then
-          skipped="$skipped- $label: NOT MEASURED, every run came back empty (suspect a provider outage)"$'\n'
-          provider_empty=1
-        # ★ 9 IS a failed measurement, unlike 6 and 7, because nothing clears
-        # it but the operator -- but the sentence must send them to the roster
-        # or the install, not to the candidate (#31).
-        elif [ "$prc" -eq 9 ]; then
-          skipped="$skipped- $label: NOT MEASURED, the seat is MISCONFIGURED on this box (not installed, bad spec, or no adapter); the reviewer was never called"$'\n'
-          measurement_failed=1; misconfigured_seat=1
-        else
-          skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
-          measurement_failed=1
-        fi
-        continue
+    fi
+
+    # Read delivery evidence even when dispatch aborts before grading. Later,
+    # unattempted passes still take the aborted-sweep branch above and add no
+    # denominator. Only .failed artifacts classified no-output/failed add MISS;
+    # missing attempts, partials, inconclusive runs and judge outages do not.
+    local items; items=$(key_items "$keyfile")
+    local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
+    pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
+    local run_leaks=() run_invalid=() run_failure_kinds=() n rf rec_rc k pass_invalid=0
+    for n in $(seq 1 "$runs"); do
+      rf="$CADRE_HOME/$label/$sl-run$n.md"
+      rec_rc=$(awk -F '\t' -v s="$sl" -v r="$n" '$1 == s && $2 == r { v = $4 } END { print v }' <<< "$pass_runs")
+      scan_run_evidence "$keyfile" "$rf" "$rec_rc"
+      run_leaks[$n]="$RUN_LEAKED"
+      run_invalid[$n]="$RUN_INVALID_REASON"
+      run_failure_kinds[$n]="$RUN_FAILURE_KIND"
+      if [ "$RUN_LEAKED" -ge 2 ]; then
+        suspect=$((suspect + 1))
+        suspect_notes="$suspect_notes- $label run $n: SUSPECT, quotes $RUN_LEAKED key items verbatim; not scored, operator exclusion cannot override this."$'\n'
+      elif [ -n "$RUN_INVALID_REASON" ]; then
+        operator_invalid=$((operator_invalid + 1))
+        pass_invalid=$((pass_invalid + 1))
+        invalid_notes="$invalid_notes- $label run $n: $RUN_INVALID_REASON"$'\n'
+      else
+        [ -z "$RUN_INVALID_ERROR" ] || invalid_errors="$invalid_errors- $label run $n: $RUN_INVALID_ERROR"$'\n'
+        case "$RUN_DELIVERY_KIND" in
+          no-output|failed)
+            [ -n "$items" ] || continue
+            if [ "$RUN_DELIVERY_KIND" = no-output ]; then delivery_no_output=$((delivery_no_output + 1))
+            else delivery_failed=$((delivery_failed + 1)); fi
+            for k in $items; do
+              delivery_miss=$((delivery_miss + 1))
+              [ "$(key_severity "$keyfile" "$k")" != blocking ] || delivery_blocking_miss=$((delivery_blocking_miss + 1))
+            done ;;
+        esac
       fi
+    done
+
+    if [ "$prc" -ne 0 ]; then
+      echo "  $label: run-pass.sh exited $prc, ABORTING the sweep here"
+      nskipped=$((nskipped + 1)); aborted="$label"
+      # ★ 6 aborts the sweep like 4 does, but it is not a failed measurement
+      # and must not be reported as one: the cause is a provider usage window
+      # that clears on its own, so the next move is to wait and resume, not to
+      # go looking for a defect. Kept out of $measurement_failed for exactly
+      # that reason -- see provider_window_closed() in lib/common.sh.
+      if [ "$prc" -eq 6 ]; then
+        skipped="$skipped- $label: NOT MEASURED, the provider's usage window closed (resume once it reopens)"$'\n'
+        window_closed=1
+      # ★ 7 gets the same treatment as 6 and for the same reason: the pass
+      # measured nothing, but the cause is on the provider's side and clears
+      # on its own, so calling it a failed measurement sends the operator
+      # looking for a defect that is not there. This is the ONLY route by
+      # which `cadre run` can reach the outage verdict -- it aborts here and
+      # never reaches the grading loop that computes the other one.
+      elif [ "$prc" -eq 7 ]; then
+        skipped="$skipped- $label: NOT MEASURED, every run came back empty (suspect a provider outage)"$'\n'
+        provider_empty=1
+      # ★ 9 IS a failed measurement, unlike 6 and 7, because nothing clears
+      # it but the operator -- but the sentence must send them to the roster
+      # or the install, not to the candidate (#31).
+      elif [ "$prc" -eq 9 ]; then
+        skipped="$skipped- $label: NOT MEASURED, the seat is MISCONFIGURED on this box (not installed, bad spec, or no adapter); the reviewer was never called"$'\n'
+        measurement_failed=1; misconfigured_seat=1
+      else
+        skipped="$skipped- $label: no usable review, run-pass.sh exited $prc"$'\n'
+        measurement_failed=1
+      fi
+      continue
     fi
 
     echo "==> $label: grading"
@@ -610,14 +717,11 @@ remove that directory and re-run."
     fi
     { echo "## $label${pass_clean:+ (CLEAN - false-positive probe, no planted defects)}"; echo; } >> "$report"
 
-    local items; items=$(key_items "$keyfile")
     # ★ The pass's run record, read ONCE (#2). Empty for a pass graded before
     # run-pass.sh wrote one, which is the legacy case the suffix-probing below
     # still exists to serve -- criterion 2's "edge-matching survives only as a
     # fallback". A pass with a record gets facts; a pass without gets the best
     # inference from filenames, and the two must not be confused for each other.
-    local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
-    pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
     # ★ Read from the RECORD, never re-detected here: the dispatch layer saw the
     # checkout the reviewers saw. A pass with no record, or one written before
     # the field, says so rather than getting a value invented at grade time.
@@ -637,9 +741,18 @@ remove that directory and re-run."
     else
       { echo "Language: not recorded"; echo; } >> "$report"
     fi
-    local n
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
+      if [ "${run_leaks[$n]:-0}" -ge 2 ]; then
+        [ ! -s "$rf" ] || pass_reviews=$((pass_reviews + 1))
+        echo "- run $n: **★ SUSPECT, quotes ${run_leaks[$n]} key items verbatim**, this reviewer" >> "$report"
+        echo "  probably read the answer key rather than finding the defects. NOT scored." >> "$report"
+        continue
+      fi
+      if [ -n "${run_invalid[$n]:-}" ]; then
+        echo "- run $n: **OPERATOR-INVALID**, excluded from both hit rates; see Operator-invalid runs." >> "$report"
+        continue
+      fi
       # A requested run with no output is a FAILED run, not one that never
       # happened. Skipping it let 1 good run of 2 report "every blocking item in
       # every run" and earn a review-alone seat.
@@ -694,11 +807,6 @@ remove that directory and re-run."
         # about a run that simply crashed, which is the manufactured verdict #12
         # exists to kill, arriving through the record instead of through prose.
         # Same last-wins rail as `.meta`, for the same reason.
-        local rec_rc=""
-        if [ -n "$pass_runs" ]; then
-          rec_rc=$(printf '%s\n' "$pass_runs" |
-            awk -F '\t' -v s="$sl" -v r="$n" '$1 == s && $2 == r { v = $4 } END { print v }')
-        fi
         # ★ -e, not -s. A hung provider that wrote nothing to stdout OR stderr
         # leaves run-pass.sh a 0-byte `.part` to rename, so the truest form of
         # "the provider returned nothing" is the one a `-s` gate skips entirely:
@@ -707,7 +815,7 @@ remove that directory and re-run."
         # Every other artifact test in this block stays `-s` on purpose -- an
         # empty .partial or .inconclusive really is nothing to report.
         if [ -e "$rf.failed" ]; then
-          case "$(failure_kind "$rf.failed" "$rec_rc")" in
+          case "${run_failure_kinds[$n]}" in
             misconfigured)
               why="MISCONFIGURED on this box, the reviewer was never called: $(misconfigured_line "$rf.failed" | cut -c1-120)" ;;
             no-output)
@@ -728,14 +836,6 @@ remove that directory and re-run."
       # The review itself exists. Whatever happens from here is downstream of the
       # expensive part, so it is cheap to redo and must not read as a lost run.
       pass_reviews=$((pass_reviews + 1))
-      local leaked; leaked=$(leak_check "$keyfile" "$rf")
-      if [ "$leaked" -ge 2 ]; then
-        suspect=$((suspect + 1))
-        echo "- run $n: **★ SUSPECT, quotes $leaked key items verbatim**, this reviewer" >> "$report"
-        echo "  probably read the answer key rather than finding the defects. NOT scored." >> "$report"
-        continue
-      fi
-
       # ---- coverage of the changeset by THIS review (#5) ----------------------
       # Runs after the leak gate, so a SUSPECT review (which `continue`d above)
       # never earns coverage credit for files it may have read from the key.
@@ -1032,11 +1132,14 @@ remove that directory and re-run."
     # like the benchmark ran. Counted as skipped so the guard below downgrades
     # the verdict instead of dressing a short denominator as a result.
     if [ "$pass_usable" -eq 0 ]; then
-      echo "**No usable run on this pass, so it contributed no items to the score below.**" >> "$report"
+      echo "**No usable run on this pass, so it contributed no items to the graded-only score.**" >> "$report"
       nskipped=$((nskipped + 1)); graded_passes=$((graded_passes - 1))
       # ★ WHICH nothing. The reviews being on disk changes what the operator
       # should do and what a driver should do, so it changes the exit code too.
-      if [ "$pass_reviews" -gt 0 ]; then
+      if [ "$pass_invalid" -eq "$runs" ]; then
+        skipped="$skipped- $label: every requested run was marked operator-invalid"$'\n'
+        measurement_failed=1
+      elif [ "$pass_reviews" -gt 0 ]; then
         echo "  $label: $pass_reviews review(s) on disk, but NONE could be graded"
         echo "The review(s) themselves exist. This is a grading failure, and \`cadre grade\` re-runs it." >> "$report"
         skipped="$skipped- $label: $pass_reviews review(s) exist but none was gradeable (re-grade, do not re-review)"$'\n'
@@ -1054,6 +1157,28 @@ remove that directory and re-run."
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
+
+  {
+    echo "## Hit rates"
+    echo
+    if [ "$suspect" -gt 0 ]; then
+      echo "Graded-only and delivery-inclusive: **NOT SCORED, answer-key leak suspected**."
+    else
+      echo "| basis | blocking items hit | all items hit |"
+      echo "|---|---|---|"
+      echo "| graded-only | $(hit_rate_cell "$blocking_hit" "$blocking_total" "$blocking_unresolved") | $(hit_rate_cell "$total_hit" "$total_items" "$total_unresolved") |"
+      echo "| delivery-inclusive | $(hit_rate_cell "$blocking_hit" "$((blocking_total + delivery_blocking_miss))" "$blocking_unresolved") | $(hit_rate_cell "$total_hit" "$((total_items + delivery_miss))" "$total_unresolved") |"
+    fi
+    echo
+    echo "Delivery-inclusive adds MISS on every key item for $delivery_no_output no-output and"
+    echo "$delivery_failed failed run(s) with output but no usable review. These are delivery"
+    echo "failures; an all-failed rate establishes no review quality. Misconfigured and"
+    echo "timed-out runs, missing attempts, partials, inconclusive runs and judge outages"
+    echo "add no items. CLEAN passes have no item denominator."
+    echo
+    echo "The verdict and per-item matrix retain graded-only semantics."
+    echo
+  } >> "$report"
 
   if [ "$graded_passes" -le 0 ]; then
     # ★ Two different nothings, and the old message said the wrong one. "Check
@@ -1145,6 +1270,13 @@ candidate, and every review already on disk is intact and still counted."
         tail1="Resume when that window reopens. There is nothing here to fix, and no
 number to quote."
       fi
+      # Leak evidence outranks every exclusion and the all-unusable verdict.
+      # Retain the dispatch/grading error code for callers resuming a sweep.
+      if [ "$suspect" -gt 0 ]; then
+        head1="INVALID, answer-key leak suspected"
+        body1="$suspect run(s) reproduced key item headings word for word. Neither hit rate is valid evidence."
+        tail1="Move the key out of reach and re-run the reviews before scoring."
+      fi
       {
         echo "## Verdict: $head1"
         echo
@@ -1153,6 +1285,8 @@ number to quote."
         printf '%s' "$skipped"
         echo
         echo "$tail1"
+        echo
+        report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
       } >> "$report"
       echo
       cat "$report"
@@ -1292,7 +1426,10 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     echo
     echo "$reason"
     echo
-    if [ "$blocking_unresolved" -gt 0 ]; then
+    report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
+    if [ "$suspect" -gt 0 ]; then
+      echo "- blocking items hit: **NOT SCORED**"
+    elif [ "$blocking_unresolved" -gt 0 ]; then
       echo "- blocking items hit: **$blocking_hit to $bhigh / $blocking_total** ($blocking_unresolved UNRESOLVED)"
     else
       echo "- blocking items hit: **$blocking_hit / $blocking_total**"
@@ -1307,7 +1444,11 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     else
       echo "- changed-file coverage: **-** (no keyed pass had a resolvable changeset)"
     fi
-    echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
+    if [ "$suspect" -gt 0 ]; then
+      echo "- all items hit: NOT SCORED"
+    else
+      echo "- all items hit: $total_hit / $total_items$([ "$total_unresolved" -gt 0 ] && echo " ($total_unresolved UNRESOLVED)")"
+    fi
     echo "- deferred on a blocking item: $defer_on_blocking"
     echo "- unusable runs: $unusable"
     echo "- runs excluded as suspected key leaks: $suspect"
@@ -1456,4 +1597,5 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     echo "cadre: a provider usage window closed, so the sweep is INCOMPLETE. Exit 6: wait for the window to reopen, then re-run to resume." >&2
     return 6
   fi
+  [ -z "$invalid_errors" ] || return 1
 }

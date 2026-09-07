@@ -129,6 +129,17 @@ for r in "${reviewers[@]}"; do
   for n in $(seq 1 "$runs"); do
     f="$OUT/$(slug "$r")-run$n.md"
     [ -s "$f" ] && { echo "  $r run$n: already have it, skipping"; ok_runs=$((ok_runs + 1)); continue; }
+    # An operator assertion belongs to the old attempt, not this reusable slot.
+    # Preserve its reason and artifacts before a real dispatch replaces them.
+    # Regrading or reusing an existing review never reaches this archive step.
+    if [ -e "$f.invalid.json" ]; then
+      invalid_archive=$(mktemp -d "$f.invalidated.XXXXXX") || die "cannot archive invalid run $r run$n"
+      for prior in "$f" "$f.failed" "$f.inconclusive" "$f.partial"; do
+        [ ! -e "$prior" ] || cp -p "$prior" "$invalid_archive/" || die "cannot preserve $prior before retry"
+      done
+      mv "$f.invalid.json" "$invalid_archive/" || die "cannot archive invalid-run marker before retry"
+      echo "  $r run$n: prior invalid assertion and artifacts archived in $(basename "$invalid_archive")"
+    fi
     echo "  $r run$n ..."
     start=$(date +%s)
     # Measured at dispatch, never reconstructed: the prompt is on disk now and

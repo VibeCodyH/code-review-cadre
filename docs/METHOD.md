@@ -82,6 +82,52 @@ approval on a data-loss bug costs more than a hundred missed nits save.
 Severity is read out of the key's own item headings, so what counts as blocking
 is your judgement about your code, not a constant in the grader.
 
+### Graded-only and delivery-inclusive hit rates
+
+Reports show both rates for blocking items and for all key items:
+
+- **Graded-only** uses runs with usable grades. The per-item matrix, judge
+  reconciliation, slot recommendation and error codes keep this meaning.
+- **Delivery-inclusive** adds a MISS on every key item for each `.failed`
+  artifact classified `no-output` or `failed` (output without a usable review).
+  For example, one run hitting 2/2 items and one no-output run produce 2/2
+  graded-only and 2/4 delivery-inclusive.
+
+Misconfigured and timed-out failures add no items. A recorded timeout exit code
+of 124 or 137 excludes even an empty artifact from the delivery denominator.
+Missing artifacts, partial or inconclusive reviews, and judge outages also add
+no items. CLEAN passes have no denominator. A zero denominator displays `-`,
+and unresolved grades keep their uncertainty range in both rates.
+
+An all-failed run can therefore show a delivery-inclusive 0/N while grading
+still fails. That number measures failure to deliver reviews and establishes
+no review quality. It doesn't make a failed benchmark eligible for slotting.
+
+For an attempt invalidated by operator or harness error, keep the raw artifact
+and write an operator assertion beside it. If the artifact is
+`<slug>-run1.md.failed`, its marker is `<slug>-run1.md.invalid.json`:
+
+```sh
+failed="$CADRE_HOME/<pass>/<slug>-run1.md.failed"
+jq -n --arg reason 'Wrong endpoint configured for this attempt.' \
+  '{reason: $reason}' > "${failed%.failed}.invalid.json"
+cadre grade <agent-spec> <runs>
+```
+
+Use the same `.md.invalid.json` suffix to exclude a completed review. The marker
+must contain one JSON object with a nonblank string `reason`. Reports list these
+assertions under **Operator-invalid runs** and exclude them from both rates.
+Malformed markers apply no exclusion, appear under **Rejected invalid-run
+markers**, and make grading return nonzero. Regrading keeps the marker. When
+`cadre run` dispatches a new attempt for that slot, it archives the old marker
+and artifact bytes in a sibling `<slug>-run1.md.invalidated.<random>/` directory.
+The new attempt is eligible for scoring. Reusing a completed review keeps its
+marker; remove it only if the exclusion no longer applies to that same review.
+
+Leak checking runs first against the current artifact, including failed output.
+SUSPECT evidence invalidates both rates and cannot be hidden by any marker.
+The offline regression suite is `bash tests/delivery-inclusive.sh`.
+
 ### CLEAN passes: the case with nothing to find
 
 A hit rate only measures what a reviewer catches. It says nothing about what it
