@@ -244,6 +244,21 @@ gets said plainly here rather than left for a reader to infer.
 
 `cadre panel` **generates hypotheses. It does not estimate decorrelation.**
 
+Reports open with estimated tokens per credited blocking hit and the graded-only
+blocking hit rate. Cost keeps the existing arithmetic: prompt plus review bytes,
+divided by four, then by credited blocking hits. Only scored keyed runs contribute
+spend. Delivery failures and CLEAN probes contribute none; a missing prompt receipt
+or zero credited blocking hits makes cost unavailable (`-`).
+
+Before the coverage matrix, `cadre panel` shows each candidate/judge observation
+and its observed hit-rate and cost spread. These ranges are **observational**:
+inputs, run counts and judges may differ. Unresolved grades retain lower/upper
+bounds; percentages round to one decimal and keep the original fractions.
+Invalid and scoped reports contribute no summary metrics. Older reports with
+missing fields show `-`; missing values never establish equal cost or hit rate.
+`--save` keeps this overview with the commented matrix. The per-item grades and
+the **NOTHING in this lineup catches** warning still identify coverage gaps.
+
 The `FILES % (runs)` cell shows each candidate's mean changed-file mention
 coverage for that pass, with the number of measured runs. Shared-basename
 ambiguity is excluded from the denominator; missing measurements and older

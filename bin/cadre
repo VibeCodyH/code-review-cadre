@@ -65,8 +65,8 @@ then run that panel on the code you are about to ship.
                                         unfalsifiable counts. The keyed score is a
                                         floor, this measures the rest of the review
                                         and never feeds the slot recommendation.
-  cadre panel [--save [--force]]        compare all graded candidates, propose a
-                                        panel; --save writes a commented roster
+  cadre panel [--save [--force]]        show graded-only cost/hit ranges, then the
+                                        coverage matrix; --save writes a commented roster
   cadre review [opts] [target]          run the staffed roster against a REAL
                                         change and collect the reviews
       --base <rev>       diff against this (default: merge-base with the
@@ -435,6 +435,7 @@ cmd_panel() {
   local rows=() passes=() invalid=() r line pass base judge spec rowid
   declare -A grade seen rowspec passitems firstv flip
   declare -A filecov_sum filecov_runs
+  declare -A metric_rate metric_cost metric_low metric_high metric_total metric_note
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
     # ★ An INVALID report measured nothing about the candidate. Its surviving
@@ -450,7 +451,20 @@ cmd_panel() {
     base=$(basename "$r" .md)
     case "$base" in *-by-*) judge=${base##*-by-} ;; *) judge="" ;; esac
     rowid="$spec${judge:+  (judge: $judge)}"
-    [ -n "${seen[row:$rowid]:-}" ] || { rows+=("$rowid"); seen[row:$rowid]=1; rowspec[$rowid]=$spec; }
+    if [ -n "${seen[row:$rowid]:-}" ]; then
+      # Existing matrix merging stays intact, but two files claiming the same
+      # observation cannot supply one unambiguous cost/rate summary.
+      metric_rate[$rowid]='-'; metric_cost[$rowid]='-'
+      metric_low[$rowid]='-'; metric_high[$rowid]='-'; metric_total[$rowid]='-'
+      metric_note[$rowid]=' (multiple report files)'
+    else
+      rows+=("$rowid"); seen[row:$rowid]=1; rowspec[$rowid]=$spec
+      grade_report_metrics "$r"
+      metric_rate[$rowid]="$METRIC_RATE"; metric_cost[$rowid]="$METRIC_COST"
+      metric_low[$rowid]="$METRIC_LOW"; metric_high[$rowid]="$METRIC_HIGH"; metric_total[$rowid]="$METRIC_TOTAL"
+      metric_note[$rowid]=''
+      [ "$METRIC_PARTIAL" -eq 0 ] || metric_note[$rowid]=' (partial denominator)'
+    fi
     # ★ K numbers are LOCAL to one answer key: every pass starts at K1. Keying
     # items by number alone folded pass alpha's K1 (auth bypass) together with
     # pass beta's K1 (dropped write), so a hit on one could report the other as
@@ -537,6 +551,42 @@ cmd_panel() {
       echo "$pfx"
     done
   }
+  panel_metrics() {
+    local pfx="$1" s
+    echo "${pfx}Graded-only cost and hit rates (observational)"
+    echo "${pfx}Report inputs, run counts and judges may differ. These ranges do not rank seats."
+    echo "${pfx}Cost is est. tokens per credited blocking hit, using scored keyed runs only."
+    echo "${pfx}Delivery failures and CLEAN probes contribute no spend; - is unavailable."
+    echo "$pfx"
+    printf '%s%-44s  %-15s  %s\n' "$pfx" CANDIDATE EST.TOKENS/HIT 'BLOCKING HIT RATE'
+    for s in "${rows[@]}"; do
+      printf '%s%-44s  %-15s  %s%s\n' "$pfx" "$s" "${metric_cost[$s]}" "${metric_rate[$s]}" "${metric_note[$s]}"
+    done
+    echo "$pfx"
+    for s in "${rows[@]}"; do
+      printf '%s %s %s %s\n' "${metric_low[$s]}" "${metric_high[$s]}" "${metric_total[$s]}" "${metric_cost[$s]}"
+    done | awk -v pfx="$pfx" '
+      $1!="-" && $2!="-" && $3!="-" && $3>0 {
+        low=$1/$3; high=$2/$3
+        if (!nh || low<minhit) minhit=low
+        if (!nh || high>maxhit) maxhit=high
+        nh++
+      }
+      $4!="-" {
+        if (!nc || $4<mincost) mincost=$4
+        if (!nc || $4>maxcost) maxcost=$4
+        nc++
+      }
+      END {
+        if (nh) printf "%sObserved blocking hit-rate bounds: %.1f%% to %.1f%% (%d report rows).\n", pfx, 100*minhit, 100*maxhit, nh
+        else print pfx "Observed blocking hit-rate bounds: - (no eligible report rows)."
+        if (nc) printf "%sObserved est. tokens per credited blocking hit: %d to %d (%d report rows).\n", pfx, mincost, maxcost, nc
+        else print pfx "Observed est. tokens per credited blocking hit: - (no eligible report rows)."
+      }'
+    echo "${pfx}Unresolved hit rates contribute their lower/upper bounds; cost uses credited hits."
+    echo "$pfx"
+  }
+  panel_metrics ''
   panel_matrix ''
   echo 'FILES: mean changed-file mention coverage across measured runs; - is unavailable.'
   echo 'Shared basenames are excluded. Mentions do not prove a file was reviewed.'
@@ -621,6 +671,7 @@ cmd_panel() {
     echo "#"
     echo "# Coverage at the time this was written:"
     echo "#"
+    panel_metrics '#   '
     panel_matrix '#   '
     [ ${#gaps[@]} -gt 0 ] && { echo "# ★ NOTHING in this lineup catches: ${gaps[*]}"; echo "#"; }
     # One line per candidate, not per grading. A candidate graded by two judges
