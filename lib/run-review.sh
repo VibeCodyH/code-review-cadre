@@ -426,7 +426,7 @@ CHANGE_LANG=$(detect_language "$TPL" "$BASE" HEAD)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
 # skipped-seat path as roster gates: slots.tsv status, report line, out of
 # panel seat counts and synthesis. See seat_declarations in common.sh.
-_kept=(); _block=""; _decl=""; _reason=""
+_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0
 for _spec in "${reviewers[@]}"; do
   _block=""
   if _block=$(capability_block "$_spec" reviewer "$PROMPT"); then
@@ -435,10 +435,23 @@ for _spec in "${reviewers[@]}"; do
     echo "  $_spec: SKIPPED by capability preflight ($_decl: $_reason)"
     continue
   fi
+  # ★ A window this seat's OWN last refusal said is closed until T (#61).
+  # Recorded by the dispatch loop below the last time the seat was asked;
+  # skipped here the way a capability declaration skips it -- state `skipped`,
+  # out of the panel counts and the synthesis -- until T passes, and forgotten
+  # the moment it does. Measured on the live bot 2026-09-05: muse out for the
+  # week, dispatched and refused on every review in between.
+  if _until=$(window_closed_until "$_spec"); then
+    _reason="usage window closed until $(epoch_iso "$_until")"
+    skipped_rows+=("$_spec"$'\t'"window"$'\t'"$_reason")
+    window_skipped=$((window_skipped + 1))
+    echo "  $_spec: SKIPPED, $_reason"
+    continue
+  fi
   _kept+=("$_spec")
 done
 reviewers=("${_kept[@]}")
-unset _kept _spec _block _decl _reason
+unset _kept _spec _block _decl _reason _until
 
 {
   # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
@@ -648,9 +661,11 @@ run_one() {
     # backoff could refill. A usage window is the same waste with a reset time
     # attached. Neither is a throughput ceiling; neither gets a retry.
     if provider_window_closed "$f.part"; then
+      # Remembered per seat so the NEXT review skips it (#61); see the gate above.
+      local until_iso; until_iso=$(window_record "$spec" "$f.part")
       { echo "DID NOT COMPLETE, provider usage window closed, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
         cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
-      echo "  $spec: ⏸ usage window CLOSED, not a rate limit; not retried" >> "$log"
+      echo "  $spec: ⏸ usage window CLOSED, not a rate limit; not retried; seat skipped until $until_iso" >> "$log"
       break
     fi
     if quota_exhausted "$f.part"; then
@@ -803,6 +818,8 @@ for row in "${skipped_rows[@]}"; do
   case "$gate" in
     \?*)
       echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT" ;;
+    window)
+      echo "- \`$spec\` — SKIPPED, $reason (its last refusal stated the reset)." >> "$REPORT" ;;
     *)
       echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
   esac
@@ -992,6 +1009,12 @@ fi
 # Degraded counts toward having something to synthesize: partial findings are
 # still findings. Only a panel with nothing at all is a dead run.
 [ $((ok_count + degraded_count)) -gt 0 ] || {
-  [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  # Intentional roster/capability exclusions can leave no work to do. A
+  # requested panel benched by quota still owes the caller a failed run.
+  [ "$window_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  if [ "$window_skipped" -gt 0 ]; then
+    echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+    exit 1
+  fi
   echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }
 exit 0

@@ -160,7 +160,6 @@ and declined to flag it, which is exactly backwards.
   local pcount=""
   [ ${#capped[@]} -gt 0 ] && pcount="$pcount, ${#capped[@]} sent short"
   [ ${#partial[@]} -gt 0 ] && pcount="$pcount, ${#partial[@]} partial"
-  echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
   local a m mm=(); a=$(spec_agent "$synth"); m=$(spec_model "$synth")
   [ -n "$m" ] && mm=(-M "$m")
   # Capability preflight: a doomed synthesizer must not burn the merge call.
@@ -171,6 +170,18 @@ and declined to flag it, which is exactly backwards.
     rm -f "$pf"
     return 0
   fi
+  # The same spec draws on the same window in either role. Its reviewer may
+  # have recorded the refusal earlier in this very panel.
+  local until until_iso
+  if until=$(window_closed_until "$synth"); then
+    until_iso=$(epoch_iso "$until")
+    echo "synthesis SKIPPED, usage window closed until $until_iso ($synth). Individual reviews are intact in $out." >&2
+    printf '\n> Synthesis (`%s`) SKIPPED, usage window closed until %s. Individual reviews are intact.\n' \
+      "$synth" "$until_iso" >> "$out/report.md"
+    rm -f "$pf"
+    return 0
+  fi
+  echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
   local rc=0
   while :; do
     # ★ The synth slot gets the declaration channel too, and it is the slot that
@@ -187,6 +198,13 @@ and declined to flag it, which is exactly backwards.
     [ -s "$smeta" ] && mv "$smeta" "$out/.synth-tmp.meta"
     rm -rf "$smetad"
     printf '%s' "$raw" > "$out/.synth-tmp"
+    if [ "$(classify_run "$out/.synth-tmp" "$rc" synth)" = failed ] \
+       && provider_window_closed "$out/.synth-tmp"; then
+      until_iso=$(window_record "$synth" "$out/.synth-tmp")
+      raw="DID NOT COMPLETE, provider usage window closed, not retried: $raw"
+      echo "synthesis usage window CLOSED, not retried; $synth skipped until $until_iso" >&2
+      break
+    fi
     # ★ The THIRD retry loop. The commit that taught the two reviewer loops to
     # stop trusting a keyword scan over the adapter left this one asking the old
     # question, so a healthy short merge that discussed rate limiting burned

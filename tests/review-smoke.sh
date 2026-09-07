@@ -907,10 +907,35 @@ check "claude no longer allowlists" \
 # under its read-only sandbox, so denying bash to the other two would invert
 # parity rather than restore it. What every candidate must lack is a second
 # model: claude's advisor + Workflow, grok's subagents. codex exposes neither.
-check "grok ro denies writes only"   "grep -q \"disallowed-tools 'edit,write'\" '$ROOT/agents.d/grok.sh'"
+# ★ #62. The deny list must name grok's OWN built-ins. `edit,write` were
+# claude's names; with them in force a ro review created files through
+# search_replace on the live bot. bash (run_terminal_command) stays allowed.
+check "grok ro denies its real write tools" "grep -q \"disallowed-tools 'search_replace,write'\" '$ROOT/agents.d/grok.sh'"
+check "grok ro no longer names claude's tools" "! grep -q \"disallowed-tools 'edit,write\" '$ROOT/agents.d/grok.sh'"
 check "grok ro still allows bash" \
-  "! grep -q \"disallowed-tools 'edit,write,bash'\" '$ROOT/agents.d/grok.sh'"
+  "! grep -q 'run_terminal_command' <<<\"\$(grep disallowed-tools '$ROOT/agents.d/grok.sh' | grep -v '^ *#')\""
 check "grok ro kills subagents"      "grep -q -- '--no-subagents' '$ROOT/agents.d/grok.sh'"
+# ★ #62. A review the CLI finished but never returned is read back out of the
+# pinned session log -- and ONLY when the log says the turn ended and
+# completed. The three shapes below are the ones in the corpus: a completed
+# text turn (recover), a turn still holding tool_calls (do not), and a turn
+# that ended in error (do not).
+GS="$SANDBOX/groksessions/%2Ftmp%2Fx"; mkdir -p "$GS/sid-ok" "$GS/sid-mid" "$GS/sid-err" "$GS/sid-noev"
+printf '{"type":"user","content":"review"}\n{"type":"assistant","content":"","tool_calls":[{"name":"read_file"}]}\n{"type":"tool_result","content":"x"}\n{"type":"assistant","content":"## Review\\n\\nOne finding.\\n\\nVerdict: ship it"}\n' > "$GS/sid-ok/chat_history.jsonl"
+printf '{"type":"phase_changed","phase":"streaming_text"}\n{"type":"turn_ended","outcome":"completed"}\n' > "$GS/sid-ok/events.jsonl"
+cp "$GS/sid-ok/events.jsonl" "$GS/sid-mid/events.jsonl"
+printf '{"type":"user","content":"review"}\n{"type":"assistant","content":"looking","tool_calls":[{"name":"grep"}]}\n' > "$GS/sid-mid/chat_history.jsonl"
+cp "$GS/sid-ok/chat_history.jsonl" "$GS/sid-err/chat_history.jsonl"
+printf '{"type":"turn_ended","outcome":"error"}\n' > "$GS/sid-err/events.jsonl"
+cp "$GS/sid-ok/chat_history.jsonl" "$GS/sid-noev/chat_history.jsonl"
+GR="bash -c \"source '$ROOT/agents.d/grok.sh'; grok_recover '$SANDBOX/groksessions'"
+check "grok recover: a completed text turn is the review" "[ \"\$($GR sid-ok\" | tail -1)\" = 'Verdict: ship it' ]"
+check "grok recover: found by session id, not newest dir" "$GR sid-ok\" | grep -q 'One finding'"
+check "grok recover: a turn mid tool-call is NOT"          "! $GR sid-mid\" | grep -q ."
+check "grok recover: a turn that ended in error is NOT"    "! $GR sid-err\" | grep -q ."
+check "grok recover: no events file is NOT"                "! $GR sid-noev\" | grep -q ."
+check "grok recover: an unknown id is NOT"                 "! $GR nope\" | grep -q ."
+check "grok pins the session it will read"  "grep -q -- '--session-id \"\$sid\"' '$ROOT/agents.d/grok.sh'"
 # grok runs the OPERATOR's Claude hooks (settings.json + settings.local.json)
 # via its compat path. Measured: a PostToolUse hook fired 28 times inside a
 # review. CLAUDE_CONFIG_DIR does not stop it; a HOME without .claude does.
@@ -1752,6 +1777,93 @@ check "tier banner leads the artifact"       "head -1 '$R'/tier-*.md.failed | gr
 check "tier refusal text is kept"            "grep -q 'Switch to another model' '$R'/tier-*.md.failed"
 check "the rest of the panel still ran"      "ls '$R'/good-*.md >/dev/null 2>&1"
 check "unit: a refusal with no verdict is still failed" "bash -c \"source '$ROOT/lib/common.sh'; [ \\\$(classify_run '$R'/../ratelim/ratelim-*.md.failed 0) = failed ]\""
+
+echo "== ★ #61 a closed window is remembered, and the seat skipped until it lifts =="
+# The window stub above states "resets 5am (UTC)", a real clock time, so the
+# refusal it just gave is now on record under $CADRE_HOME/windows. The next
+# review must not dispatch that seat at all: `skipped`, out of the counts,
+# named in the report with the reset -- the same shape a capability skip takes.
+check "window: the refusal was recorded"     "ls '$D'/state/windows/window-* >/dev/null 2>&1"
+check "window: the log says until when"      "grep -q 'seat skipped until 20' <<<\"\$OUT\""
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster window,good --synth none \
+      --base main --label window2 "$S")
+R2="$D/state/reviews/window2"
+check "window: second review SKIPS the seat"  "grep -q 'window: SKIPPED, usage window closed until 20' <<<\"\$OUT\""
+check "window: nothing was dispatched for it" "! ls '$R2'/window-*.md* >/dev/null 2>&1"
+check "window: report names it, with the reset" "grep -q 'SKIPPED, usage window closed until 20.*stated the reset' '$R2/report.md'"
+check "window: slots.tsv rows it as skipped"  "awk -F '\t' '\$2 == \"window\" && \$4 == \"skipped\"' '$R2/slots.tsv' | grep -q ."
+check "window: counted as skipped, not failed" "grep -q '1 ok, 0 degraded, 0 inconclusive, 0 failed, 1 skipped' <<<\"\$OUT\""
+check "window: the rest of the panel ran"     "ls '$R2'/good-*.md >/dev/null 2>&1"
+# Once the stated reset passes the seat is asked again. Nothing is benched on
+# a record older than its own refusal.
+printf '1\n' > "$(ls "$D"/state/windows/window-*)"
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster window,good --synth none \
+      --base main --label window3 "$S")
+check "window: an expired record dispatches again" "grep -q 'usage window CLOSED' <<<\"\$OUT\""
+check "window: and was not skipped"            "! grep -q 'window: SKIPPED' <<<\"\$OUT\""
+
+# A quota closure is unavailable coverage, not an intentional scope exclusion.
+# Repeating an all-failed panel must not turn it into a successful empty panel.
+OUT=$(run_cadre "$D" review --roster window --synth none --base main --label windowonly "$S"); RC=$?
+check "window: an entirely cached panel still fails" "[ $RC -eq 1 ]"
+check "window: empty panel names the closed windows" "grep -q 'no usable reviews; 1 reviewer(s) skipped because usage windows are closed' <<<\"\$OUT\""
+check "window: empty panel keeps its report" "[ -s '$D/state/reviews/windowonly/report.md' ]"
+OUT=$(run_cadre "$D" review --roster window,dead --synth none --base main --label windowdead "$S"); RC=$?
+check "window: cached seat plus a failed peer still fails" "[ $RC -eq 1 ]"
+check "window: failed peer artifact survives" "ls '$D/state/reviews/windowdead'/dead-*.md.failed >/dev/null 2>&1"
+
+# The synthesizer is charged to the same spec. A cached reviewer must not be
+# immediately dispatched again as the synthesizer; a synth-only refusal must
+# create that same cache and stop after one attempt, including a zero exit.
+cat > "$D/agents.d/window.sh" <<A
+run_window() {
+  echo called >> "$D/window.calls"
+  printf 'Subscription quota exhausted. Your usage window resets at 2099-01-01T00:00:00Z.\\n'
+}
+A
+: > "$D/window.calls"
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster window,good,good2 --synth window \
+      --base main --label windowsynthcached "$S")
+R2="$D/state/reviews/windowsynthcached"
+check "window synth: cached spec is not dispatched in either role" "[ ! -s '$D/window.calls' ]"
+check "window synth: skip is explicit in console and report" "grep -q 'synthesis SKIPPED, usage window closed until' <<<\"\$OUT\" && grep -q 'Synthesis.*SKIPPED, usage window closed until' '$R2/report.md'"
+check "window synth: engine records skipped synthesis" "jq -e '.synthesis.status == \"skipped\"' '$R2/findings.json' >/dev/null"
+check "window synth: both original reviews remain" "ls '$R2'/good-*.md '$R2'/good2-*.md >/dev/null 2>&1"
+rm -f "$D"/state/windows/window-*
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynthnew "$S")
+R2="$D/state/reviews/windowsynthnew"
+check "window synth: a fresh refusal gets exactly one call" "[ \$(wc -l < '$D/window.calls') -eq 1 ]"
+check "window synth: a zero-exit refusal is failed" "jq -e '.synthesis.status == \"failed\"' '$R2/findings.json' >/dev/null && [ -s '$R2/synthesis.md.failed' ]"
+check "window synth: raw refusal survives" "grep -q 'Subscription quota exhausted' '$R2/synthesis.md.failed'"
+check "window synth: refusal records its reset" "[ \"\$(cat '$D'/state/windows/window-*)\" = 4070908800 ]"
+check "window synth: refusal does not wait or retry" "! grep -q 'synthesis rate limited' <<<\"\$OUT\""
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynthnext "$S")
+check "window synth: next panel reuses the synth-only refusal" "[ \$(wc -l < '$D/window.calls') -eq 1 ] && grep -q 'synthesis SKIPPED, usage window closed until' <<<\"\$OUT\""
+rm -f "$D"/state/windows/window-*
+sed 's/Subscription quota exhausted/API error 429: Subscription quota exhausted/' "$D/agents.d/window.sh" > "$D/agents.d/window.sh.tmp"
+mv "$D/agents.d/window.sh.tmp" "$D/agents.d/window.sh"
+: > "$D/window.calls"
+OUT=$(CADRE_RETRIES=3 CADRE_RETRY_WAIT=1 run_cadre "$D" review --roster good,good2 --synth window \
+      --base main --label windowsynth429 "$S")
+check "window synth: a 429 with a reset is not retried" "[ \$(wc -l < '$D/window.calls') -eq 1 ] && ! grep -q 'synthesis rate limited' <<<\"\$OUT\""
+check "window synth: the 429 refusal is preserved as failed" "grep -q 'API error 429' '$D/state/reviews/windowsynth429/synthesis.md.failed'"
+
+# A healthy merge can discuss the window implementation itself. Its verdict
+# keeps that prose out of the refusal cache, just as on the reviewer path.
+cp "$D/bin/good" "$D/bin/windowtalk"
+cat > "$D/agents.d/windowtalk.sh" <<'A'
+run_windowtalk() {
+  echo 'The usage window resets at 2099-01-01T00:00:00Z in this fixture.'
+  for i in $(seq 1 15); do echo 'The reviewers agree that the implementation preserves their findings.'; done
+  echo 'Verdict: ship it'
+}
+A
+OUT=$(run_cadre "$D" review --roster good,good2 --synth windowtalk \
+      --base main --label windowsynthtalk "$S")
+check "window synth: a merge discussing reset logic remains usable" "[ -s '$D/state/reviews/windowsynthtalk/synthesis.md' ]"
+check "window synth: review prose does not create a window record" "! ls '$D'/state/windows/windowtalk-* >/dev/null 2>&1"
 
 echo "== ★ a synthesis QUOTING a marker is not a truncated synthesis =="
 # The synthesis prompt asks the model to report which reviewers were cut off, so
@@ -2948,6 +3060,37 @@ check "window: was NOT a budget"       "! $QE"
 printf "You've hit your weekly limit · resets 5am (America/New_York)\n" > "$QB"
 check "window: weekly limit caught"    "$WC"
 check "window: weekly is not a budget" "! $QE"
+# ★ #61: the reset a window STATES becomes a skip until it lifts. Each phrasing
+# in the corpus parses to a real time; anything else is one hour, never a day.
+WR="bash -c \"source '$ROOT/lib/common.sh'; window_reset_epoch '$QB'\""
+NOW=$(date +%s)
+printf 'API error 429: Subscription quota exhausted. Your usage window resets at 2099-01-01T00:00:00Z. (rate_limit_error)\n' > "$QB"
+check "window reset: ISO parses to the second"  "[ \$($WR) -eq 4070908800 ]"
+printf 'Individual quota reached. Please upgrade your subscription. Resets in 4h22m55s.\n' > "$QB"
+check "window reset: relative h/m/s adds up"    "t=\$($WR); [ \$((t - $NOW)) -ge 15770 ] && [ \$((t - $NOW)) -le 15780 ]"
+printf "You've hit your session limit · resets 5am (UTC)\n" > "$QB"
+check "window reset: clock time lands on 05:00 UTC" "t=\$($WR); [ \$((t % 86400)) -eq 18000 ]"
+check "window reset: clock time is in the future"   "t=\$($WR); [ \$t -gt $NOW ] && [ \$((t - $NOW)) -le 86400 ]"
+printf 'Usage window closed. Resets in 08m09s.\n' > "$QB"
+check "window reset: zero-padded minutes are decimal, not octal" "t=\$($WR); [ \$((t - $NOW)) -ge 485 ] && [ \$((t - $NOW)) -le 493 ]"
+printf '[2026-09-05T12:00:00Z] Subscription quota exhausted. Your usage window resets at 2099-01-01T00:00:00Z.\n' > "$QB"
+check "window reset: the timestamp beside RESET wins over a log stamp" "[ \$($WR) -eq 4070908800 ]"
+printf 'Usage window resets 5am (Etc/GMT+5)\n' > "$QB"
+check "window reset: a zone with digits is honoured (05:00 GMT+5 = 10:00 UTC)" "t=\$($WR); [ \$((t % 86400)) -eq 36000 ]"
+printf 'Your usage window is closed. Try again later.\n' > "$QB"
+check "window reset: unparseable is ONE hour"   "t=\$($WR); [ \$((t - $NOW)) -ge 3595 ] && [ \$((t - $NOW)) -le 3605 ]"
+printf 'usage window resets at 2001-01-01T00:00:00Z\n' > "$QB"
+check "window reset: a reset in the past is one hour, not a bench" "t=\$($WR); [ \$((t - $NOW)) -ge 3595 ] && [ \$((t - $NOW)) -le 3605 ]"
+# The store round-trips, and forgets itself the moment the reset passes.
+WH="$SANDBOX/winhome"; rm -rf "$WH"
+WS="bash -c \"export CADRE_HOME='$WH'; source '$ROOT/lib/common.sh';"
+printf 'usage window resets at 2099-01-01T00:00:00Z\n' > "$QB"
+check "window store: record prints the ISO reset" "[ \"\$($WS window_record muse:free '$QB'\")\" = 2099-01-01T00:00:00Z ]"
+check "window store: closed_until sees it"        "[ \"\$($WS window_closed_until muse:free\")\" = 4070908800 ]"
+check "window store: keyed per SPEC, not agent"   "! $WS window_closed_until muse\""
+printf '1\n' > "$WH/windows/$(bash -c "source '$ROOT/lib/common.sh'; slug muse:free")"
+check "window store: an expired record fails"     "! $WS window_closed_until muse:free\""
+check "window store: and is forgotten"            "! ls '$WH'/windows/muse* >/dev/null 2>&1"
 # ★ THE ONE THAT KEEPS THIS FUNCTION HONEST, and the discriminator is not the
 # period word this time -- "monthly spend limit" is a longer period than
 # "weekly limit" and yet the opposite kind of refusal. It states WHERE TO PAY, not

@@ -603,6 +603,16 @@ Budget the wall-clock: on defaults a run that stays limited costs about three
 minutes before giving up. Each wait is printed, so it is not hung. On a tight
 free tier, lower `CADRE_RETRIES` or run one reviewer at a time.
 
+A refusal that **states its reset** ("resets at 2026-09-07T00:00:00Z", "resets
+7:10pm", "Resets in 4h22m55s") is a closed usage window, not a rate limit, and
+gets neither retries nor a second look: the reset is recorded per seat under
+`$CADRE_HOME/windows/`, and every review until then skips that seat as
+`skipped` (out of the counts, named in the report with the time) instead of
+paying for the same refusal again. A reset that cannot be parsed skips the seat
+for one hour. The record is forgotten the moment the reset passes, so nothing
+is ever benched longer than its own refusal said.
+
+
 One adapter has a second, narrower retry. `agy`'s print stream sometimes ends
 `status=ERROR` with a complete review already written, minutes inside every
 clock. That is a transport flake, not a limit, so `agents.d/agy.sh` re-runs the

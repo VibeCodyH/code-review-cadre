@@ -35,9 +35,46 @@ grok_sandbox_home() {
   printf '%s' "$h"
 }
 
+# ★ A FINISHED review can still come back empty (#62). Measured on the WOWnet
+# bot, PR 2008 at 329d8e0, 2026-09-05: grok's session log has the final
+# assistant message -- verdict written -- at 14:18:17, and the CLI had not
+# emitted its JSON by the 900s kill at 14:19:33. The adapter saw no text and
+# filed DID NOT COMPLETE over a complete review. Other grok runs on the same
+# box take 515-754s, so the clock is tight for this seat, but raising it only
+# moves the cliff. The log is the record that survives a slow exit.
+#
+# The session is pinned to a UUID cadre generates (--session-id), so the log
+# is found by name rather than by guessing "newest directory" -- which under
+# --jobs is another seat's. The turn is read back ONLY when events.jsonl says it
+# ENDED and COMPLETED: a log whose last turn is still open, or ended in error
+# or cancelled (both in the corpus), is a review that really was cut off, and
+# stays DID NOT COMPLETE.
+grok_session_id() {
+  cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true
+}
+
+# grok_recover <sessions-root> <session-id>: the final assistant text of a
+# turn the CLI itself recorded as completed, or nothing (exit 1).
+grok_recover() {
+  local d text
+  d=$(find "$1" -mindepth 2 -maxdepth 2 -type d -name "$2" 2>/dev/null | head -1)
+  [ -n "$d" ] && [ -s "$d/chat_history.jsonl" ] && [ -s "$d/events.jsonl" ] || return 1
+  tail -1 "$d/events.jsonl" \
+    | jq -e '.type == "turn_ended" and .outcome == "completed"' >/dev/null 2>&1 || return 1
+  # The LAST assistant entry, and only if it is a text turn: one carrying
+  # tool_calls is the model mid-work, whatever the events file says.
+  text=$(jq -rs '[.[] | select(.type == "assistant")] | last | select(. != null)
+                 | select(((.tool_calls // []) | length) == 0 and (.content | type) == "string")
+                 | .content' "$d/chat_history.jsonl" 2>/dev/null)
+  [ -n "$text" ] || return 1
+  printf '%s\n' "$text"
+}
+
+
 run_grok() {
-  local out pf stop text trunc=0 m=() ro=() sbh
+  local out pf stop text trunc=0 m=() ro=() sbh sid sopt=()
   sbh=$(grok_sandbox_home) || sbh="$HOME"
+  sid=$(grok_session_id); [ -n "$sid" ] && sopt=(--session-id "$sid")
   [ -n "$model" ] && m=(--model "$model")
   # ★ ro was previously UNENFORCED here: --always-approve was passed in every
   # mode, so a "read-only" review could edit, write, and shell out. Its
@@ -52,24 +89,40 @@ run_grok() {
   # --no-subagents), the same class of hole as claude's advisor. No grok review
   # in the corpus shows subagent use, so its existing numbers stand; this closes
   # the door for future runs.
-  [ "$mode" = ro ] && ro=(--disallowed-tools 'edit,write' --no-subagents)
+  # ★ The REAL tool names (#62). `edit` and `write` were the names claude uses;
+  # grok's built-ins are search_replace, write, read_file, grep, search_tool,
+  # list_dir, run_terminal_command (every one observed in its session logs),
+  # and a ro review on the live bot created files under /tmp via
+  # search_replace with the old list in force. --disallowed-tools removes
+  # built-ins BY NAME and says nothing about a name it does not have, so a deny
+  # list of aliases is no deny list at all. Not verified against a live grok
+  # call when written: the balance was out (402). The names are from the logs.
+  [ "$mode" = ro ] && ro=(--disallowed-tools 'search_replace,write' --no-subagents)
   if [ -n "$DRY" ]; then
     _run env HOME="$sbh" timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
-      --always-approve --no-auto-update --no-alt-screen \
+      --session-id SESSIONID --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file PROMPTFILE
     return 0
   fi
   pf=$(mktemp); printf '%s' "$prompt" > "$pf"
   out=$(mktemp)
-  ( cd "$dir" && HOME="$sbh" timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" \
+  ( cd "$dir" && HOME="$sbh" timeout -k 30 "$TIMEOUT" grok --cwd "$dir" "${m[@]}" "${ro[@]}" "${sopt[@]}" \
       --always-approve --no-auto-update --no-alt-screen \
       --output-format json --prompt-file "$pf" ) > "$out" 2>&1
   rm -f "$pf"
   stop=$(jq -r '.stopReason // "unknown"' "$out" 2>/dev/null)
   text=$(jq -r '.text // ""' "$out" 2>/dev/null)
-  if [ -z "$text" ]; then
-    # Bad JSON or no text. Surface the raw output. An empty string reads
-    # downstream as "reviewer found nothing".
+  if [ -z "$text" ] && [ -n "$sid" ] && text=$(grok_recover "$sbh/.grok/sessions" "$sid"); then
+    # A completed turn the CLI never returned: the review, with the recovery
+    # on the record. No stopReason to read, so no _TRUNCATED contract to apply;
+    # the log's own turn_ended/completed is the stop evidence, and the text
+    # goes through classify_run like any other clean exit.
+    [ -n "${CADRE_RUN_META:-}" ] && printf 'note=%s\n' \
+      "recovered from grok session log $sid; the CLI returned no JSON (stopReason=$stop)" >> "$CADRE_RUN_META"
+    echo "$text"
+  elif [ -z "$text" ]; then
+    # Bad JSON or no text, and no completed turn in the log. Surface the raw
+    # output. An empty string reads downstream as "reviewer found nothing".
     echo "DID NOT COMPLETE, no text returned (stopReason=$stop). Raw:"
     head -c 2000 "$out"
   else
