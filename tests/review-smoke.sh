@@ -2925,7 +2925,7 @@ check "outage: it names which judge"   "grep -q 'good2:' '$R'"
 # still read like a result. 0/0 out of a pass that ran is not a score, so the
 # verdict has to be about the measurement failing, and the exit code has to
 # agree: a driver piping stdout to /dev/null sees only that.
-check "outage: not a 0/0 score"        "! grep -q 'blocking items hit' '$R'"
+check "outage: not a 0/0 score"        "! grep -qE '^(- blocking items hit:|\\| graded-only \\| [0-9])' '$R'"
 # ★ NOTHING GRADED, not NOTHING MEASURED, and the difference is the whole point:
 # the review is on disk. A driver told "4" stops the sweep, which for a judge
 # outage means abandoning hours of review production to save one cheap re-grade.
@@ -3978,7 +3978,7 @@ RG=$(ls "$DG/home"/report-*.md | head -1)
 check "e2e: report states it as the provider"    "grep -q 'the provider returned NOTHING' '$RG'"
 check "e2e: report no longer blames the adapter" "! grep -q 'the adapter failed' '$RG'"
 check "e2e: verdict is about the provider"       "grep -q 'Verdict: NOT MEASURED -- PROVIDER RETURNED NOTHING' '$RG'"
-check "e2e: and refuses to score the candidate"  "! grep -q 'blocking items hit' '$RG'"
+check "e2e: and refuses to score the candidate"  "! grep -qE '^(- blocking items hit:|\\| graded-only \\| [0-9])' '$RG'"
 
 # ★ The counter-case, and the one that keeps the verdict honest: an artifact
 # that came back with TEXT is an ordinary failure, not an outage. Blaming the
