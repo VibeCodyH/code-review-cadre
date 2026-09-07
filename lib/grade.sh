@@ -272,6 +272,7 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
     /^- est\. tokens per blocking item hit:/ { nc++; cost=$0 }
     END {
       lo=hi=total=spend="-"
+      if (nc==1 && cost ~ /^- est\. tokens per blocking item hit: \*\*([0-9]+|-)\*\* \(partial denominator\)$/) partial=1
       if (!unscored && nh==1) {
         if (hits ~ /^- blocking items hit: \*\*[0-9]+ \/ [0-9]+\*\*$/ ||
             hits ~ /^- blocking items hit: \*\*[0-9]+ to [0-9]+ \/ [0-9]+\*\* \([0-9]+ UNRESOLVED\)$/) {
@@ -290,7 +291,6 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
         }
         if (lo!="-" && lo>0 && nc==1 &&
             cost ~ /^- est\. tokens per blocking item hit: \*\*[0-9]+\*\*( \(partial denominator\))?$/) {
-          if (cost ~ /partial denominator/) partial=1
           sub(/^- est\. tokens per blocking item hit: \*\*/, "", cost)
           spend=cost+0
         }

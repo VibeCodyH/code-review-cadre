@@ -81,6 +81,22 @@ check grep -qF 'est. tokens per credited blocking hit: **10** (partial denominat
 OUT=$("$ROOT/bin/cadre" panel)
 check grep -qE '^alpha.*judge: j1.*10 +50\.0%.*partial denominator' <<< "$OUT"
 
+# A missing cost must not erase a known partial hit-rate denominator. These
+# verdicts do not carry INCOMPLETE, so the footer is the only surviving receipt.
+report report-partial-zero.md partial-zero '0 / 2' - 'DO NOT SLOT'
+sed -i 's/[*][*]-[*][*]$/**-** (partial denominator)/' "$CADRE_HOME/report-partial-zero.md"
+frontload_grade_cost "$CADRE_HOME/report-partial-zero.md"
+check grep -qF 'blocking hit rate: **0.0% (0 / 2)** (partial denominator)' "$CADRE_HOME/report-partial-zero.md"
+check grep -qF 'est. tokens per credited blocking hit: **-** (partial denominator)' "$CADRE_HOME/report-partial-zero.md"
+report report-partial-unresolved.md partial-unresolved '0 to 1 / 2' - UNRESOLVED
+sed -i -e 's/0 to 1 \/ 2\*\*$/0 to 1 \/ 2** (1 UNRESOLVED)/' \
+  -e 's/[*][*]-[*][*]$/**-** (partial denominator)/' "$CADRE_HOME/report-partial-unresolved.md"
+frontload_grade_cost "$CADRE_HOME/report-partial-unresolved.md"
+check grep -qF 'blocking hit rate: **0.0% to 50.0% (0 to 1 / 2; UNRESOLVED)** (partial denominator)' "$CADRE_HOME/report-partial-unresolved.md"
+OUT=$("$ROOT/bin/cadre" panel)
+check grep -qE '^partial-zero +- +0\.0%.*partial denominator' <<< "$OUT"
+check grep -qE '^partial-unresolved +- +0\.0% to 50\.0%.*partial denominator' <<< "$OUT"
+
 # No available metrics means no spread, including genuinely missing legacy data.
 rm -f "$CADRE_HOME"/report-*.md
 report report-empty.md old '0 / 0' 0 INCONCLUSIVE
@@ -179,6 +195,12 @@ fixture
 MISSES=1 grade
 has '- est. tokens per credited blocking hit: **-**'
 has '- blocking hit rate: **0.0% (0 / 2)**'
+# A registered pass with no artifact makes even a zero-hit result partial.
+printf 'missing|%s|%s|%s|key.md\n' "$SHA" "$TMP/repo" "$SHA" >> "$CADRE_HOME/passes.conf"
+MISSES=1 grade
+has '## Verdict: DO NOT SLOT'
+has '- est. tokens per credited blocking hit: **-** (partial denominator)'
+has '- blocking hit rate: **0.0% (0 / 2)** (partial denominator)'
 fixture
 SPLIT=1 grade
 has '- blocking hit rate: **50.0% to 100.0% (1 to 2 / 2; UNRESOLVED)**'
