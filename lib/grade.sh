@@ -257,6 +257,79 @@ cost_per_hit() {
   echo $(( bytes / 4 / hits ))
 }
 
+# Read only the grader's anchored footer fields. Missing/ambiguous legacy fields
+# stay unavailable; never reconstruct spend or turn an unresolved range exact.
+grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE}
+  local fields
+  fields=$(awk '
+    /^## Verdict: / {
+      footer=1
+      if ($0 ~ /^## Verdict: (INVALID|NOTHING|NOT MEASURED)/) unscored=1
+      if ($0 ~ /^## Verdict: INCOMPLETE/) partial=1
+    }
+    !footer { next }
+    /^- blocking items hit:/ { nh++; hits=$0 }
+    /^- est\. tokens per blocking item hit:/ { nc++; cost=$0 }
+    END {
+      lo=hi=total=spend="-"
+      if (!unscored && nh==1) {
+        if (hits ~ /^- blocking items hit: \*\*[0-9]+ \/ [0-9]+\*\*$/ ||
+            hits ~ /^- blocking items hit: \*\*[0-9]+ to [0-9]+ \/ [0-9]+\*\* \([0-9]+ UNRESOLVED\)$/) {
+          sub(/^- blocking items hit: \*\*/, "", hits)
+          split(hits, pair, " / ")
+          total=pair[2]+0
+          split(pair[1], range, " to ")
+          lo=range[1]+0; hi=(range[2]=="" ? lo : range[2]+0)
+          if (range[2]!="") {
+            unresolved=hits
+            sub(/^.*\*\* \(/, "", unresolved)
+            sub(/ UNRESOLVED\)$/, "", unresolved)
+            if (hi==lo || hi-lo!=unresolved+0) badrange=1
+          }
+          if (total<=0 || lo>hi || hi>total || badrange) lo=hi=total="-"
+        }
+        if (lo!="-" && lo>0 && nc==1 &&
+            cost ~ /^- est\. tokens per blocking item hit: \*\*[0-9]+\*\*( \(partial denominator\))?$/) {
+          if (cost ~ /partial denominator/) partial=1
+          sub(/^- est\. tokens per blocking item hit: \*\*/, "", cost)
+          spend=cost+0
+        }
+      }
+      print lo, hi, total, spend, partial+0
+    }
+  ' "$1")
+  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL <<< "$fields"
+  METRIC_RATE='-'
+  if [ "$METRIC_TOTAL" != - ]; then
+    METRIC_RATE=$(awk -v lo="$METRIC_LOW" -v hi="$METRIC_HIGH" -v total="$METRIC_TOTAL" 'BEGIN {
+      if (lo==hi) printf "%.1f%% (%d / %d)", 100*lo/total, lo, total
+      else printf "%.1f%% to %.1f%% (%d to %d / %d; UNRESOLVED)", 100*lo/total, 100*hi/total, lo, hi, total
+    }')
+  fi
+}
+
+# The totals only exist after grading. Insert the summary atomically while
+# retaining the first-line title that the panel uses to identify a report.
+frontload_grade_cost() { # <finished-report>
+  local report="$1" tmp title note=""
+  grade_report_metrics "$report"
+  [ "$METRIC_PARTIAL" -eq 0 ] || note=' (partial denominator)'
+  tmp=$(mktemp "$report.summary.XXXXXX") || return 1
+  IFS= read -r title < "$report"
+  {
+    printf '%s\n\n' "$title"
+    echo "## Cost and hits (graded-only)"
+    echo
+    echo "- est. tokens per credited blocking hit: **$METRIC_COST**$note"
+    echo "- blocking hit rate: **$METRIC_RATE**$note"
+    echo
+    echo "Cost uses prompt and review bytes / 4 from scored keyed runs only. Delivery"
+    echo "failures and CLEAN probes contribute no spend here. This is an estimate;"
+    echo "\`-\` means unavailable or not scored."
+    tail -n +2 "$report"
+  } > "$tmp" && mv "$tmp" "$report" || { rm -f "$tmp"; return 1; }
+}
+
 # ---- coverage-per-changeset (#5) --------------------------------------------
 # Deterministic, uncorrelated signal the judges never produce: which files the
 # change touched that a reviewer never mentioned. Scores what the reviewer
@@ -1288,6 +1361,7 @@ number to quote."
         echo
         report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
       } >> "$report"
+      frontload_grade_cost "$report" || return 1
       echo
       cat "$report"
       echo
@@ -1561,6 +1635,7 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     echo "_Recommendation only. Nothing was added to any review lineup._"
   } >> "$report"
 
+  frontload_grade_cost "$report" || return 1
   echo
   cat "$report"
   echo
