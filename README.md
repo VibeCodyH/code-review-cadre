@@ -791,6 +791,22 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
   reviewers to discount is a different tool with a different failure mode.
   Read the reviews, not just the synthesis.
 
+## Share the evidence behind a panel
+
+Export a finished review into a directory you can inspect and commit:
+
+```bash
+cadre export-evidence "$CADRE_HOME/reviews/my-change" evals/my-change
+```
+
+The exported table links each seat to its full reviewed diff, raw output and
+receipts. Failed and partial seats keep their own rows. Missing measurements
+stay unmeasured. The command writes local files and makes no model calls.
+
+See [the export guide](docs/EVIDENCE.md) for the saved-diff requirement and what
+to inspect before publishing, or open the [synthetic example](evals/evidence-example/README.md).
+These are review delivery records, not quality scores.
+
 ## Adding a reviewer
 
 A new model on a CLI you already have needs nothing. Just

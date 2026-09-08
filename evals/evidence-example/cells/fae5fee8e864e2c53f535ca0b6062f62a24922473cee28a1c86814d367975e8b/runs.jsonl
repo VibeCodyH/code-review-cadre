@@ -1,0 +1,2 @@
+{"event": "dispatch", "panel": "synthetic-task", "seat": "beta", "family": "fixture", "slug": "beta-67507236"}
+{"event": "complete", "panel": "synthetic-task", "seat": "beta", "family": "fixture", "state": "degraded", "bytes": 83, "secs": null, "prompt_bytes": null, "v": 2, "prompt_sha": "", "adapter_sha": "", "harness_sha": "", "model": "", "slug": "beta-67507236", "rc": null, "adapter_attempts": null, "adapter_note": "", "language": ""}

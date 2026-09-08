@@ -101,6 +101,9 @@ then run that panel on the code you are about to ship.
                                         offline tool-call contract smoke check;
                                         needs python3. Exits 1 on mismatch,
                                         2 on malformed or unsupported input.
+  cadre export-evidence <review-dir> <new-out-dir>
+                                        save a linked evidence directory per seat;
+                                        offline, requires python3 and a saved diff.
   cadre doctor [--probe]                check the install and the passes
   cadre lock --update                   pin current adapters and prompt sources
   cadre selfcheck                       check those inputs against the lock
@@ -1753,6 +1756,10 @@ case "${1:-}" in
     shift
     command -v python3 >/dev/null 2>&1 || die "contract-snapshot requires python3"
     python3 "$CADRE_ROOT/lib/contract-snapshot.py" "$@" ;;
+  export-evidence)
+    shift
+    command -v python3 >/dev/null 2>&1 || die "export-evidence requires python3"
+    python3 "$CADRE_ROOT/lib/export-evidence.py" "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   onboard)   shift; cmd_onboard "$@" ;;
   ledger)    shift; cmd_ledger "$@" ;;

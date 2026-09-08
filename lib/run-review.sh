@@ -397,6 +397,23 @@ fi
 # ---- prompt ------------------------------------------------------------------
 
 mkdir -p "$OUT" || die "cannot create $OUT"
+# Keep the reviewed change before the synthetic checkout is removed. Tree IDs
+# identify its content, but cannot recover it once the source objects are gone.
+# Disable external diff/textconv helpers so the saved patch contains Git bytes.
+git -C "$TPL" diff --no-ext-diff --no-textconv --binary --full-index --no-color \
+  --no-renames --no-relative --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short \
+  --diff-algorithm=myers --no-indent-heuristic "$BASE" HEAD -- > "$OUT/diff.patch" \
+  || die "could not save the reviewed diff"
+DIFF_SHA=""
+if [ -n "$SHA_CMD" ]; then
+  # shellcheck disable=SC2086 # SHA_CMD can be shasum -a 256.
+  DIFF_SHA=$($SHA_CMD < "$OUT/diff.patch" | cut -d' ' -f1) \
+    || die "could not hash the reviewed diff"
+  [[ "$DIFF_SHA" =~ ^[0-9a-f]{64}$ ]] || die "invalid reviewed diff hash"
+  printf '%s\n' "$DIFF_SHA" > "$OUT/diff.sha256" || die "could not save the diff hash"
+else
+  echo "cadre: no SHA-256 tool; review can continue, but evidence export is unavailable" >&2
+fi
 PROMPT="$OUT/prompt.txt"
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   # Rendered, not copied. run-pass.sh copies it verbatim, which silently drops
@@ -480,6 +497,7 @@ unset _kept _spec _block _decl _reason _until
   # produce identical ids, so they verify a re-run even after the commits die.
   echo "base-tree: $btree"
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
+  echo "diff-sha256: $DIFF_SHA"
   echo "roster:    ${reviewers[*]}"
   # Only selection provenance, never the raw configuration. Escape unusual
   # path bytes so a repository name cannot inject extra manifest fields.

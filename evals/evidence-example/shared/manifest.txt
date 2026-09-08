@@ -1,0 +1,7 @@
+mode: diff
+target: synthetic-example
+base-tree: 044315b64f0d858aacc7b517766928814742410e
+reviewed-tree: 29b1263f410c9b579adca3c2dc8fa1b70237d76f
+diff-sha256: c3d47f7e28209f665d39626cf01fc00a39acfd7ac30b7a4bf8eb965c6ef957ef
+roster: alpha beta broken
+harness: unknown
