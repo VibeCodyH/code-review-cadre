@@ -128,6 +128,11 @@ Leak checking runs first against the current artifact, including failed output.
 SUSPECT evidence invalidates both rates and cannot be hidden by any marker.
 The offline regression suite is `bash tests/delivery-inclusive.sh`.
 
+Each report also saves a [table manifest](TABLE-MANIFEST.md) with its selection
+rule, reasoned exclusions, and key and target pins. `all-runs` keeps every
+requested numbered run; `first-run` scores only run 1 without substituting a
+later success. `cadre grade ... --freeze` protects that table from replacement.
+
 ### CLEAN passes: the case with nothing to find
 
 A hit rate only measures what a reviewer catches. It says nothing about what it

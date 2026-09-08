@@ -1,6 +1,9 @@
 # Grading and slot recommendation. Sourced by bin/cadre.
 # shellcheck shell=bash
 
+# shellcheck source=lib/table-manifest.sh
+. "$CADRE_ROOT/lib/table-manifest.sh"
+
 # HIT / DEFER / MISS, and DEFER on a blocking item disqualifies.
 # Why: docs/METHOD.md §3.
 
@@ -508,6 +511,13 @@ key_problems() {
 # run_gauntlet <agent-spec> <runs> <rescore 0|1> [pass-label]
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"
+  local requested_runs="$runs"
+  local table_selection="${table_selection:-all-runs}" table_freeze="${table_freeze:-0}"
+  case "$table_selection" in
+    all-runs) ;;
+    first-run) runs=1 ;;
+    *) die "unknown table selection '$table_selection'" ;;
+  esac
   local sl; sl=$(slug "$spec")
   # ★ One gauntlet per candidate at a time. Measured 2026-08-04: two `cadre run`
   # sweeps of the same candidate overlapped for half an hour. Same spec means
@@ -565,6 +575,9 @@ remove that directory and re-run."
     scoped=1
     report="$CADRE_HOME/report-$sl-by-$jsl-only-$(slug "$only").md"
   fi
+  table_manifest_begin "$report" "$spec" "$requested_runs" "$table_selection" "$table_freeze" "$only" "${judges[@]}" || return 1
+  local table_report="$report"
+  report="$TABLE_STAGE/working-report.md"
   local blocking_hit=0 blocking_total=0 defer_on_blocking=0
   local total_hit=0 total_items=0 unusable=0 suspect=0 extras_all="" graded_passes=0 reference_used=0
   local delivery_miss=0 delivery_blocking_miss=0 delivery_no_output=0 delivery_failed=0
@@ -646,11 +659,17 @@ remove that directory and re-run."
     # a directory with a space read as missing and was silently skipped.
     label=$(trim "$label"); sha=$(trim "$sha"); dir=$(trim "$dir")
     base=$(trim "$base");   key=$(trim "$key")
+    local keyfile="$key" target="$dir" pinned_sha
+    case "$keyfile" in /*) ;; *) keyfile="$CADRE_HOME/$key" ;; esac
+    case "$target" in /*) ;; *) target="$CADRE_HOME/$dir" ;; esac
+    pinned_sha=$(git -C "$target" rev-parse --verify "$sha^{commit}" 2>/dev/null) || pinned_sha=""
+    table_manifest_pass "$label" "$pinned_sha" "$keyfile" || return 1
     # ★ COUNT what the scope excluded. Scoping to the only registered pass
     # excluded nothing, and warning "this is not the benchmark" there would be a
     # false alarm on the smallest legitimate setup there is. The guard below asks
     # whether anything was actually left out, not whether an argument was passed.
     if [ -n "$only" ] && [ "$only" != "$label" ]; then
+      table_manifest_exclude scope "$label" "" "Outside the requested pass scope: $only" || return 1
       nfiltered=$((nfiltered + 1)); continue
     fi
 
@@ -658,26 +677,25 @@ remove that directory and re-run."
     # pass that consequently never ran, rather than letting the report end where
     # the candidate stopped working and read as if that were the registry.
     if [ -n "$aborted" ]; then
+      table_manifest_exclude not-attempted "$label" "" "The sweep aborted on $aborted" || return 1
       skipped="$skipped- $label: NOT ATTEMPTED, the sweep aborted on '$aborted'"$'\n'
       nskipped=$((nskipped + 1)); continue
     fi
 
-    local keyfile="$key"
-    case "$keyfile" in /*) ;; *) keyfile="$CADRE_HOME/$key" ;; esac
     # ★ A skipped pass goes IN THE REPORT, not just the scrollback. Omitting it
     # silently shrank the denominator: one deleted checkout of two turned
     # "caught every blocking item in every run" into a claim about half the
     # benchmark, and the saved artifact carried no trace of the half that
     # never ran.
     if [ ! -f "$keyfile" ]; then
+      table_manifest_exclude missing-key "$label" "" "Answer key is missing" || return 1
       echo "  $label: no key at $keyfile, NOT GRADED"
       skipped="$skipped- $label: key missing at $keyfile"$'\n'; nskipped=$((nskipped + 1))
       continue
     fi
 
-    local target="$dir"
-    case "$target" in /*) ;; *) target="$CADRE_HOME/$dir" ;; esac
     if [ ! -d "$target" ]; then
+      table_manifest_exclude missing-checkout "$label" "" "Reviewed checkout is missing" || return 1
       echo "  $label: no checkout at $target, NOT GRADED"
       skipped="$skipped- $label: checkout missing at $target"$'\n'; nskipped=$((nskipped + 1))
       continue
@@ -710,6 +728,11 @@ remove that directory and re-run."
     local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
     pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
     local run_leaks=() run_invalid=() run_failure_kinds=() n rf rec_rc k pass_invalid=0
+    if [ "$table_selection" = first-run ]; then
+      for ((n=2; n<=requested_runs; n++)); do
+        table_manifest_exclude selection "$label" "$n" "first-run selects numbered run 1 only" || return 1
+      done
+    fi
     for n in $(seq 1 "$runs"); do
       rf="$CADRE_HOME/$label/$sl-run$n.md"
       rec_rc=$(awk -F '\t' -v s="$sl" -v r="$n" '$1 == s && $2 == r { v = $4 } END { print v }' <<< "$pass_runs")
@@ -718,13 +741,31 @@ remove that directory and re-run."
       run_invalid[$n]="$RUN_INVALID_REASON"
       run_failure_kinds[$n]="$RUN_FAILURE_KIND"
       if [ "$RUN_LEAKED" -ge 2 ]; then
+        table_manifest_run "$label" "$n" suspect "" || return 1
+        table_manifest_exclude suspect "$label" "$n" "Suspected answer-key leak; invalidates the whole table" || return 1
         suspect=$((suspect + 1))
         suspect_notes="$suspect_notes- $label run $n: SUSPECT, quotes $RUN_LEAKED key items verbatim; not scored, operator exclusion cannot override this."$'\n'
       elif [ -n "$RUN_INVALID_REASON" ]; then
+        table_manifest_run "$label" "$n" operator-invalid "" || return 1
+        table_manifest_exclude operator-invalid "$label" "$n" "$RUN_INVALID_REASON" || return 1
         operator_invalid=$((operator_invalid + 1))
         pass_invalid=$((pass_invalid + 1))
         invalid_notes="$invalid_notes- $label run $n: $RUN_INVALID_REASON"$'\n'
       else
+        local table_run_status=pending-grade
+        if [ ! -s "$rf" ]; then
+          if [ -e "$rf.failed" ]; then
+            table_run_status="${RUN_FAILURE_KIND:-failed}"
+            case "$rec_rc" in 124|137) table_run_status=timed-out ;; esac
+          elif [ -s "$rf.inconclusive" ]; then table_run_status=inconclusive
+          elif [ -s "$rf.partial" ]; then table_run_status=partial
+          else table_run_status=missing; fi
+        fi
+        table_manifest_run "$label" "$n" "$table_run_status" "" || return 1
+        case "$table_run_status" in
+          pending-grade|failed|no-output) ;;
+          *) table_manifest_exclude "$table_run_status" "$label" "$n" "No items scored: $table_run_status" || return 1 ;;
+        esac
         [ -z "$RUN_INVALID_ERROR" ] || invalid_errors="$invalid_errors- $label run $n: $RUN_INVALID_ERROR"$'\n'
         case "$RUN_DELIVERY_KIND" in
           no-output|failed)
@@ -950,12 +991,13 @@ remove that directory and re-run."
       # is the same delete-before-write shape that `45211c9` fixed one layer up,
       # and losing a graded artifact is the most expensive failure here: the
       # review can be re-graded, but a baseline nobody kept cannot be recovered.
-      local gfs=() bad="" savedj="$CADRE_JUDGE"
+      local gfs=() all_gfs=() bad="" savedj="$CADRE_JUDGE"
       local j js gf
       for j in "${judges[@]}"; do
         CADRE_JUDGE="$j"
         js=$(slug "$j")
         gf="$CADRE_HOME/$label/$sl-run$n.by-$js.grade.json"
+        all_gfs+=("$gf")
         if [ "$rescore" = 1 ] || [ ! -s "$gf" ]; then
           grade_one "$keyfile" "$rf" "$gf.new"
           if [ -s "$gf.new" ]; then
@@ -997,6 +1039,8 @@ remove that directory and re-run."
       # two-judge label, and an outage is not a measurement. The usable grade
       # stays on disk, so a re-grade after the quota resets costs one call.
       if [ -n "$bad" ]; then
+        table_manifest_run "$label" "$n" grading-failed "" "${all_gfs[@]}" || return 1
+        table_manifest_exclude grading-failed "$label" "$n" "One or more judges did not produce a usable grade" || return 1
         unusable=$((unusable + 1))
         echo "- run $n: **UNUSABLE** (${bad%; })" >> "$report"
         [ "${#gfs[@]}" -gt 0 ] &&
@@ -1119,6 +1163,7 @@ remove that directory and re-run."
         }
       done
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
+      table_manifest_run "$label" "$n" "${pass_clean:+clean-}graded" "$row" "${gfs[@]}" || return 1
 
       # ★ Print the sentence that earned each HIT. Without it a grade is a verdict
       # nobody can re-check: two graders split on one item in three here and the
@@ -1230,6 +1275,9 @@ remove that directory and re-run."
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
+
+  table_manifest_totals "$blocking_hit" "$blocking_total" "$blocking_unresolved" \
+    "$total_hit" "$total_items" "$total_unresolved" "$delivery_blocking_miss" "$delivery_miss" "$suspect" || return 1
 
   {
     echo "## Hit rates"
@@ -1362,6 +1410,8 @@ number to quote."
         report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
       } >> "$report"
       frontload_grade_cost "$report" || return 1
+      table_manifest_finish "$report" "$table_report" || return 1
+      report="$table_report"
       echo
       cat "$report"
       echo
@@ -1369,6 +1419,9 @@ number to quote."
       echo "cadre: $head1 for '$spec' -- $nskipped pass(es) scored nothing" >&2
       return "$rc1"
     fi
+    echo "## Verdict: NOTHING MEASURED" >> "$report"
+    table_manifest_finish "$report" "$table_report" || return 1
+    report="$table_report"
     echo "no passes graded. Check 'cadre passes'"; return 1
   fi
 
@@ -1636,6 +1689,8 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
   } >> "$report"
 
   frontload_grade_cost "$report" || return 1
+  table_manifest_finish "$report" "$table_report" || return 1
+  report="$table_report"
   echo
   cat "$report"
   echo
