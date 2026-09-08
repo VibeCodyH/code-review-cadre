@@ -1,0 +1,70 @@
+{
+  "artifacts": {
+    "diff.patch": {
+      "bytes": 3944,
+      "sha256": "c3d47f7e28209f665d39626cf01fc00a39acfd7ac30b7a4bf8eb965c6ef957ef"
+    },
+    "diff.sha256": {
+      "bytes": 65,
+      "sha256": "fe8365227446190b7e47f789aed1aa5bae25b4aab804770bfe60d9aebb7544b9"
+    },
+    "review.md.failed": {
+      "bytes": 74,
+      "sha256": "a702cc4067d03a97329107a9f38c72a3caf9abca0e47f231f69ed569318afcb3"
+    },
+    "runs.jsonl": {
+      "bytes": 453,
+      "sha256": "5e36ea587744d62a547d50a099d279d7701549dbd8b812768e2ff131183cff1a"
+    },
+    "slots.tsv": {
+      "bytes": 48,
+      "sha256": "28ae065583aaf3c7465de47fd5d320e462d1eb7e74e098414ce8a12eb3eb3589"
+    }
+  },
+  "family": "fixture",
+  "measurements": {
+    "prompt_bytes": null,
+    "review_bytes": 74,
+    "secs": null,
+    "tokens": null
+  },
+  "missing": [
+    "secs",
+    "prompt_bytes",
+    "tokens"
+  ],
+  "provenance": {
+    "adapter_sha": "",
+    "harness_sha": "",
+    "model": "",
+    "prompt_sha": "",
+    "v": 2
+  },
+  "schema": "cadre/evidence-receipt@1",
+  "seat": "broken",
+  "shared_artifacts": {
+    "../../shared/findings.json": {
+      "bytes": 285,
+      "sha256": "fed35d0afdd7481a300cf1ede06f5fab01574c49fac7c269c132dbc6773053db"
+    },
+    "../../shared/manifest.txt": {
+      "bytes": 266,
+      "sha256": "dee66ba2ba0ef0748c46bb1d50c602f81b50da4ac2fd0844dfa7ffd5c75b7833"
+    },
+    "../../shared/report.md": {
+      "bytes": 43,
+      "sha256": "c00fe7ed0a03e2817a189c052489f218a25fa28e68b634edddb1227046ffe3ae"
+    },
+    "../../shared/synthesis.md.failed": {
+      "bytes": 47,
+      "sha256": "938360b3d332f41313398204fd5e679ddda5aa769fc44316648f037ad60a2b9c"
+    }
+  },
+  "state": "failed",
+  "target": {
+    "base_tree": "044315b64f0d858aacc7b517766928814742410e",
+    "diff_sha256": "c3d47f7e28209f665d39626cf01fc00a39acfd7ac30b7a4bf8eb965c6ef957ef",
+    "reviewed_tree": "29b1263f410c9b579adca3c2dc8fa1b70237d76f"
+  },
+  "task": "synthetic-task"
+}

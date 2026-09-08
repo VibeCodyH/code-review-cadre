@@ -1,0 +1,70 @@
+{
+  "artifacts": {
+    "diff.patch": {
+      "bytes": 3944,
+      "sha256": "c3d47f7e28209f665d39626cf01fc00a39acfd7ac30b7a4bf8eb965c6ef957ef"
+    },
+    "diff.sha256": {
+      "bytes": 65,
+      "sha256": "fe8365227446190b7e47f789aed1aa5bae25b4aab804770bfe60d9aebb7544b9"
+    },
+    "review.md.partial": {
+      "bytes": 83,
+      "sha256": "aec1cc0e89a71c9dc2723e2b678c01a93b56659a2224551e044ed75b5a5e4d06"
+    },
+    "runs.jsonl": {
+      "bytes": 443,
+      "sha256": "c9361ec71909f03e145b5dc15871525e1e04138742e340aa99fa726dac04cfbd"
+    },
+    "slots.tsv": {
+      "bytes": 48,
+      "sha256": "3790c502fbfe665fdc39ecfa7e0d8c9c0d821244e87f91e3fc0b223fd2b6b0b2"
+    }
+  },
+  "family": "fixture",
+  "measurements": {
+    "prompt_bytes": null,
+    "review_bytes": 83,
+    "secs": null,
+    "tokens": null
+  },
+  "missing": [
+    "secs",
+    "prompt_bytes",
+    "tokens"
+  ],
+  "provenance": {
+    "adapter_sha": "",
+    "harness_sha": "",
+    "model": "",
+    "prompt_sha": "",
+    "v": 2
+  },
+  "schema": "cadre/evidence-receipt@1",
+  "seat": "beta",
+  "shared_artifacts": {
+    "../../shared/findings.json": {
+      "bytes": 285,
+      "sha256": "fed35d0afdd7481a300cf1ede06f5fab01574c49fac7c269c132dbc6773053db"
+    },
+    "../../shared/manifest.txt": {
+      "bytes": 266,
+      "sha256": "dee66ba2ba0ef0748c46bb1d50c602f81b50da4ac2fd0844dfa7ffd5c75b7833"
+    },
+    "../../shared/report.md": {
+      "bytes": 43,
+      "sha256": "c00fe7ed0a03e2817a189c052489f218a25fa28e68b634edddb1227046ffe3ae"
+    },
+    "../../shared/synthesis.md.failed": {
+      "bytes": 47,
+      "sha256": "938360b3d332f41313398204fd5e679ddda5aa769fc44316648f037ad60a2b9c"
+    }
+  },
+  "state": "degraded",
+  "target": {
+    "base_tree": "044315b64f0d858aacc7b517766928814742410e",
+    "diff_sha256": "c3d47f7e28209f665d39626cf01fc00a39acfd7ac30b7a4bf8eb965c6ef957ef",
+    "reviewed_tree": "29b1263f410c9b579adca3c2dc8fa1b70237d76f"
+  },
+  "task": "synthetic-task"
+}

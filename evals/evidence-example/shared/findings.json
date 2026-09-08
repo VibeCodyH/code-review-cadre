@@ -1,0 +1,1 @@
+{"schema": "cadre/findings@1", "target": {"base_tree": "044315b64f0d858aacc7b517766928814742410e", "reviewed_tree": "29b1263f410c9b579adca3c2dc8fa1b70237d76f"}, "panel": [], "synthesis": {"status": "failed", "agent": "fixture"}, "verify": {"ran": false}, "claims": [], "findings": []}

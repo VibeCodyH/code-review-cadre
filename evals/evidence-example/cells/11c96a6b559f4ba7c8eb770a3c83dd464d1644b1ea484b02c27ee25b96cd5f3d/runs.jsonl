@@ -1,0 +1,2 @@
+{"event": "dispatch", "panel": "synthetic-task", "seat": "broken", "family": "fixture", "slug": "broken-1200683011"}
+{"event": "complete", "panel": "synthetic-task", "seat": "broken", "family": "fixture", "state": "failed", "bytes": 74, "secs": null, "prompt_bytes": null, "v": 2, "prompt_sha": "", "adapter_sha": "", "harness_sha": "", "model": "", "slug": "broken-1200683011", "rc": null, "adapter_attempts": null, "adapter_note": "", "language": ""}
