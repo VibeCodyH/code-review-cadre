@@ -291,6 +291,11 @@ So a DEFER on a blocking item disqualifies a candidate outright, whatever its
 hit rate. That's not a tunable weight. One confident wrong approval on a data
 loss bug costs more than a hundred missed nits save.
 
+Every grading report has a matching `.table/manifest.json` naming its run
+selection, exclusions, and answer-key hashes. Use `cadre grade <agent> 3
+--selection first-run --freeze` to save a table based on numbered run 1 and
+prevent later grading from overwriting it. See [saved grading tables](docs/TABLE-MANIFEST.md).
+
 ## Staffing the panel
 
 `cadre run` grades one candidate and gives it a seat: can review alone, needs a

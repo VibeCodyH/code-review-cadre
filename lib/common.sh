@@ -178,7 +178,7 @@ input_lock() {
 # report, `receipts`. Folding it in would invalidate every stored comparison on
 # any CLI edit, which is a false "these are not like-for-like" -- the one error
 # this field must not make, since its whole job is to be believed when it fires.
-HARNESS_FILES=(bin/agentcall lib/common.sh lib/input-lock.py lib/run-review.sh lib/run-pass.sh lib/grade.sh)
+HARNESS_FILES=(bin/agentcall lib/common.sh lib/input-lock.py lib/run-review.sh lib/run-pass.sh lib/grade.sh lib/table-manifest.sh)
 harness_sha() {
   local f files=()
   for f in "${HARNESS_FILES[@]}"; do files+=("$CADRE_ROOT/$f"); done
