@@ -33,6 +33,12 @@ shift 4 2>/dev/null || shift $#
 reviewers=("$@")
 skipped_rows=()
 [ -n "${CADRE_SKIPPED:-}" ] && mapfile -t skipped_rows <<< "$CADRE_SKIPPED"
+# Repeated seats (#47): spec -> how many rolls. Absent means one.
+declare -A ROLLS=()
+if [ -n "${CADRE_ROLLS:-}" ]; then
+  while IFS=$'\t' read -r _rs _rn; do [ -n "$_rs" ] && ROLLS["$_rs"]="$_rn"; done <<< "$CADRE_ROLLS"
+  unset _rs _rn
+fi
 [ ${#reviewers[@]} -gt 0 ] || [ ${#skipped_rows[@]} -gt 0 ] || die "no reviewers given"
 
 need git
@@ -499,6 +505,11 @@ unset _kept _spec _block _decl _reason _until
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "diff-sha256: $DIFF_SHA"
   echo "roster:    ${reviewers[*]}"
+  # Which seats are unions of several rolls (#47). The roster line above stays
+  # one bare spec per seat, so a reader that splits it on spaces is untouched.
+  _rl=""; for _s in "${reviewers[@]}"; do [ -n "${ROLLS[$_s]:-}" ] && _rl="${_rl:+$_rl }$_s=${ROLLS[$_s]}"; done
+  [ -n "$_rl" ] && echo "rolls:     $_rl"
+  unset _rl _s
   # Only selection provenance, never the raw configuration. Escape unusual
   # path bytes so a repository name cannot inject extra manifest fields.
   echo "roster-layer: ${CADRE_ROSTER_LAYER:-direct}"
@@ -551,8 +562,12 @@ mapfile -t SCRUB < <(scrubbed_env)
 # and the whole point of the field is to make that difference visible.
 # They are STRINGS, not `#` numerics: EMPTY means "not determined" and must stay
 # an empty field, where a numeric null would print the same but claim a measure.
-record_complete() {  # <slug> <spec> <state> [rc] [secs]
-  local sl="$1" spec="$2" state="$3" rc="${4:-}" secs="${5:-}" art bytes shaf
+record_complete() {  # <slug> <spec> <state> [rc] [secs] [event] [roll]
+  local sl="$1" spec="$2" state="$3" rc="${4:-}" secs="${5:-}" ev="${6:-complete}" roll="${7:-}" art bytes shaf
+  # ★ A roll's completion is `roll_complete`, never `complete`: one seat, one
+  # completion, is what every reader of runs.jsonl joins on (slots.tsv, the
+  # receipts, the evidence export), and a roll is a part of a seat, not a seat.
+  local rollnv=(); [ -n "$roll" ] && rollnv=("roll#=$roll")
   art="$OUT/$sl.md"
   [ -s "$art" ] || art="$OUT/$sl.md.partial"
   [ -s "$art" ] || art="$OUT/$sl.md.inconclusive"
@@ -564,8 +579,8 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
   # spec already names the model for every seat that pins one, and this field
   # exists for the seat that cannot -- so a value here is a measurement of what
   # served, never a copy of what was asked for.
-  record_event "$RUNLOG" event=complete panel="$(basename "$OUT")" \
-    seat="$spec" family="$(spec_family "$spec")" slug="$sl" \
+  record_event "$RUNLOG" event="$ev" panel="$(basename "$OUT")" \
+    seat="$spec" family="$(spec_family "$spec")" slug="$sl" ${rollnv[@]+"${rollnv[@]}"} \
     state="$state" "rc#=$rc" "secs#=$secs" "bytes#=${bytes:-0}" \
     "prompt_bytes#=$(cat "$OUT/.len-$sl" 2>/dev/null)" \
     "v#=$SLOTS_SCHEMA_V" \
@@ -578,9 +593,15 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs]
     language="$CHANGE_LANG" "ts#=$(date +%s)"
 }
 
-run_one() {
-  local spec="$1" idx="$2"
+run_one() {  # <spec> <checkout-idx> [roll]
+  local spec="$1" idx="$2" roll="${3:-}"
   local sl; sl=$(slug "$spec")
+  # A roll (#47) is one of several runs of the same seat. Its artifacts and
+  # scratch files carry `.r<k>` so the seat's own names stay free for the union,
+  # and its record events are roll_dispatch / roll_complete for the same reason.
+  local who="$spec" evd=dispatch evc=complete
+  [ -n "$roll" ] && { sl="$sl.r$roll"; who="$spec roll $roll"; evd=roll_dispatch; evc=roll_complete; }
+  local rollnv=(); [ -n "$roll" ] && rollnv=("roll#=$roll")
   local f="$OUT/$sl.md" log="$OUT/.log-$sl" st="$OUT/.status-$sl" len="$OUT/.len-$sl"
   local shaf="$OUT/.sha-$sl"
   local agent model dir attempt=1 rc w start took
@@ -604,8 +625,9 @@ run_one() {
   # proof this seat was dispatched. Every `return` below has a matching
   # `complete`, so a dispatch with no completion IS the signal that a seat was
   # cut off mid-flight -- not a gap to be guessed at later.
-  record_event "$RUNLOG" event=dispatch panel="$(basename "$OUT")" \
-    seat="$spec" family="$(spec_family "$spec")" slug="$sl" language="$CHANGE_LANG" "ts#=$(date +%s)"
+  record_event "$RUNLOG" event="$evd" panel="$(basename "$OUT")" \
+    seat="$spec" family="$(spec_family "$spec")" slug="$sl" ${rollnv[@]+"${rollnv[@]}"} \
+    language="$CHANGE_LANG" "ts#=$(date +%s)"
   # ★ A roster member that is not installed is a FAILURE, not a skip. run-pass
   # prints "skipping" and moves on, which in a live review is indistinguishable
   # from a reviewer that ran and found nothing.
@@ -614,8 +636,8 @@ run_one() {
   if ! agent_installed "$agent"; then
     echo "NOT INSTALLED: $agent is not on PATH" > "$f.failed"
     echo "failed" > "$st"
-    echo "  $spec: NOT INSTALLED" >> "$log"
-    record_complete "$sl" "$spec" failed
+    echo "  $who: NOT INSTALLED" >> "$log"
+    record_complete "$sl" "$spec" failed "" "" "$evc" "$roll"
     return 0
   fi
 
@@ -624,7 +646,7 @@ run_one() {
   dir="$WORKDIR/r$idx"
   cp -a "$TPL" "$dir" || {
     echo "checkout copy failed" > "$f.failed"; echo failed > "$st"
-    record_complete "$sl" "$spec" failed
+    record_complete "$sl" "$spec" failed "" "" "$evc" "$roll"
     return 0
   }
 
@@ -688,13 +710,13 @@ run_one() {
       local until_iso; until_iso=$(window_record "$spec" "$f.part")
       { echo "DID NOT COMPLETE, provider usage window closed, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
         cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
-      echo "  $spec: ⏸ usage window CLOSED, not a rate limit; not retried; seat skipped until $until_iso" >> "$log"
+      echo "  $who: ⏸ usage window CLOSED, not a rate limit; not retried; seat skipped until $until_iso" >> "$log"
       break
     fi
     if quota_exhausted "$f.part"; then
       { echo "DID NOT COMPLETE, out of budget, not retried: $(head -c 160 "$f.part" | tr '\n' ' ')"
         cat "$f.part"; } > "$f.part.tmp" && mv "$f.part.tmp" "$f.part"
-      echo "  $spec: ⛔ OUT OF BUDGET, not a rate limit; not retried" >> "$log"
+      echo "  $who: ⛔ OUT OF BUDGET, not a rate limit; not retried" >> "$log"
       break
     fi
     rate_limited "$f.part" || break
@@ -707,7 +729,7 @@ run_one() {
       break
     fi
     w=$(retry_wait "$attempt")
-    echo "  $spec: rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})" >> "$log"
+    echo "  $who: rate limited, waiting ${w}s ($((attempt + 1))/${CADRE_RETRIES:-3})" >> "$log"
     sleep "$w"; attempt=$((attempt + 1))
   done
   took=$(( $(date +%s) - start ))
@@ -721,11 +743,11 @@ run_one() {
     ok)
       mv "$f.part" "$f"
       echo ok > "$st"
-      echo "  $spec: $(wc -c < "$f") bytes in ${took}s" >> "$log" ;;
+      echo "  $who: $(wc -c < "$f") bytes in ${took}s" >> "$log" ;;
     degraded)
       mv "$f.part" "$f.partial"
       echo degraded > "$st"
-      echo "  $spec: DEGRADED after ${took}s, stopped early, partial review kept as $(basename "$f.partial")" >> "$log" ;;
+      echo "  $who: DEGRADED after ${took}s, stopped early, partial review kept as $(basename "$f.partial")" >> "$log" ;;
     # ★ Its own suffix, so cmd_synthesize excludes it by construction: that
     # function picks up .md and .md.partial and drops everything else into
     # dead[], which is already told to keep those members out of every
@@ -733,7 +755,7 @@ run_one() {
     inconclusive)
       mv "$f.part" "$f.inconclusive"
       echo inconclusive > "$st"
-      echo "  $spec: INCONCLUSIVE after ${took}s (rc=$rc), returned text but no review, kept as $(basename "$f.inconclusive")" >> "$log" ;;
+      echo "  $who: INCONCLUSIVE after ${took}s (rc=$rc), returned text but no review, kept as $(basename "$f.inconclusive")" >> "$log" ;;
     # ★ Same one-bucket-three-messages split as the benchmark path (#12), in the
     # same function, for the same reason the classification is shared: a panel
     # operator reading "FAILED (rc=124)" cannot tell a timeout kill from a
@@ -741,10 +763,12 @@ run_one() {
     *)
       mv "$f.part" "$f.failed"
       echo failed > "$st"
-      echo "  $spec: $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed")" >> "$log" ;;
+      echo "  $who: $(failure_phrase "$f.failed" "$rc" "$took"), kept as $(basename "$f.failed")" >> "$log" ;;
   esac
   # After the `mv`, so `bytes` describes the artifact under its final name.
-  record_complete "$sl" "$spec" "$state" "$rc" "$took"
+  record_complete "$sl" "$spec" "$state" "$rc" "$took" "$evc" "$roll"
+  # A roll's declared model is kept for the union to carry onto the seat row.
+  [ -n "$roll" ] && [ -s "$f.part.meta" ] && cp "$f.part.meta" "$OUT/.rollmeta-$sl"
   # ★ The declaration has done its job: classify_run read it, and runs.jsonl is
   # where the state lives durably now. Leaving it behind would strand a `.meta`
   # naming an artifact that has since been renamed -- and a stale declaration
@@ -775,18 +799,134 @@ for row in "${skipped_rows[@]}"; do
     harness_sha="$HARNESS_SHA" model= language="$CHANGE_LANG" "ts#=$(date +%s)"
 done
 
+# ★ A repeated seat (#47) is ONE panel member whose text is the union of its
+# rolls. Measured (dsh vs pi, qwen3.8:27b at temp 0, R=4): on blocking keys the
+# same seat twice found more than two different harnesses once, because
+# run-to-run variance inside a seat was larger than the difference between
+# seats. A second roll buys coverage, not a second vote -- so the union lands
+# under the seat's own slug, the seat gets one status, one slots.tsv row and
+# one completion event, and the synthesizer counts it once. Per-roll spend and
+# state survive in runs.jsonl as roll_dispatch / roll_complete, and each roll's
+# artifact stays on disk beside the union.
+state_rank() { case "$1" in ok) echo 4 ;; degraded) echo 3 ;; inconclusive) echo 2 ;; *) echo 1 ;; esac; }
+union_rolls() {  # <spec> <n>
+  local spec="$1" n="$2" sl k rsl rs best=failed bestrc="" secs="" len=0 okn=0 model="" models=""
+  local row_slug row_state row_secs row_rc
+  sl=$(slug "$spec")
+  local f="$OUT/$sl.md" st="$OUT/.status-$sl" log="$OUT/.log-$sl" states=()
+  : > "$log"
+  for k in $(seq 1 "$n"); do
+    rs=$(cat "$OUT/.status-$sl.r$k" 2>/dev/null); [ -n "$rs" ] || rs=failed
+    states+=("$rs")
+    [ "$(state_rank "$rs")" -gt "$(state_rank "$best")" ] && best="$rs"
+  done
+  {
+    # ★ A misconfiguration marker has to be in the first three lines to be
+    # read as one (misconfigured_line). When every roll failed and the first
+    # says NOT INSTALLED, that line leads, so an uninstalled seat rolled twice
+    # is still reported as a fault on this box and not as a reviewer verdict.
+    [ "$best" = failed ] && misconfigured_line "$OUT/$sl.r1.md.failed"
+    echo "_This seat ran $n times on the same change. Below is the union of those rolls: one reviewer, counted once. What one roll names and another does not is run-to-run variance inside one reviewer, not a disagreement._"
+    for k in $(seq 1 "$n"); do
+      rsl="$sl.r$k"; rs="${states[$((k - 1))]}"
+      # ★ Only a REVIEW goes into the union. A failed or inconclusive roll is
+      # named and pointed at, never excerpted: this file is what review_findings
+      # and engine_claims read, and an adapter's error dump quoted inside an ok
+      # union would be graded as the reviewer's words.
+      case "$rs" in
+        ok)
+          okn=$((okn + 1))
+          echo; echo "----- roll $k of $n: ok -----"; echo
+          cat "$OUT/$rsl.md" 2>/dev/null ;;
+        degraded)
+          echo; echo "----- roll $k of $n: degraded, stopped early; what it does not mention past that point is not covered -----"; echo
+          cat "$OUT/$rsl.md.partial" 2>/dev/null ;;
+        inconclusive)
+          echo; echo "----- roll $k of $n: inconclusive, returned text but no review; see $rsl.md.inconclusive -----" ;;
+        *)
+          echo; echo "----- roll $k of $n: failed; see $rsl.md.failed -----" ;;
+      esac
+      cat "$OUT/.log-$rsl" >> "$log" 2>/dev/null
+      len=$((len + $(cat "$OUT/.len-$rsl" 2>/dev/null || echo 0)))
+      # ★ Only a roll in the seat's REPORTED state may name the seat's model.
+      # A failed roll that declared model A beside an ok roll on model B would
+      # otherwise file B's review under A. Rolls that disagree leave it empty:
+      # the column is a measurement of what served, and here two things did.
+      if [ "$rs" = "$best" ]; then
+        rs=$(sed -n 's/^model=//p' "$OUT/.rollmeta-$rsl" 2>/dev/null | tail -1)
+        [ -n "$rs" ] && models="$models$rs"$'\n'
+      fi
+    done
+  } > "$f.part"
+  case "$(printf '%s' "$models" | sort -u | wc -l | tr -d ' ')" in
+    1) model=$(printf '%s' "$models" | head -1) ;;
+    0) ;;
+    *) echo "  $spec: rolls declared different models ($(printf '%s' "$models" | sort -u | tr '\n' ' ')); seat row leaves model empty" >> "$log" ;;
+  esac
+  # ★ Seconds and rc come from the RECORD, not from a scratch file: each roll's
+  # roll_complete event already carries them. secs is the SUM -- the column is
+  # what the seat cost, not how long the reader waited -- and rc is the best
+  # roll's, since that is the roll whose state the seat reports.
+  # secs stays EMPTY -- unmeasured -- until a roll reports a number. Two
+  # uninstalled rolls did not take zero seconds; they were never timed.
+  while IFS=$'\t' read -r row_slug row_state row_secs row_rc; do
+    case "$row_secs" in ''|null) ;; *) secs=$(( ${secs:-0} + row_secs )) ;; esac
+    [ "$row_state" = "$best" ] && [ -z "$bestrc" ] && case "$row_rc" in ''|null) ;; *) bestrc="$row_rc" ;; esac
+  done < <(record_rows "$RUNLOG" roll_complete slug state secs rc \
+             | awk -F '\t' -v p="$sl.r" 'index($1, p) == 1 && substr($1, length(p) + 1) ~ /^[0-9]+$/')
+  case "$best" in
+    ok)           mv "$f.part" "$f" ;;
+    degraded)     mv "$f.part" "$f.partial" ;;
+    inconclusive) mv "$f.part" "$f.inconclusive" ;;
+    *)            mv "$f.part" "$f.failed" ;;
+  esac
+  echo "$best" > "$st"
+  echo "$len" > "$OUT/.len-$sl"
+  cp "$OUT/.sha-$sl.r1" "$OUT/.sha-$sl" 2>/dev/null
+  [ -n "$model" ] && printf 'model=%s\n' "$model" > "$f.part.meta"
+  echo "$okn/$n" > "$OUT/.rolls-$sl"
+  echo "  $spec: union of $n rolls, $okn complete -> $best" >> "$log"
+  record_complete "$sl" "$spec" "$best" "$bestrc" "$secs"
+  rm -f "$f.part.meta" "$OUT/.rollmeta-$sl".r*
+}
+
 i=0; running=0
 for spec in "${reviewers[@]}"; do
   i=$((i + 1))
-  echo "  $spec: started"
-  if [ "$JOBS" -le 1 ]; then
-    run_one "$spec" "$i"; cat "$OUT/.log-$(slug "$spec")"
-  else
-    while [ "$running" -ge "$JOBS" ]; do wait -n 2>/dev/null; running=$((running - 1)); done
-    run_one "$spec" "$i" & running=$((running + 1))
+  n="${ROLLS[$spec]:-1}"
+  if [ "$n" -le 1 ]; then
+    echo "  $spec: started"
+    if [ "$JOBS" -le 1 ]; then
+      run_one "$spec" "$i"; cat "$OUT/.log-$(slug "$spec")"
+    else
+      while [ "$running" -ge "$JOBS" ]; do wait -n 2>/dev/null; running=$((running - 1)); done
+      run_one "$spec" "$i" & running=$((running + 1))
+    fi
+    continue
   fi
+  echo "  $spec: started, $n rolls"
+  # The seat's own dispatch, once, before any roll: a panel killed mid-roll
+  # still leaves proof the seat was asked, and the roll events sit under it.
+  record_event "$RUNLOG" event=dispatch panel="$(basename "$OUT")" \
+    seat="$spec" family="$(spec_family "$spec")" slug="$(slug "$spec")" "rolls#=$n" \
+    language="$CHANGE_LANG" "ts#=$(date +%s)"
+  for k in $(seq 1 "$n"); do
+    if [ "$JOBS" -le 1 ]; then
+      run_one "$spec" "$i.$k" "$k"
+    else
+      while [ "$running" -ge "$JOBS" ]; do wait -n 2>/dev/null; running=$((running - 1)); done
+      run_one "$spec" "$i.$k" "$k" & running=$((running + 1))
+    fi
+  done
+  [ "$JOBS" -le 1 ] && { union_rolls "$spec" "$n"; cat "$OUT/.log-$(slug "$spec")"; }
 done
-[ "$JOBS" -gt 1 ] && { wait; for spec in "${reviewers[@]}"; do cat "$OUT/.log-$(slug "$spec")" 2>/dev/null; done; }
+[ "$JOBS" -gt 1 ] && {
+  wait
+  for spec in "${reviewers[@]}"; do
+    [ "${ROLLS[$spec]:-1}" -gt 1 ] && union_rolls "$spec" "${ROLLS[$spec]}"
+    cat "$OUT/.log-$(slug "$spec")" 2>/dev/null
+  done
+}
 
 # ---- report ------------------------------------------------------------------
 
@@ -805,15 +945,20 @@ REPORT="$OUT/report.md"
   [ -n "${CADRE_GATE_NOTICE:-}" ] && echo "$CADRE_GATE_NOTICE."
 } > "$REPORT"
 
+# " x2" after a repeated seat's name, and " (1/2 rolls complete)" after its
+# state, so the reader sees a union where one is being read as one review.
+rolls_note() { local r; r=$(cat "$OUT/.rolls-$1" 2>/dev/null) && printf ' x%s' "${r#*/}"; return 0; }
+rolls_done() { local r; r=$(cat "$OUT/.rolls-$1" 2>/dev/null) && printf ' (%s rolls complete)' "$r"; return 0; }
+
 ok_count=0 degraded_count=0 inconc_count=0 fail_count=0 misconf_count=0
 for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
   case "$(cat "$OUT/.status-$sl" 2>/dev/null)" in
     ok)
-      ok_count=$((ok_count + 1)); echo "- \`$spec\` — ok" >> "$REPORT" ;;
+      ok_count=$((ok_count + 1)); echo "- \`$spec\`$(rolls_note "$sl") — ok$(rolls_done "$sl")" >> "$REPORT" ;;
     degraded)
       degraded_count=$((degraded_count + 1))
-      echo "- \`$spec\` — **DEGRADED**, stopped early. Its findings are real; its" >> "$REPORT"
+      echo "- \`$spec\`$(rolls_note "$sl") — **DEGRADED**, stopped early$(rolls_done "$sl"). Its findings are real; its" >> "$REPORT"
       echo "  silence is not. See \`$sl.md.partial\`." >> "$REPORT" ;;
     inconclusive)
       inconc_count=$((inconc_count + 1))
@@ -829,7 +974,7 @@ for spec in "${reviewers[@]}"; do
         misconf_count=$((misconf_count + 1))
         echo "- \`$spec\` — **MISCONFIGURED**, never ran: $(misconfigured_line "$OUT/$sl.md.failed" | cut -c1-160). A fault on this box, not a reviewer verdict." >> "$REPORT"
       else
-        echo "- \`$spec\` — **FAILED**, see \`$sl.md.failed\`" >> "$REPORT"
+        echo "- \`$spec\`$(rolls_note "$sl") — **FAILED**$(rolls_done "$sl"), see \`$sl.md.failed\`" >> "$REPORT"
       fi ;;
   esac
 done
@@ -1042,7 +1187,7 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
   echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."
 } >> "$REPORT"
 
-rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-*
+rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-* "$OUT"/.rolls-* "$OUT"/.rollmeta-*
 echo
 skipped_count=${#skipped_rows[@]}
 if [ "$skipped_count" -gt 0 ]; then

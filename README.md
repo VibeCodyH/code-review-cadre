@@ -375,6 +375,28 @@ The report counts lineages beside seats and names any seats that share a model
 family. Two seats on one family agreeing is one perspective, so the synthesizer
 is told the same groups and tags such a finding `(one lineage)`.
 
+### Repeating a seat
+
+```
+codex x2
+opencode:meta/muse-spark-1.1 x3 ?min-files=5
+```
+
+`x<N>` runs the seat N times (2 to 4) and unions the reviews into ONE panel
+member: one artifact with `----- roll k of N -----` markers, one status, one
+row in `slots.tsv`, and one count in every agreement tag. The synthesizer is
+told the seat is a union, so a finding in one roll that another roll never
+mentions is one reviewer's variance, not a disagreement.
+
+Why this exists: on a head-to-head between two harnesses driving the same
+weights at temperature zero, the same seat run twice found more blocking keys
+than the two harnesses run once each. Inside an unstable seat the run-to-run
+variance was larger than the difference between seats. A second roll buys
+coverage, not a second vote, and the roster should be able to say so.
+
+Each roll's own artifact stays on disk beside the union, and its spend is in
+`runs.jsonl` as `roll_dispatch` / `roll_complete`.
+
 ### Reviewing something that isn't a diff
 
 A diff is the common case, not the only one. `--full` points the same roster at

@@ -259,6 +259,28 @@ class EvidenceExportTest(unittest.TestCase):
         slots.write_bytes(slots.read_bytes() + slots.read_bytes().splitlines(keepends=True)[0])
         self.reject("duplicate slot")
 
+    def test_roll_events_travel_with_their_seat(self):
+        # A repeated seat (#47) records one dispatch and one complete for the
+        # union, plus roll_dispatch / roll_complete per roll. The roll events are
+        # part of the seat's record and must export with it, and they are not
+        # the seat's completion, so they cannot trip the duplicate check.
+        path = self.source / "runs.jsonl"
+        original = path.read_bytes()
+        rolls = b"".join(json.dumps({"event": kind, "panel": "synthetic-task", "seat": "alpha",
+                                     "family": "fixture", "slug": SLUGS["alpha"] + ".r" + str(k),
+                                     "roll": k, "state": "ok", "secs": 3, "ts": 101}) .encode() + b"\n"
+                         for k in (1, 2) for kind in ("roll_dispatch", "roll_complete"))
+        path.write_bytes(original + rolls)
+        (self.source / (SLUGS["alpha"] + ".r1.md.failed")).write_bytes(b"DID NOT COMPLETE\n")
+        (self.source / (SLUGS["alpha"] + ".r2.md")).write_bytes(b"roll two review\n")
+        manifest = self.export()
+        cell = self.cells(manifest)["alpha"]
+        self.assertEqual((cell / "runs.jsonl").read_bytes().count(b"roll_complete"), 2)
+        self.assertEqual((cell / "rolls/r1.md.failed").read_bytes(), b"DID NOT COMPLETE\n")
+        self.assertEqual((cell / "rolls/r2.md").read_bytes(), b"roll two review\n")
+        self.assertIn(cell.relative_to(self.out).as_posix() + "/rolls/r2.md", manifest["artifacts"])
+        self.assertNotIn("complete_event", json.loads((cell / "receipt.json").read_text())["missing"])
+
     def test_review_byte_count_mismatch(self):
         (self.source / (SLUGS["alpha"] + ".md")).write_text("tampered\n")
         self.reject("byte count disagrees")

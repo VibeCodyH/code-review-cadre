@@ -109,6 +109,13 @@ Multiple gates are ANDed. `--all-seats` ignores them. `--full` has no diff to
 measure, so every gated seat runs and the report states that gates do not apply.
 Malformed gates are refused while parsing the roster.
 
+A seat line may also carry `x<N>` with N from 2 to 4, beside any gates:
+`codex x2 ?min-lines=200`. The seat runs N times and the reviews are unioned
+into one panel member, so the gate still decides whether the seat runs at all
+and the repeat decides how many times. `x1` is refused, as is listing the same
+spec on another line. The manifest records `rolls: <spec>=<N>`; the roster
+line stays one bare spec per seat.
+
 Intent declarations and checks that a change fulfills them belong to issue #8;
 project rosters only select seats and gate them on the diff.
 

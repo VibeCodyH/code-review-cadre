@@ -789,6 +789,13 @@ resolve_roster() {
         \?untested) ;;
         \?paths=*)
           [ -n "${gate#*=}" ] || die "roster line $line ($src): malformed gate '$gate'" ;;
+        # A repeat (#47): run this seat N times and union the reviews into one
+        # panel member. Not a gate -- a gate is a condition, this is a shape --
+        # but it rides the same field so a line reads `codex x2 ?min-lines=200`.
+        # x1 is the seat itself and refused; the cap keeps a typo from fanning a
+        # paid seat out eight times.
+        x[0-9]*)
+          case "${gate#x}" in 2|3|4) ;; *) die "roster line $line ($src): malformed repeat '$gate' (x2, x3 or x4)" ;; esac ;;
         *) die "roster line $line ($src): malformed gate '$gate'" ;;
       esac
       entry="$entry"$'\t'"$gate"
@@ -1020,10 +1027,12 @@ cmd_review() {
       || die "base does not resolve to a commit: $base"
   fi
 
-  local specs=() skipped=() has_gates=0 entry parts=() spec gate
+  local specs=() skipped=() has_gates=0 entry parts=() spec gate rolls_env="" p
   for entry in "${roster_entries[@]}"; do
     IFS=$'\t' read -r -a parts <<< "$entry"
-    [ "${#parts[@]}" -gt 1 ] && has_gates=1
+    # Only a `?` field is a gate. A repeat is not, and must not by itself make
+    # the harness measure a diff it has no condition to test against.
+    for p in "${parts[@]:1}"; do case "$p" in \?*) has_gates=1 ;; esac; done
   done
 
   local diff_lines=0 diff_files=0 diff_nontest=0 diff_test=0 diff_paths=()
@@ -1080,11 +1089,21 @@ cmd_review() {
   for entry in "${roster_entries[@]}"; do
     IFS=$'\t' read -r -a parts <<< "$entry"
     spec="${parts[0]}"
-    if [ "$full" = 1 ] || [ "$all_seats" = 1 ] || [ "${#parts[@]}" -eq 1 ]; then
+    # Repeats peel off here and travel to run-review.sh as CADRE_ROLLS, one
+    # "spec<TAB>n" per line. The spec itself stays bare: the manifest's roster
+    # line and every positional reader of it never see the token.
+    local gates=()
+    for p in "${parts[@]:1}"; do
+      case "$p" in
+        x[0-9]*) rolls_env="$rolls_env$spec"$'\t'"${p#x}"$'\n' ;;
+        *) gates+=("$p") ;;
+      esac
+    done
+    if [ "$full" = 1 ] || [ "$all_seats" = 1 ] || [ "${#gates[@]}" -eq 0 ]; then
       specs+=("$spec"); continue
     fi
     failed_gate=""; failed_reason=""
-    for gate in "${parts[@]:1}"; do
+    for gate in "${gates[@]}"; do
       case "$gate" in
         \?min-lines=*)
           n="${gate#*=}"
@@ -1246,7 +1265,7 @@ cmd_review() {
   # response to it.
   local rrc=0
   CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
-    CADRE_ROSTER_LAYER="$ROSTER_LAYER" CADRE_ROSTER_PATH="$ROSTER_PATH" \
+    CADRE_ROSTER_LAYER="$ROSTER_LAYER" CADRE_ROSTER_PATH="$ROSTER_PATH" CADRE_ROLLS="$rolls_env" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
     rm -f "$out/.claim"

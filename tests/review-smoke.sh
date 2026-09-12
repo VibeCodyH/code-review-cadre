@@ -35,7 +35,7 @@ setup_agents() {
   for n in good good2 trunc dead echoer chrome terse ratepart ratelim \
            synthquote synthtrunc synthrate synthtiny waffle parrot slow slow2 \
            blocked permquote ratereview budget window tier \
-           finder bigfinder synthmerge; do
+           finder bigfinder synthmerge flaky; do
     printf '#!/bin/sh\nexit 0\n' > "$1/bin/$n"; chmod +x "$1/bin/$n"
   done
   # ★ The trailing verdict is not decoration. review-live.md asks every reviewer
@@ -53,6 +53,10 @@ run_good() {
 }
 A
   sed 's/good/good2/g' "$1/agents.d/good.sh" > "$1/agents.d/good2.sh"
+  # ★ Fails on its first call and reviews on its second, so a repeated seat can
+  # be shown unioning a dead roll with a live one. The counter lives in the
+  # agents dir, not the checkout: every roll gets a fresh checkout.
+  printf 'run_flaky() {\n  local c="%s/flaky.count" n\n  n=$(cat "$c" 2>/dev/null || echo 0); echo $((n + 1)) > "$c"\n  [ "$n" -gt 0 ] || { echo "DID NOT COMPLETE, no text returned (stopReason=Error)."; return 1; }\n  echo "REVIEW by flaky"; echo "Verdict: ship it"\n}\n' "$1/agents.d" > "$1/agents.d/flaky.sh"
   cat > "$1/agents.d/trunc.sh" <<'A'
 run_trunc() {
   echo "partial finding"
@@ -2559,6 +2563,77 @@ OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:qwen3-coder \
         --synth echoer --base main --label fam4 "$S")
 P="$D/state/reviews/fam4/synthesis.md"
 check "no lineage block when none collide" "! grep -q '^===== SEATS THAT SHARE A MODEL LINEAGE =====' '$P'"
+
+echo "== ★ repeat a seat, union its findings (#47) =="
+# Measured (dsh vs pi, qwen3.8:27b at temp 0, R=4 per seat): on blocking keys
+# the SAME seat twice found more than two different harnesses once, because
+# run-to-run variance inside a seat was larger than the difference between
+# seats. `good x2` runs the seat twice and unions the reviews into ONE panel
+# member: one artifact, one status, one slots.tsv row, one completion event,
+# and the synthesizer's denominators count seats, not rolls.
+D=$(case_dir rolls); S="$D/src"
+git -C "$S" checkout -qb feature; echo x >> "$S/app.js"; git -C "$S" commit -qam f
+OUT=$(run_cadre "$D" review --roster 'good x2,good2' --synth echoer --base main --label r1 "$S")
+R="$D/state/reviews/r1"
+U=$(ls "$R"/good-*.md 2>/dev/null | grep -v '\.r[0-9]*\.md$' | head -1); SL=$(basename "${U:-none.md}" .md)
+check "rolls announced on the console"     "grep -q 'good: started, 2 rolls' <<<\"\$OUT\""
+check "and the union is reported"          "grep -q 'good: union of 2 rolls, 2 complete -> ok' <<<\"\$OUT\""
+check "the union is the seat's artifact"   "grep -q -- '----- roll 1 of 2: ok -----' '$U' && grep -q -- '----- roll 2 of 2: ok -----' '$U'"
+check "it says what it is"                 "grep -q 'union of those rolls: one reviewer, counted once' '$U'"
+check "both rolls kept beside it"          "[ -s '$R/$SL.r1.md' ] && [ -s '$R/$SL.r2.md' ]"
+check "one slots.tsv row for the seat"     "[ \"\$(awk -F '\t' '\$2 == \"good\"' '$R/slots.tsv' | wc -l)\" -eq 1 ]"
+check "and it is ok"                       "awk -F '\t' '\$2 == \"good\" && \$4 == \"ok\" { f=1 } END { exit !f }' '$R/slots.tsv'"
+check "prompt bytes are the SUM of rolls"  "awk -F '\t' '\$2 == \"good\" { a=\$7 } \$2 == \"good2\" { b=\$7 } END { exit !(b > 0 && a == 2 * b) }' '$R/slots.tsv'"
+check "one dispatch and one complete for the seat" \
+  "[ \"\$(grep -c '\"event\":\"dispatch\",\"panel\":\"r1\",\"seat\":\"good\"' '$R/runs.jsonl')\" -eq 1 ] && [ \"\$(grep -c '\"event\":\"complete\",\"panel\":\"r1\",\"seat\":\"good\"' '$R/runs.jsonl')\" -eq 1 ]"
+check "two roll_dispatch and two roll_complete" \
+  "[ \"\$(grep -c '\"event\":\"roll_dispatch\"' '$R/runs.jsonl')\" -eq 2 ] && [ \"\$(grep -c '\"event\":\"roll_complete\"' '$R/runs.jsonl')\" -eq 2 ]"
+check "roll events carry the roll number"  "grep -q '\"slug\":\"$SL.r2\",\"roll\":2' '$R/runs.jsonl'"
+check "manifest records the rolls"         "grep -q '^rolls:     good=2$' '$R/manifest.txt'"
+check "roster line stays bare"             "grep -q '^roster:    good good2$' '$R/manifest.txt'"
+check "report names the union"             "grep -qF -- '- \`good\` x2 — ok (2/2 rolls complete)' '$R/report.md'"
+P="$R/synthesis.md"
+check "synthesizer sees ONE reviewer"      "[ \"\$(grep -c '^===== REVIEWER: good =====' '$P')\" -eq 1 ]"
+check "and is told it is a union"          "grep -q '^===== SEATS THAT RAN MORE THAN ONCE =====' '$P' && grep -q '^  good: 2 rolls' '$P'"
+check "prompt teaches the rolls delimiter" "grep -qF '===== SEATS THAT RAN MORE THAN ONCE =====' $ROOT/lib/prompts/synthesize.md"
+check "evidence export accepts roll events" "run_cadre '$D' export-evidence '$R' '$D/evidence-r1' >/dev/null 2>&1 && grep -rq 'roll_complete' '$D/evidence-r1/cells'"
+check "and carries each roll's artifact"   "[ -s \"\$(ls -d '$D'/evidence-r1/cells/*/rolls/r2.md 2>/dev/null | head -1)\" ]"
+# One dead roll and one live one: the seat is ok, says 1/2, and keeps the
+# failed roll's excerpt in the union so the reader knows a roll was lost.
+OUT=$(run_cadre "$D" review --roster 'flaky x2,good2' --synth none --base main --label r2 "$S")
+R="$D/state/reviews/r2"; U=$(ls "$R"/flaky-*.md 2>/dev/null | grep -v '\.r[0-9]*\.md$' | head -1)
+check "best roll sets the seat state"      "awk -F '\t' '\$2 == \"flaky\" && \$4 == \"ok\" { f=1 } END { exit !f }' '$R/slots.tsv'"
+check "report counts the rolls that made it" "grep -qF -- '- \`flaky\` x2 — ok (1/2 rolls complete)' '$R/report.md'"
+check "the dead roll is named, not quoted" "grep -q -- '----- roll 1 of 2: failed; see .*\.r1\.md\.failed -----' '$U' && grep -q -- '----- roll 2 of 2: ok -----' '$U' && ! grep -q 'DID NOT COMPLETE' '$U'"
+# Every roll dead: the seat is failed, and the panel still has good2.
+OUT=$(run_cadre "$D" review --roster 'dead x2,good2' --synth none --base main --label r3 "$S")
+R="$D/state/reviews/r3"
+check "all rolls dead -> seat failed"      "awk -F '\t' '\$2 == \"dead\" && \$4 == \"failed\" { f=1 } END { exit !f }' '$R/slots.tsv'"
+check "as a .failed union"                 "ls '$R'/dead-*.md.failed 2>/dev/null | grep -qv '\.r[0-9]'"
+check "report says 0/2"                    "grep -qF -- '- \`dead\` x2 — **FAILED** (0/2 rolls complete)' '$R/report.md'"
+# An uninstalled seat rolled twice is a fault on this box, not two reviewer
+# failures: the marker has to lead the union for misconfigured_line to see it.
+OUT=$(run_cadre "$D" review --roster 'ghost x2,good2' --synth none --base main --label r3b "$S")
+R="$D/state/reviews/r3b"
+check "uninstalled rolled seat is MISCONFIGURED" "grep -qF -- '- \`ghost\` — **MISCONFIGURED**' '$R/report.md'"
+check "and its seconds stay unmeasured"    "awk -F '\t' '\$2 == \"ghost\" && \$6 == \"\" { f=1 } END { exit !f }' '$R/slots.tsv'"
+# Parallel: rolls fan out under --jobs like any seat and the union waits for all.
+OUT=$(run_cadre "$D" review --roster 'good x3,good2' --jobs 2 --synth none --base main --label r4 "$S")
+R="$D/state/reviews/r4"; U=$(ls "$R"/good-*.md 2>/dev/null | grep -v '\.r[0-9]*\.md$' | head -1)
+check "jobs>1: union has all three rolls"  "grep -q -- '----- roll 3 of 3: ok -----' '$U'"
+check "jobs>1: seat is ok once"            "[ \"\$(awk -F '\t' '\$2 == \"good\" && \$4 == \"ok\"' '$R/slots.tsv' | wc -l)\" -eq 1 ]"
+# A repeat beside a gate: the gate still decides whether the seat runs at all.
+OUT=$(run_cadre "$D" review --roster 'good x2 ?min-lines=999,good2' --synth none --base main --label r5 "$S")
+R="$D/state/reviews/r5"
+check "gated-off seat does not roll"       "! ls '$R'/good-*.r1.md >/dev/null 2>&1 && grep -q 'SKIPPED by its roster gate' '$R/report.md'"
+# Syntax: x1 is the seat itself, the cap is 4, and a repeat beside a bare copy
+# is still the same spec listed twice.
+OUT=$(run_cadre "$D" review --roster 'good x1' --synth none --base main --label r6 "$S"); RC=$?
+check "x1 refused"                         "[ $RC -ne 0 ] && grep -q \"malformed repeat 'x1'\" <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster 'good x9' --synth none --base main --label r7 "$S"); RC=$?
+check "x9 refused"                         "[ $RC -ne 0 ] && grep -q \"malformed repeat 'x9'\" <<<\"\$OUT\""
+OUT=$(run_cadre "$D" review --roster 'good x2,good' --synth none --base main --label r8 "$S"); RC=$?
+check "repeat beside a bare copy is listed twice" "[ $RC -ne 0 ] && grep -q 'listed twice' <<<\"\$OUT\""
 
 # ★ A shared QUOTA POOL is a third correlation axis, beside lineage and vendor,
 # and it is the one that takes seats out all at once. Measured: a panel ran

@@ -183,13 +183,21 @@ def parse_events(data, rows):
     for raw in (data or b"").splitlines(keepends=True):
         event = parse_json(raw)
         if (not isinstance(event, dict) or not isinstance(event.get("event"), str)
-                or event["event"] not in {"dispatch", "complete"}):
+                or event["event"] not in {"dispatch", "complete", "roll_dispatch", "roll_complete"}):
             raise ValueError("malformed live run event")
         seat = event.get("seat")
         if not isinstance(seat, str) or seat not in rows:
             raise ValueError("run record names an unknown seat")
         kind = event["event"]
         row = rows[seat][0]
+        if kind.startswith("roll_"):
+            # One roll of a repeated seat. It is part of the seat's record and
+            # travels with it, but it is not the seat's dispatch or completion:
+            # those are the union's, recorded once, and slots.tsv describes them.
+            if event.get("panel") != row["panel"]:
+                raise ValueError("run record panel or slug does not match its slot")
+            raw_records[seat].append(raw)
+            continue
         if kind in events[seat]:
             raise ValueError("duplicate run event")
         if event.get("panel") != row["panel"] or event.get("slug") != seat_slug(seat):
@@ -314,6 +322,13 @@ def export(source_path, destination):
                     name = "review" + suffix
                     write(cell + "/" + name, data, slug + suffix)
                     artifacts.append(name)
+            # A repeated seat's union points at its rolls by name ("see
+            # <slug>.r1.md.failed"), so the rolls travel in the same cell.
+            roll_names = sorted(name for name in source.entries
+                                if re.fullmatch(re.escape(slug) + r"\.r\d+\.md(\.partial|\.failed|\.inconclusive)?", name))
+            for name in roll_names:
+                roll = name[len(slug) + 1:]
+                write(cell + "/rolls/" + roll, source.read(name), name)
             expected = STATES[row["state"]]
             if expected and "review" + expected not in artifacts:
                 missing.append("review" + expected)

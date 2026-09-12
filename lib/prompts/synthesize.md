@@ -65,6 +65,11 @@ Rules:
   model family. Agreement inside one group is one perspective. Tags still
   count seats, but a finding raised only by seats of one group gets
   `(one lineage)` after its tag, and is never called unanimous.
+- `===== SEATS THAT RAN MORE THAN ONCE =====` lists seats whose text is the
+  union of several runs, marked `----- roll k of n -----`. Each is ONE
+  reviewer: one count in every denominator, one verdict. Something one roll
+  says and another does not is not a disagreement, and a finding repeated
+  across rolls is not repeated agreement.
 - If a reviewer's text is empty, truncated, or an error, say so in the verdict
   spread rather than treating it as "found nothing".
 - A reviewer's absence is never evidence. Neither a failed reviewer nor a

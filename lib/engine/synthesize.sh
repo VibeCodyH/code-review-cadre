@@ -117,6 +117,29 @@ returned a complete review.
 
 "
   fi
+  # ★ A seat that ran more than once (#47) is ONE reviewer whose text is the
+  # union of its rolls. Told here, not inferred from the artifact: without it
+  # the synthesizer reads a finding in roll 1 that roll 2 never mentions as a
+  # reviewer contradicting itself, or a repeated finding as two votes. Read
+  # from the manifest so a re-synthesis of an old panel gets the same fact.
+  local rolls_line roll_block="" rs
+  rolls_line=$(sed -n 's/^rolls: *//p' "$out/manifest.txt" 2>/dev/null)
+  for sp in "${srcspec[@]}"; do
+    for rs in $rolls_line; do
+      [ "${rs%=*}" = "$sp" ] && roll_block="$roll_block  $sp: ${rs#*=} rolls"$'\n'
+    done
+  done
+  if [ -n "$roll_block" ]; then
+    body="$body===== SEATS THAT RAN MORE THAN ONCE =====
+${roll_block}Each of these reviewers ran that many times on the same change, and the text
+under its delimiter is the UNION of those runs, marked \`----- roll k of n -----\`.
+It is ONE reviewer: count it once in every denominator and give it one verdict.
+A finding present in one roll and absent from another is run-to-run variance
+inside one reviewer, never a disagreement and never a second vote. A finding
+present in several rolls is still one reviewer raising it.
+
+"
+  fi
   # ★ Seats on one model family are one perspective (#38). The tags stay in
   # seats -- [2/4] is a count of reviews, and changing its unit would break
   # every reader of it -- but the synthesizer is told which seats are the same
