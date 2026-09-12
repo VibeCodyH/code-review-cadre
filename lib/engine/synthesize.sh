@@ -117,6 +117,29 @@ returned a complete review.
 
 "
   fi
+  # ★ Seats on one model family are one perspective (#38). The tags stay in
+  # seats -- [2/4] is a count of reviews, and changing its unit would break
+  # every reader of it -- but the synthesizer is told which seats are the same
+  # opinion twice, so it can say when an "agreed" finding has one lineage
+  # behind it. Counted over the USABLE reviews, since a dead seat is already
+  # out of every denominator.
+  local lin_n lin_s lin_f lin_names lin_block=""
+  { IFS=$'\t' read -r lin_n lin_s
+    while IFS=$'\t' read -r lin_f lin_names; do
+      [ -n "$lin_f" ] && lin_block="$lin_block  $lin_f: $lin_names"$'\n'
+    done
+  } < <(lineage_summary "${srcspec[@]}")
+  if [ -n "$lin_block" ]; then
+    body="$body===== SEATS THAT SHARE A MODEL LINEAGE =====
+${lin_block}These seats run the same model family, so they fail in the same places and
+agreement between them is ONE perspective, not two. The panel's $lin_s usable
+review(s) span $lin_n independent lineage(s); say so in the panel line. Keep
+the [x/n] tags counting seats as they do. But when EVERY reviewer that raised a
+finding is in one of the groups above, append \`(one lineage)\` to its tag, and
+never call a finding unanimous when the seats that agree share a lineage.
+
+"
+  fi
   # ★ Incomplete coverage breaks the agreement MATH, not just the prose, and in
   # the direction nobody checks. Tagging a finding [1/4] when two of the four
   # never reached that file reads as three dissents; it is one reviewer and two

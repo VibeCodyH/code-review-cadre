@@ -525,6 +525,11 @@ if [ "$MODE" = diff ]; then
 else
   echo "reviewing $TARGET_NFILES file(s) as they stand | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
 fi
+# The count every run, not only when two seats collide: "4 reviewers" and "4
+# lineages" are different claims, and only the second one is the panel's size.
+IFS=$'\t' read -r _nl _ns < <(lineage_summary "${reviewers[@]}")
+echo "$_nl independent lineage(s) across $_ns seat(s)"
+unset _nl _ns
 
 mapfile -t SCRUB < <(scrubbed_env)
 
@@ -842,6 +847,27 @@ for row in "${skipped_rows[@]}"; do
       echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
   esac
 done
+
+# ★ Lineages, not seats, are the size of the panel (#38). Two seats on one
+# model family agree where a single reviewer would have agreed with itself, so
+# a [2/n] between them is one perspective counted twice. bin/cadre warns on the
+# console at dispatch; this is the same fact where it is READ, next to the tags
+# it qualifies, and in the file that outlives the terminal. Counted over the
+# seats that were dispatched: a seat skipped by a gate or a closed window has no
+# opinion to correlate with anything.
+{
+  echo
+  { IFS=$'\t' read -r _nl _ns
+    echo "$_nl independent lineage(s) across $_ns seat(s) dispatched."
+    _first=1
+    while IFS=$'\t' read -r _f _names; do
+      [ -n "$_f" ] || continue
+      [ "$_first" = 1 ] && { echo; echo "> **Correlated seats** — agreement between these is one perspective, not two:"; _first=0; }
+      echo "> - $_f: $_names"
+    done
+  } < <(lineage_summary "${reviewers[@]}")
+  unset _nl _ns _f _names _first
+} >> "$REPORT"
 
 # ★ A misconfigured seat is counted under failed above, so the totals stay
 # comparable across runs; this line is where the reader learns the panel was

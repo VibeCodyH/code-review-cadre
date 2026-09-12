@@ -12,7 +12,10 @@ then missing test coverage for the changed paths.
 Rate each defect by CONSEQUENCE, not by how far it is from how you would have
 written it:
   blocking   - data loss or corruption, auth bypass, secret exposure, or
-               silently wrong output reaching a user.
+               silently wrong output reaching a user. Deleting or overwriting
+               a live row counts even when the race is narrow; so does an
+               unbounded leak (orphaned objects, unbilled spend) and a
+               permission gate whose intended audience you cannot settle.
   should-fix - a real bug with a bounded blast radius: it fails loudly, needs
                an unlikely input, or gets caught before production. Also
                missing test coverage on a path this diff changes.

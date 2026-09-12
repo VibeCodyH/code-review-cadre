@@ -2533,6 +2533,32 @@ check "warns, does not refuse"        "grep -q '2 ok' <<<\"\$OUT\""
 OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:qwen3-coder \
         --synth none --base main --label fam2 "$S")
 check "different families stay quiet" "! grep -q 'one lineage in two seats' <<<\"\$OUT\""
+# ★ #38: the same fact where it is READ. The console warning above dies with the
+# terminal; the report is what gets posted and quoted, so the lineage count and
+# the correlated groups live next to the tags they qualify. Every run says the
+# count -- "2 reviewers" and "2 lineages" are different claims -- and only a
+# collision prints a group.
+R="$D/state/reviews/fam1/report.md"
+check "report counts lineages, not seats" "grep -q '1 independent lineage(s) across 2 seat(s) dispatched' '$R'"
+check "report names the correlated group" "grep -q '^> - anthropic: good:claude-opus-5, good2:sonnet-4-thinking' '$R'"
+check "console says the count every run" "grep -q '2 independent lineage(s) across 2 seat(s)' <<<\"\$OUT\""
+R="$D/state/reviews/fam2/report.md"
+check "distinct families count as two"   "grep -q '2 independent lineage(s) across 2 seat(s) dispatched' '$R'"
+check "no group when nothing collides"   "! grep -q 'Correlated seats' '$R'"
+# And the synthesizer is TOLD, so an agreed finding between two seats of one
+# family can be tagged as one lineage. Tags keep counting seats; echoer replays
+# the prompt so this asserts on the input, not on a stub's answer.
+OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:sonnet-4-thinking,dead \
+        --synth echoer --base main --label fam3 "$S")
+P="$D/state/reviews/fam3/synthesis.md"
+check "synth told which seats share a lineage" "grep -q '^===== SEATS THAT SHARE A MODEL LINEAGE =====' '$P'"
+check "synth given the group"        "grep -q '^  anthropic: good:claude-opus-5, good2:sonnet-4-thinking' '$P'"
+check "synth given the arithmetic"   "grep -q 'review(s) span 1 independent lineage(s)' '$P'"
+check "prompt teaches the lineage delimiter" "grep -qF '===== SEATS THAT SHARE A MODEL LINEAGE =====' $ROOT/lib/prompts/synthesize.md"
+OUT=$(run_cadre "$D" review --roster good:claude-opus-5,good2:qwen3-coder \
+        --synth echoer --base main --label fam4 "$S")
+P="$D/state/reviews/fam4/synthesis.md"
+check "no lineage block when none collide" "! grep -q '^===== SEATS THAT SHARE A MODEL LINEAGE =====' '$P'"
 
 # ★ A shared QUOTA POOL is a third correlation axis, beside lineage and vendor,
 # and it is the one that takes seats out all at once. Measured: a panel ran

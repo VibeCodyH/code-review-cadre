@@ -32,7 +32,9 @@ Produce:
 
 1. **Panel line.** One line, first: how many reviewers the panel had, how many
    returned a complete review, and how many stopped early or failed. This is
-   what tells a reader a small denominator is not a small panel.
+   what tells a reader a small denominator is not a small panel. When the
+   input names seats that share a model lineage, this line also says how many
+   independent lineages the panel spans.
 
 2. **Agreed findings.** Defects raised by more than one reviewer. Merge the
    wordings into one description. Tag each with the reviewers who raised it and
@@ -45,7 +47,10 @@ Produce:
 
 4. **Disagreements.** Anywhere one reviewer called something a defect and
    another explicitly said the same thing was fine. Name both sides. A reviewer
-   that simply never mentioned something is not disagreeing with it.
+   that simply never mentioned something is not disagreeing with it. A
+   disagreement over an auth or permission gate goes first and is marked
+   **UNSETTLED**: the panel could not say who is meant to pass it, and that is
+   a blocking question for the author, not a tie to be left under notes.
 
 5. **Verdict spread.** Each reviewer's own overall verdict, listed. Do not
    average them into one. If they disagree, that disagreement is the result.
@@ -56,6 +61,10 @@ Rules:
   something, you are wrong about your job; leave it out.
 - Do not drop a finding because it sounds minor or because you disagree.
 - Preserve file and line references exactly as given.
+- `===== SEATS THAT SHARE A MODEL LINEAGE =====` lists seats that run the same
+  model family. Agreement inside one group is one perspective. Tags still
+  count seats, but a finding raised only by seats of one group gets
+  `(one lineage)` after its tag, and is never called unanimous.
 - If a reviewer's text is empty, truncated, or an error, say so in the verdict
   spread rather than treating it as "found nothing".
 - A reviewer's absence is never evidence. Neither a failed reviewer nor a

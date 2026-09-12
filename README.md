@@ -371,6 +371,10 @@ That attribution is the point. "3 of 3 flagged this" and "only the second reader
 flagged this" are different facts, and the second one is why you staffed a
 panel instead of buying the highest scorer.
 
+The report counts lineages beside seats and names any seats that share a model
+family. Two seats on one family agreeing is one perspective, so the synthesizer
+is told the same groups and tags such a finding `(one lineage)`.
+
 ### Reviewing something that isn't a diff
 
 A diff is the common case, not the only one. `--full` points the same roster at

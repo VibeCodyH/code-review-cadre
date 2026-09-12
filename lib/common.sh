@@ -423,6 +423,27 @@ spec_family() {
   esac
 }
 
+# Lineage arithmetic for a panel, one place, so the report and the synthesizer
+# read the same numbers. Line 1: "<independent lineages>\t<seats>". Then one
+# line per family that holds two or more seats: "<family>\t<seat, seat>". No
+# further lines means every seat is its own lineage. Order is the roster's, not
+# sorted, so the report reads in the order the operator wrote.
+lineage_summary() {
+  local specs=("$@") fam=() sp f i names seen=""
+  [ ${#specs[@]} -gt 0 ] || { printf '0\t0\n'; return 0; }
+  for sp in "${specs[@]}"; do fam+=("$(spec_family "$sp")"); done
+  printf '%s\t%s\n' "$(printf '%s\n' "${fam[@]}" | sort -u | wc -l | tr -d ' ')" "${#specs[@]}"
+  for f in "${fam[@]}"; do
+    case " $seen " in *" $f "*) continue ;; esac
+    seen="$seen $f"
+    names=""
+    for i in "${!specs[@]}"; do
+      [ "${fam[$i]}" = "$f" ] && names="${names:+$names, }${specs[$i]}"
+    done
+    case "$names" in *", "*) printf '%s\t%s\n' "$f" "$names" ;; esac
+  done
+}
+
 # Run $CADRE_JUDGE on stdin. It takes the same agent:provider/model spec a
 # candidate does, so the judge model is choosable: the judge is a model too, and
 # a free one is enough for it. agentcall itself takes -M, not the spec form.
