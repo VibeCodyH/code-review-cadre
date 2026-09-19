@@ -1564,8 +1564,15 @@ cmd_seats() {
   [ "${#roots[@]}" -gt 0 ] || roots=("$CADRE_HOME/reviews")
   for d in "${roots[@]}"; do [ -d "$d" ] || die "seats: not a directory: $d"; done
 
+  # ★ Canonicalised BEFORE the dedupe, because `sort -u` compares spellings, not
+  # files. `cadre seats reviews ./reviews` otherwise finds every panel twice and
+  # the double is not cosmetic: it doubles PANELS, so two panels of a seat that
+  # should read NOT ENOUGH DATA read as a confident UNRELIABLE off four. A
+  # symlinked root aliases the same way.
   while IFS= read -r f; do logs+=("$f"); done \
-    < <(find "${roots[@]}" -type f -name runs.jsonl -print | sort -u)
+    < <(find "${roots[@]}" -type f -name runs.jsonl -print \
+        | while IFS= read -r f; do readlink -f -- "$f" || printf '%s\n' "$f"; done \
+        | sort -u)
   [ "${#logs[@]}" -gt 0 ] || die "seats: no runs.jsonl found under ${roots[*]}"
 
   # ★ record_rows, not a second JSON reader. It is cadre's own parser for cadre's
@@ -1577,9 +1584,17 @@ cmd_seats() {
   # ★ `complete` only. A roll (#47) emits roll_complete precisely so that one
   # seat is one completion for every reader of this file; counting rolls here
   # would let a seat repeated x3 outvote a seat that ran once.
+  # ★ The log is identified by an INDEX, never by its path. `awk -v x=VALUE`
+  # interprets escape sequences in VALUE, so a directory named `rev\test` arrives
+  # carrying a real tab, shifts every field of every row out of that file, and the
+  # whole log drops out of the table -- silently, exit 0, an empty table beside a
+  # seat that demonstrably ran. The index only has to be unique per log, and the
+  # canonical paths above are what make it so.
+  local i=0
   raw=$(for f in "${logs[@]}"; do
+          i=$((i + 1))
           record_rows "$f" complete panel pass run seat family state secs ts \
-            | awk -v FS="$tab" -v OFS="$tab" -v f="$f" '{ print f, $0 }'
+            | awk -v FS="$tab" -v OFS="$tab" -v n="$i" '{ print n, $0 }'
         done)
   [ -n "$raw" ] || die "seats: no completed seats recorded under ${roots[*]}"
 
@@ -1607,7 +1622,13 @@ cmd_seats() {
       }
       state[key] = $7; secs[key] = $8
       if ($6 != "") fam[seat] = $6
-      if ($9 ~ /^[0-9]+$/ && $9 + 0 > uts[key]) uts[key] = $9 + 0
+      # ★ LAST wins, not MAX, for the same reason state and secs do. A --force
+      # re-measure appends a second completion for one panel, and one panel has to
+      # be described by ONE row throughout. Taking the newest ts while taking the
+      # last state mixes two rows into one unit, and after a clock correction that
+      # walks backwards it hands --last the wrong panel: the superseded row keeps
+      # the high timestamp and outranks a genuinely later one.
+      if ($9 ~ /^[0-9]+$/) uts[key] = $9 + 0
     }
     END {
       for (s in ucount) {
@@ -1652,8 +1673,13 @@ cmd_seats() {
           if (mean >= 0 && mean > 120)   { h = h (h == "" ? "" : " + ") "TOO SLOW"; if (h == "TOO SLOW") rank = 1 }
           if (h == "")                   { h = "ok"; rank = 2 }
         }
-        printf "R\t%d\t%.1f\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n", \
-          rank, (rate < 0 ? 999 : rate), s, (fam[s] == "" ? "?" : fam[s]), \
+        # ★ The sort key is an INTEGER (tenths of a percent), not the %.1f it
+        # used to be. Both printf here and `sort -n` outside read the decimal
+        # separator from the locale, so under a comma locale the key prints 66,7
+        # and sorts as 66 -- a silent reordering of the column read first.
+        # Precautionary: no comma locale is installed here to measure it on.
+        printf "R\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n", \
+          rank, (rate < 0 ? 9990 : int(rate * 10 + 0.5)), s, (fam[s] == "" ? "?" : fam[s]), \
           keep, ok, deg, inc, fail, skip, \
           (rate < 0 ? "-" : sprintf("%.0f%%", rate)), \
           (mean < 0 ? "?" : sprintf("%.0f", mean)), \

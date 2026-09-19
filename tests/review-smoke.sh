@@ -2518,6 +2518,50 @@ check "seats: no record is refused"      "[ '$RC' -ne 0 ] && grep -q 'no runs.js
 OUT=$(run_cadre "$SD" seats --last 0 "$WN" 2>&1); RC=$?
 check "seats: --last 0 is refused"       "[ '$RC' -ne 0 ]"
 
+# ---- the three a Codex review reproduced, 2026-09-18 ------------------------
+#
+# ★ A directory whose name contains a literal backslash-t. `awk -v x=VALUE`
+# interprets escapes in VALUE, so prefixing rows with the log PATH injected a real
+# tab, shifted every field, and dropped the whole file -- an EMPTY table, exit 0,
+# beside a seat that demonstrably ran. The log is keyed by an index now.
+BS="$SD/rev\test/reviews"
+ev "$BS/p1/runs.jsonl" p1 escaped ok 10 9101
+OUT=$(run_cadre "$SD" seats --all "$BS")
+check "seats: a backslash in the path keeps the row" "awk '\$1 == \"escaped\" && \$3 == 1 && \$4 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# ★ `sort -u` dedupes SPELLINGS, not files. Two spellings of one directory
+# counted every panel twice, which is not a cosmetic double: it turned two panels
+# of a seat (NOT ENOUGH DATA) into four (a confident UNRELIABLE).
+AL="$SD/alias/reviews"
+ev "$AL/p1/runs.jsonl" p1 aliased ok     10 9201
+ev "$AL/p2/runs.jsonl" p2 aliased failed 10 9202
+OUT=$(run_cadre "$SD" seats --all "$AL" "$AL/.")
+check "seats: two spellings are one directory" "awk '\$1 == \"aliased\" && \$3 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: an alias cannot manufacture a verdict" "! awk '\$12 == \"UNRELIABLE\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# ★ A panel is described by ONE row. p1 failed at 9301 and was re-measured ok at
+# 9101; p2 failed at 9200, BETWEEN the two. Under the max rule p1 keeps 9301 off
+# its superseded row and outranks p2, so --last 1 reads p1 -- whose state is now
+# ok -- and reports 100% for a seat whose most recent panel failed. Under the
+# rule that stands, p1 is 9101, p2 is later, and the answer is 0%.
+# ★ The first version of this fixture put p2 at 9302, which wins under BOTH
+# rules. It passed, and reverting the fix left it passing. Found by mutation,
+# not by reading it.
+TS="$SD/clock/reviews"
+ev "$TS/p1/runs.jsonl" p1 rewound failed 5 9301
+ev "$TS/p1/runs.jsonl" p1 rewound ok     5 9101
+ev "$TS/p2/runs.jsonl" p2 rewound failed 5 9200
+OUT=$(run_cadre "$SD" seats --last 1 "$TS")
+check "seats: --last follows the row that stands" "awk '\$1 == \"rewound\" && \$3 == 1 && \$9 == \"0%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# Panels sharing a timestamp must not reorder between runs. Deterministic is the
+# claim; WHICH one wins is not, and nothing should depend on it.
+TIE="$SD/tie/reviews"
+ev "$TIE/p1/runs.jsonl" p1 tied ok     5 9400
+ev "$TIE/p2/runs.jsonl" p2 tied failed 5 9400
+O1=$(run_cadre "$SD" seats --last 1 "$TIE"); O2=$(run_cadre "$SD" seats --last 1 "$TIE")
+check "seats: a ts tie is stable across runs" "[ \"\$O1\" = \"\$O2\" ]"
+
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
 # findings the human already dismissed, because the reviewers have no memory.
