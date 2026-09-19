@@ -35,8 +35,8 @@ grok_sandbox_home() {
   printf '%s' "$h"
 }
 
-# ★ A FINISHED review can still come back empty (#62). Measured on the WOWnet
-# bot, PR 2008 at 329d8e0, 2026-09-05: grok's session log has the final
+# ★ A FINISHED review can still come back empty (#62). Measured on the private
+# review bot this was built for, at 329d8e0, 2026-09-05: grok's session log has the final
 # assistant message -- verdict written -- at 14:18:17, and the CLI had not
 # emitted its JSON by the 900s kill at 14:19:33. The adapter saw no text and
 # filed DID NOT COMPLETE over a complete review. Other grok runs on the same

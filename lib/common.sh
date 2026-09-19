@@ -619,7 +619,7 @@ secrets_preflight() {
   # on the first run against a real repo and the tool looks broken. A template
   # is the one file in this list that is meant to be committed.
   # ★ -type f -o -type l, because the name tests below match DIRECTORIES too.
-  # `src/app/integrations/olo/credentials/page.tsx` is a route segment in every
+  # `src/app/settings/credentials/page.tsx` is a route segment in every
   # Next.js app that has a credentials screen, and without this the whole repo
   # is refused over a folder name.
   local name_hits config_hits
@@ -1066,7 +1066,7 @@ provider_window_closed() {
   if grep -qiE 'reached your [a-z0-9. ]{0,20}limit' "$f" \
      && grep -qiE '(^|[.!?][[:space:]]+)switch to another model' "$f" \
      && ! rate_limited "$f" && ! quota_exhausted "$f"; then return 0; fi
-  # ★ muse on the free tier, verbatim from the WOWnet bot 2026-09-05:
+  # ★ muse on the free tier, verbatim from the private review bot 2026-09-05:
   #
   #   API error 429 [...]: Subscription quota exhausted. Your usage window
   #   resets at 2026-09-07T00:00:00Z. (rate_limit_error)

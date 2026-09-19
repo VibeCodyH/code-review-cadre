@@ -3433,7 +3433,7 @@ printf 'Individual quota reached. Please upgrade your subscription to increase y
 check "window: agy bundled quota caught" "$WC"
 check "window: agy is NOT a budget"      "! $QE"
 check "window: agy is NOT a rate limit"  "! $RL"
-# ★ muse free tier, verbatim from the WOWnet review bot 2026-09-05. It carries
+# ★ muse free tier, verbatim from the private review bot 2026-09-05. It carries
 # a 429 AND "quota exhausted", so rate_limited claims it -- and did, three
 # retries at 60/120s per review against a window that reopens in two days.
 # The reset is stated to the second; the window matcher has to take it first.
