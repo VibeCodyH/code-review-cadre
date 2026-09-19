@@ -910,6 +910,27 @@ Optional wrappers in [`plugin/`](plugin/): `/cadre-setup`, `/cadre-run`,
 `/cadre-slot`. The core is a standalone CLI on purpose. A benchmark for "which
 model should review my code" can't require one vendor's client.
 
+## Testing
+
+On Linux, the suite needs Bash, Git, `jq`, Python 3, and standard GNU utilities.
+Run it from the repository root:
+
+```bash
+bash test.sh
+```
+
+The runner discovers `tests/*.sh` and runs them serially, each with a fresh
+temporary home, `/usr/bin:/bin` on `PATH`, the `C.UTF-8` locale, and zero retry
+delay unless a test overrides it. It reports each script's result and counts
+scripts discovered, run, passed, and failed. These are script counts, not
+individual assertions. Any failure, empty discovery, or incomplete execution
+exits nonzero; failed scripts' output is printed in full. GitHub Actions runs
+the same command on pushes and pull requests.
+
+Known pre-existing failure: [`tests/pi-review.sh`](tests/pi-review.sh) fails
+without the optional Pi SDK installed. It stubs `node`, but its panel test still
+checks whether the SDK is installed. The runner reports this failure.
+
 ## Docs
 
 - [METHOD.md](docs/METHOD.md). Why fix commits, why DEFER disqualifies, why a
