@@ -55,7 +55,7 @@ bin_ollama() {
 }
 
 run_ollama() {
-  local host="" name="$model" base url ctx payload out err
+  local host="" name="$model" base url ctx payload out err cap
   case "$model" in
     */*) host="${model%%/*}"; name="${model#*/}" ;;
   esac
@@ -93,8 +93,9 @@ run_ollama() {
   # is the determinism temperature 0 was supposed to buy. num_predict is the
   # backstop for a model that ignores the flag: truncated JSON fails to parse
   # and is reported, where a timeout is silence.
+  cap="${CADRE_OLLAMA_NUM_PREDICT:-2048}"
   payload=$(jq -n --arg m "$name" --arg p "$prompt" --argjson c "$ctx" \
-                  --argjson n "${CADRE_OLLAMA_NUM_PREDICT:-2048}" \
+                  --argjson n "$cap" \
     '{model:$m, prompt:$p, stream:false, think:false, keep_alive:"30m",
       options:{temperature:0, num_ctx:$c, num_predict:$n}}') \
     || die "ollama: could not build request"
@@ -110,6 +111,12 @@ run_ollama() {
   err=$(printf '%s' "$out" | jq -r '.error // empty' 2>/dev/null)
   [ -n "$err" ] && { printf 'ollama: %s returned: %s\n' "$name" "$err"; return 1; }
 
+  # ★ The one adapter that can SEE why the model stopped. done_reason is
+  # `length` when num_predict cut the answer off, and eval_count is the served
+  # token count -- both from the reply, neither from the request (#39).
+  cadre_cap "$cap"
+  cadre_finish "$(printf '%s' "$out" | jq -r '.done_reason // empty' 2>/dev/null)" \
+               "$(printf '%s' "$out" | jq -r '.eval_count // empty' 2>/dev/null)"
   printf '%s' "$out" | jq -er '.response' 2>/dev/null || {
     printf 'ollama: %s gave no .response field: %s\n' "$name" "${out:0:400}"; return 1; }
 }

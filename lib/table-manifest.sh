@@ -98,7 +98,7 @@ table_manifest_exclude() { # <kind> <label> <run-or-empty> <reason>
 }
 
 table_manifest_run() { # <label> <run> <status> <item-row-or-empty> <grade-paths...>
-  local label="$1" run="$2" status="$3" row="$4" items refs='[]' source path hash raw_ref raw_hash
+  local label="$1" run="$2" status="$3" row="$4" items refs='[]' source path hash raw_ref raw_hash led_ref led_hash fail_ref fail_hash
   shift 4
   items=$(jq -cn --arg row "$row" '
     ($row | [splits("\\s+") | select(length > 0)]) as $terms
@@ -121,8 +121,32 @@ table_manifest_run() { # <label> <run> <status> <item-row-or-empty> <grade-paths
       raw_hash=$(table_manifest_hash "$TABLE_STAGE/$path.judge-raw") || { table_manifest_error "could not hash judge failure output"; return 1; }
       raw_ref=$(jq -cn --arg file "$path.judge-raw" --arg hash "$raw_hash" '{file:$file,sha256:$hash}') || return 1
     fi
-    refs=$(jq -cn --argjson refs "$refs" --arg file "$path" --arg hash "$hash" --argjson raw "$raw_ref" \
-      '$refs + [({file:$file,sha256:$hash} + if $raw == null then {} else {judge_raw:$raw} end)]') || {
+    # The regrade ledger rides with the grade it describes (#39), hashed like
+    # the judge-raw, so a table can show what its grades replaced. So does the
+    # reply of a regrade that was REFUSED: the report names that file as the
+    # evidence for keeping the prior grade, and a bundle whose report cites an
+    # artifact it does not carry is the gap this directory exists to close.
+    fail_ref=null
+    if [ -f "$source.regrade-failed.judge-raw" ]; then
+      cp -- "$source.regrade-failed.judge-raw" "$TABLE_STAGE/$path.regrade-failed.judge-raw" || {
+        table_manifest_error "could not snapshot refused regrade output"; return 1;
+      }
+      fail_hash=$(table_manifest_hash "$TABLE_STAGE/$path.regrade-failed.judge-raw") || { table_manifest_error "could not hash refused regrade output"; return 1; }
+      fail_ref=$(jq -cn --arg file "$path.regrade-failed.judge-raw" --arg hash "$fail_hash" '{file:$file,sha256:$hash}') || return 1
+    fi
+    led_ref=null
+    if [ -f "$source.regraded.jsonl" ]; then
+      cp -- "$source.regraded.jsonl" "$TABLE_STAGE/$path.regraded.jsonl" || {
+        table_manifest_error "could not snapshot regrade ledger"; return 1;
+      }
+      led_hash=$(table_manifest_hash "$TABLE_STAGE/$path.regraded.jsonl") || { table_manifest_error "could not hash regrade ledger"; return 1; }
+      led_ref=$(jq -cn --arg file "$path.regraded.jsonl" --arg hash "$led_hash" '{file:$file,sha256:$hash}') || return 1
+    fi
+    refs=$(jq -cn --argjson refs "$refs" --arg file "$path" --arg hash "$hash" --argjson raw "$raw_ref" --argjson led "$led_ref" --argjson fail "$fail_ref" \
+      '$refs + [({file:$file,sha256:$hash}
+                 + (if $raw == null then {} else {judge_raw:$raw} end)
+                 + (if $led == null then {} else {regrade_log:$led} end)
+                 + (if $fail == null then {} else {regrade_refused_raw:$fail} end))]') || {
         table_manifest_error "could not record grade reference"; return 1;
       }
   done
