@@ -82,22 +82,22 @@
       "computedHash": "44b6c887b0e59e08da422f660bf1409f247b83110df36a2412e4ba955526fd0a"
     },
     "root:lib/prompts/review-live.md": {
-      "computedHash": "0320077c74885610929afdb1d3aa027f2e8bd6b176fff91a2c30598f73daf420"
+      "computedHash": "8e02c397d2bafada8a6a4cedc363ee76d099db93347ccd904462d50517a476bb"
     },
     "root:lib/prompts/review-plan.md": {
       "computedHash": "5c69a826f69af4b95f3499e3e99aa58cc6cbdbf04349dacbdf6cc3ecc2a56007"
     },
     "root:lib/prompts/review-target.md": {
-      "computedHash": "60758f103d5a927e239eedd5e62561d0d59f28092fe2fda0b8b48ccaef5b4bbf"
+      "computedHash": "e511ec375758ad175af922612299d75a381404588279d0635eb890c8309bdce1"
     },
     "root:lib/prompts/review.md": {
-      "computedHash": "26a086fd08f2cc8fceef664c681e2b7ce162a3acd046d477cbf5a80d37be0730"
+      "computedHash": "2ef8be03730e0e1a0d405036737e6d36d83364eeb21e539060964126522e5118"
     },
     "root:lib/prompts/settle.md": {
       "computedHash": "3f847112a940d7f20b1391838b4d5a979a83936578240c58f7505784e2126b1b"
     },
     "root:lib/prompts/synthesize.md": {
-      "computedHash": "5456578c4f9979e4f64155f47fe703810d8c3000eb0475d1bc9ab00aa1ea9f44"
+      "computedHash": "90a6734775d8a1055b82d0b51470d428ffbf3e47f5c0a763ee528db9be22f1e9"
     }
   },
   "schema": "cadre/input-lock@1"
