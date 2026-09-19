@@ -833,6 +833,36 @@ See [the export guide](docs/EVIDENCE.md) for the saved-diff requirement and what
 to inspect before publishing, or open the [synthetic example](evals/evidence-example/README.md).
 These are review delivery records, not quality scores.
 
+## Which seat should I swap?
+
+`cadre receipts` reads the run record forward, into spend by family.
+`cadre seats` reads it back, as a verdict on one seat across the panels it sat
+in:
+
+```bash
+cadre seats                 # the 5 most recent panels per seat
+cadre seats --all           # every panel on disk
+cadre seats --last 3 evals/ # any directory holding runs.jsonl
+```
+
+```
+SEAT                           FAMILY     PANELS   OK  DEGR INCONCL FAILED  SKIP OK_RATE MEAN_SEC  LAST  HEALTH
+muse                           muse            3    2     0       0      1     0    67%     153    4d  UNRELIABLE + TOO SLOW
+codex                          openai          5    5     0       0      0     0   100%     161    4d  TOO SLOW
+grok                           xai             1    0     0       0      1     0     0%       ?    4d  NOT ENOUGH DATA, 1 panel
+```
+
+Two failure modes, kept apart because they send you to different places.
+**UNRELIABLE** is ok on under 80% of the panels it actually ran in: swap the
+seat. **TOO SLOW** is over 120s mean on the ones it succeeded in, and a panel is
+only as fast as its slowest seat — but that is usually a reasoning-effort
+setting rather than a bad model, so read the cause before swapping.
+
+A **skipped** panel is neither. A roster gate or a closed usage window means the
+seat never ran, and it is excluded from both sides of the rate: an absence is
+not a failure. Under three panels a seat gets NOT ENOUGH DATA rather than a
+clean bill, because one bad panel out of two is 50% and means nothing.
+
 ## Adding a reviewer
 
 A new model on a CLI you already have needs nothing. Just
