@@ -13,7 +13,7 @@ naming what we did not invent.
   [withmartian/code-review-benchmark](https://github.com/withmartian/code-review-benchmark)
   already tracks CodeRabbit, Copilot, Claude, Cursor, Codex, Gemini, Greptile,
   Qodo and others on a shared corpus.
-- **Repository-level ACR benchmarking with two independent scoring axes.**
+- **Repository-level ACR benchmarking, scored semantically and by line.**
   [alibaba/aacr-bench](https://github.com/alibaba/aacr-bench) (Apache-2.0,
   [arXiv:2601.19494](https://arxiv.org/abs/2601.19494), 14 authors) is the
   closest published work to this one on the metric side, closer than
