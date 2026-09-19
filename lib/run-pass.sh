@@ -300,6 +300,9 @@ for r in "${reviewers[@]}"; do
       model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       adapter_note="$(sed -n 's/^note=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       "adapter_attempts#=$(sed -n 's/^attempts=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
+      finish_reason="$(meta_field "$f.part.meta" finish)" \
+      "completion_tokens#=$(meta_num "$f.part.meta" completion_tokens)" \
+      "output_cap#=$(meta_num "$f.part.meta" output_cap)" \
       language="$CHANGE_LANG" "ts#=$(date +%s)"
     # Same rule as the panel path: the declaration is consumed, the state lives
     # in runs.jsonl, and a stale .meta would classify the NEXT attempt at this

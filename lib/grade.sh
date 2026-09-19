@@ -85,6 +85,47 @@ grade_one() {
   }
 }
 
+# ---- regrade ledger (#39) ----------------------------------------------------
+# `cadre grade` re-grades in place, so the prior verdict is the one thing the
+# swap destroys. Every replacement of an existing grade appends ONE line here,
+# beside the grade and never over it: the prior items, the new items, the keys
+# whose verdict moved, and the hashes of the two inputs that could have moved
+# them (the answer key; the harness with its rubric, the same digest #37 put on
+# the run record). A regrade that changed nothing is recorded too -- "same
+# answer on a second reading" is evidence, and it is the cheap kind.
+# ★ Returns 1 when the line could not be written, and the caller then REFUSES
+# the swap: a regrade whose prior cannot be kept is the overwrite this exists
+# to stop. No prior on disk is not an error; there is nothing to keep.
+regrade_ledger() { # <grade> <new-grade> <judge> <keyfile> <kept-prior 0|1>; sets REGRADE_CHANGED, REGRADE_CHANGES
+  local gf="$1" new="$2" judge="$3" keyfile="$4" kept="$5" led="$1.regraded.jsonl" pj nj ksha="" hsha line
+  REGRADE_CHANGED=0 REGRADE_CHANGES=""
+  [ -s "$gf" ] || return 0
+  pj=$(jq -c . "$gf" 2>/dev/null) || pj=null
+  nj=$(jq -c . "$new" 2>/dev/null) || nj=null
+  [ -f "$keyfile" ] && ksha=$(table_manifest_hash "$keyfile" 2>/dev/null || true)
+  hsha=$(harness_sha)
+  line=$(jq -cn --argjson prior "$pj" --argjson next "$nj" --arg judge "$judge" \
+    --arg key "$ksha" --arg harness "$hsha" --argjson kept "$([ "$kept" = 1 ] && echo true || echo false)" --argjson ts "$(date +%s)" '
+    def items(g): if g == null or (g | type) != "object" or (g.unusable // false) == true
+                  then null else (g.items // {}) end;
+    items($prior) as $pi | items($next) as $ni
+    | ([ (($pi // {}) + ($ni // {})) | keys[] ] | unique) as $keys
+    | {ts:$ts, judge:$judge,
+       key_sha256:(if $key == "" then null else $key end),
+       harness_sha:(if $harness == "" then null else $harness end),
+       prior_unusable:($pi == null), unusable:($ni == null), kept_prior:$kept,
+       prior_items:$pi, items:$ni,
+       changed:(if $pi == null or $ni == null then {} else
+         ([ $keys[] | . as $k
+            | {key:$k, before:($pi[$k] // "MISS"), after:($ni[$k] // "MISS")}
+            | select(.before != .after) ]
+          | map({(.key):{before:.before, after:.after}}) | add // {}) end)}
+  ') || return 1
+  printf '%s\n' "$line" >> "$led" || return 1
+  REGRADE_CHANGED=$(jq -r '.changed | length' <<< "$line")
+  REGRADE_CHANGES=$(jq -r '.changed | to_entries | map("\(.key) \(.value.before)→\(.value.after)") | join(", ")' <<< "$line")
+}
+
 # Count key item headings the review reproduced word for word. The backstop for
 # an agent that went looking for the key. docs/METHOD.md §5.
 leak_check() {
@@ -262,7 +303,7 @@ cost_per_hit() {
 
 # Read only the grader's anchored footer fields. Missing/ambiguous legacy fields
 # stay unavailable; never reconstruct spend or turn an unresolved range exact.
-grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE}
+grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE,SPREAD,CAP}
   local fields
   fields=$(awk '
     /^## Verdict: / {
@@ -273,7 +314,28 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
     !footer { next }
     /^- blocking items hit:/ { nh++; hits=$0 }
     /^- est\. tokens per blocking item hit:/ { nc++; cost=$0 }
+    # Counted on the FIELD NAME, not on the bold marker: a second mention
+    # written without ** would otherwise slip past the duplicate gate and let
+    # the first line stand as unambiguous. Same rule the hit/cost fields use.
+    /^- run-to-run spread \(blocking hit rate\):/ { ns++; sp=$0 }
+    /^- output cap:/ { ncap++; capl=$0 }
     END {
+      # Spread and cap are read whether or not the table scored: a cap mismatch
+      # or a missing floor is a fact about the run, not about the verdict.
+      # ★ Anchored END TO END, matching the exact sentence cadre writes.
+      # A prefix match reads "- output cap: **2048 tokens** was the old
+      # setting; not recorded now" as a measured 2048, which is operator prose
+      # promoted to a number -- the failure the hit/cost patterns above are
+      # already anchored against. An unrecognised line is "-", never a value.
+      spread=cap="-"
+      if (ns==1 && sp ~ /^- run-to-run spread \(blocking hit rate\): \*\*[0-9]+\.[0-9]pp\*\* \(run [0-9]+: [0-9]+\/[0-9]+.*\); a difference between two seats smaller than this is noise$/) {
+        sub(/^- run-to-run spread \(blocking hit rate\): \*\*/, "", sp); sub(/pp\*\*.*$/, "", sp); spread=sp
+      }
+      if (ncap==1) {
+        if (capl ~ /^- output cap: \*\*[0-9]+ tokens\*\* \(declared by the adapter on every scored run\)$/) {
+          sub(/^- output cap: \*\*/, "", capl); sub(/ tokens\*\*.*$/, "", capl); cap=capl
+        } else if (capl ~ /^- output cap: \*\*mixed\*\* \(.*\); the scored runs were not cap-matched, so their rates are not one measurement$/) cap="mixed"
+      }
       lo=hi=total=spend="-"
       if (nc==1 && cost ~ /^- est\. tokens per blocking item hit: \*\*([0-9]+|-)\*\* \(partial denominator\)$/) partial=1
       if (!unscored && nh==1) {
@@ -298,10 +360,10 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
           spend=cost+0
         }
       }
-      print lo, hi, total, spend, partial+0
+      print lo, hi, total, spend, partial+0, spread, cap
     }
   ' "$1")
-  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL <<< "$fields"
+  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL METRIC_SPREAD METRIC_CAP <<< "$fields"
   METRIC_RATE='-'
   if [ "$METRIC_TOTAL" != - ]; then
     METRIC_RATE=$(awk -v lo="$METRIC_LOW" -v hi="$METRIC_HIGH" -v total="$METRIC_TOTAL" 'BEGIN {
@@ -325,6 +387,11 @@ frontload_grade_cost() { # <finished-report>
     echo
     echo "- est. tokens per credited blocking hit: **$METRIC_COST**$note"
     echo "- blocking hit rate: **$METRIC_RATE**$note"
+    if [ "$METRIC_SPREAD" = - ]; then
+      echo "- noise floor (run-to-run spread): **not measured**; no delta against another seat is distinguishable from noise"
+    else
+      echo "- noise floor (run-to-run spread): **${METRIC_SPREAD}pp**; a delta against another seat under this is noise"
+    fi
     echo
     echo "Cost uses prompt and review bytes / 4 from scored keyed runs only. Delivery"
     echo "failures and CLEAN probes contribute no spend here. This is an estimate;"
@@ -612,6 +679,16 @@ remove that directory and re-run."
   # NOTHING MEASURED wording ("this says nothing about X") is true but reads as a
   # property of the model, which is the misread this issue is about.
   local no_output_runs=0 provider_empty=""
+  # ★ The confounds the footer names BEFORE the score (#39). A run the cap cut
+  # off or the provider left empty is an auto-fail whatever the model knows, so
+  # a seat whose number is carried by them has a cap or provider problem, not a
+  # model result. Counted here, printed above the hit line, never folded in.
+  local cutoff_runs=0 empty_runs=0 capped_scored=0 caps_seen="" cap_unrecorded=""
+  # Per run-slot blocking tallies across passes: run 1 over every pass is one
+  # sweep of the set, run 2 another, and the spread between sweeps is the
+  # candidate's own noise floor. Indexed by run number.
+  local run_bhit=() run_btotal=() run_bunres=() run_passes=()
+  local regrade_changed_items=0 regrade_changed_runs=0 regrade_kept_runs=0
   # ★ Two failures that must not share an exit code, because the caller's correct
   # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
   # time and the reason to stop a sweep. A review that exists but could not be
@@ -727,6 +804,7 @@ remove that directory and re-run."
     local items; items=$(key_items "$keyfile")
     local pass_record="$CADRE_HOME/$label/runs.jsonl" pass_runs=""
     pass_runs=$(record_rows "$pass_record" complete slug run state rc secs)
+    local pass_meta; pass_meta=$(record_rows "$pass_record" complete slug run finish_reason completion_tokens output_cap)
     local run_leaks=() run_invalid=() run_failure_kinds=() n rf rec_rc k pass_invalid=0
     if [ "$table_selection" = first-run ]; then
       for ((n=2; n<=requested_runs; n++)); do
@@ -761,6 +839,15 @@ remove that directory and re-run."
           elif [ -s "$rf.partial" ]; then table_run_status=partial
           else table_run_status=missing; fi
         fi
+        # ★ Counted HERE, not in the grading loop below, because a pass that
+        # aborted dispatch never reaches that loop -- and a footer printing
+        # "0 cut off" over a pass whose own results hold one is the fabricated
+        # zero this file refuses everywhere else. This loop runs before the
+        # abort check, which is why the delivery counters already live in it.
+        case "$table_run_status" in
+          partial)   cutoff_runs=$((cutoff_runs + 1)) ;;
+          no-output) empty_runs=$((empty_runs + 1)) ;;
+        esac
         table_manifest_run "$label" "$n" "$table_run_status" "" || return 1
         case "$table_run_status" in
           pending-grade|failed|no-output) ;;
@@ -992,6 +1079,7 @@ remove that directory and re-run."
       # and losing a graded artifact is the most expensive failure here: the
       # review can be re-graded, but a baseline nobody kept cannot be recovered.
       local gfs=() all_gfs=() bad="" savedj="$CADRE_JUDGE"
+      local kept="" unrecorded="" regrade_notes="" run_regraded=0
       local j js gf
       for j in "${judges[@]}"; do
         CADRE_JUDGE="$j"
@@ -1001,14 +1089,65 @@ remove that directory and re-run."
         if [ "$rescore" = 1 ] || [ ! -s "$gf" ]; then
           grade_one "$keyfile" "$rf" "$gf.new"
           if [ -s "$gf.new" ]; then
-            mv -f "$gf.new" "$gf"
-            if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.judge-raw"
-            else rm -f "$gf.judge-raw"; fi
+            # ★ (#39) A regrade writes BESIDE the prior grade before it writes
+            # over it, and a regrade that came back UNUSABLE never writes over
+            # it at all. The old order swapped whatever the judge returned in,
+            # so one rate-limited re-grade replaced nine usable grades with
+            # `{"unusable":true}` and the baseline was gone. Now the prior stays
+            # on disk, is NOT scored on this pass (it was graded against inputs
+            # that may have moved), and the ledger says which happened.
+            local prior_ok=0 next_ok=1
+            [ -s "$gf" ] && [ "$(jq -r '.unusable // false' "$gf" 2>/dev/null)" = false ] && prior_ok=1
+            [ "$(jq -r '.unusable // false' "$gf.new" 2>/dev/null)" = true ] && next_ok=0
+            if [ "$prior_ok" -eq 1 ] && [ "$next_ok" -eq 0 ]; then
+              if regrade_ledger "$gf" "$gf.new" "$j" "$keyfile" 1; then
+                if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.regrade-failed.judge-raw"
+                else rm -f "$gf.regrade-failed.judge-raw"; fi
+                kept="$kept $j"
+                rm -f "$gf.new" "$gf.new.judge-raw"
+              else
+                # ★ The ledger failing does not make the reply worthless, and
+                # a stale .unapplied.json from an EARLIER attempt left here
+                # makes the report name the wrong artifact. Newest wins, the
+                # same rail .partial vs .failed follows above.
+                mv -f "$gf.new" "$gf.unapplied.json"
+                if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.unapplied.judge-raw"
+                else rm -f "$gf.unapplied.judge-raw"; fi
+                unrecorded="$unrecorded $j"
+              fi
+            elif regrade_ledger "$gf" "$gf.new" "$j" "$keyfile" 0; then
+              if [ "$REGRADE_CHANGED" -gt 0 ]; then
+                regrade_notes="$regrade_notes- $j: $REGRADE_CHANGES (ledger: $(basename "$gf").regraded.jsonl)"$'\n'
+                regrade_changed_items=$((regrade_changed_items + REGRADE_CHANGED)); run_regraded=1
+              fi
+              mv -f "$gf.new" "$gf"
+              rm -f "$gf.regrade-failed.judge-raw" "$gf.unapplied.json" "$gf.unapplied.judge-raw"
+              if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.judge-raw"
+              else rm -f "$gf.judge-raw"; fi
+            else
+              # ★ The judge's reply is KEPT, not deleted. The ledger failing is
+              # a harness fault, and answering it by destroying the call the
+              # operator paid for is the same overwrite pointed the other way.
+              mv -f "$gf.new" "$gf.unapplied.json"
+              if [ -s "$gf.new.judge-raw" ]; then mv -f "$gf.new.judge-raw" "$gf.unapplied.judge-raw"
+              else rm -f "$gf.unapplied.judge-raw"; fi
+              unrecorded="$unrecorded $j"
+            fi
           else
             rm -f "$gf.new" "$gf.new.judge-raw"
           fi
         fi
-        if [ ! -s "$gf" ] || [ "$(jq -r '.unusable // false' "$gf")" = true ]; then
+        if in_list "$j" "$kept"; then
+          local why3="empty, truncated, or an error"
+          if [ -s "$gf.regrade-failed.judge-raw" ]; then
+            why3="its reply did not parse, see $(basename "$gf").regrade-failed.judge-raw"
+            rate_limited "$gf.regrade-failed.judge-raw" &&
+              why3="★ RATE-LIMITED or OUT OF QUOTA after ${CADRE_RETRIES:-3} attempts, a judge outage and NOT a fact about the candidate"
+          fi
+          bad="$bad$j: the regrade returned $why3; the PRIOR grade is kept on disk unscored (see $(basename "$gf").regraded.jsonl), re-run cadre grade; "
+        elif in_list "$j" "$unrecorded"; then
+          bad="$bad$j: could not append $(basename "$gf").regraded.jsonl, so the new grade was NOT applied and the prior stands unscored; the new grade is kept at $(basename "$gf").unapplied.json; "
+        elif [ ! -s "$gf" ] || [ "$(jq -r '.unusable // false' "$gf")" = true ]; then
           local why2="empty, truncated, or an error, NOT a clean pass"
           if [ -s "$gf.judge-raw" ]; then
             why2="its reply did not parse, see $(basename "$gf").judge-raw"
@@ -1033,6 +1172,18 @@ remove that directory and re-run."
         fi
       done
       CADRE_JUDGE="$savedj"
+      # ★ Exit 5, not 0. A refused regrade takes a run that WAS scored out of
+      # this table's denominator, so a sweep that keeps priors and then exits
+      # green reports a shrunken benchmark as a clean one. 5 is the right code
+      # rather than 4: the review is on disk and untouched, so the caller
+      # re-grades and does not re-review -- which is exactly what this branch
+      # did to the grade.
+      [ -z "$kept" ] || { regrade_kept_runs=$((regrade_kept_runs + 1)); grading_failed=1; }
+      # ★ Counted with the ITEMS, ahead of the usability gate below. A grade
+      # that moved was written to disk whether or not the OTHER judge then
+      # failed, so gating the run count on a scored run reported "1 item
+      # across 0 runs" -- a count of a population the other number is not from.
+      [ "$run_regraded" -eq 0 ] || regrade_changed_runs=$((regrade_changed_runs + 1))
 
       # ★ EVERY judge has to have produced a usable grade. Reconciling one
       # judge's reading against a missing one is a single-judge score wearing a
@@ -1048,6 +1199,29 @@ remove that directory and re-run."
         continue
       fi
       pass_usable=$((pass_usable + 1)); usable_runs=$((usable_runs + 1))
+      # ★ WHICH passes this slot graded, not how many items. Equal denominators
+      # do not prove equal contents: pass A scoring only in slot 1 and pass B
+      # only in slot 2 gives both slots the same item count over completely
+      # different items, and the gap between their rates is then 100% of the
+      # difference between two passes. A usable run grades every item of its
+      # pass, so the label list IS the item set.
+      run_passes[$n]="${run_passes[$n]:-} $label"
+
+      # ★ What the record says about HOW this scored run ended (#39). Last
+      # completion for this seat and run, same last-wins rail as `rc` above.
+      # A declared `length` finish is a review the cap cut that the adapter did
+      # not mark partial: scored, since the findings are real, but named, since
+      # its silence past the cut is not clearance. The cap itself is collected
+      # so the footer can say whether the runs were cap-matched at all.
+      local run_finish run_ctok run_cap
+      IFS=$'\t' read -r run_finish run_ctok run_cap < <(awk -F '\t' -v OFS='\t' -v s="$sl" -v r="$n" \
+        '$1 == s && $2 == r { f = $3; t = $4; c = $5 } END { print (f == "" ? "-" : f), (t == "" ? "-" : t), (c == "" ? "-" : c) }' <<< "$pass_meta")
+      if [ "$run_finish" = length ]; then
+        capped_scored=$((capped_scored + 1))
+        echo "- run $n: ★ the adapter reports the OUTPUT CAP was hit (finish_reason=length$([ "$run_ctok" != - ] && echo ", $run_ctok tokens")$([ "$run_cap" != - ] && echo " of a $run_cap cap")); scored, but silence past the cut is not clearance" >> "$report"
+      fi
+      if [ "$run_cap" = - ]; then cap_unrecorded=1
+      else in_list "$run_cap" "$caps_seen" || caps_seen="$caps_seen $run_cap"; fi
 
       # ★ Harness-side receipt for this usable run. Only runs that contribute to
       # the hit count feed the cost-per-hit number: an unusable or suspect run is
@@ -1111,9 +1285,9 @@ remove that directory and re-run."
         [ "$v" = HIT ]        && total_hit=$((total_hit + 1))
         [ "$v" = UNRESOLVED ] && total_unresolved=$((total_unresolved + 1))
         if [ "$sev" = blocking ]; then
-          blocking_total=$((blocking_total + 1)); pass_btotal=$((pass_btotal + 1))
-          [ "$v" = HIT ]        && { blocking_hit=$((blocking_hit + 1)); pass_bhit=$((pass_bhit + 1)); }
-          [ "$v" = UNRESOLVED ] && { blocking_unresolved=$((blocking_unresolved + 1)); pass_bunres=$((pass_bunres + 1)); }
+          blocking_total=$((blocking_total + 1)); pass_btotal=$((pass_btotal + 1)); run_btotal[$n]=$(( ${run_btotal[$n]:-0} + 1 ))
+          [ "$v" = HIT ]        && { blocking_hit=$((blocking_hit + 1)); pass_bhit=$((pass_bhit + 1)); run_bhit[$n]=$(( ${run_bhit[$n]:-0} + 1 )); }
+          [ "$v" = UNRESOLVED ] && { blocking_unresolved=$((blocking_unresolved + 1)); pass_bunres=$((pass_bunres + 1)); run_bunres[$n]=$(( ${run_bunres[$n]:-0} + 1 )); }
           # ★ A DEFER disqualifies outright, so it must carry the sentence that
           # earned it. An unquoted DEFER cannot be re-checked by anyone, and
           # this harness's graders have split one item in three -- letting a
@@ -1163,6 +1337,10 @@ remove that directory and re-run."
         }
       done
       echo "- run $n:$row, verdict \"$verdict\"${ex:+, extras: $ex}" >> "$report"
+      if [ -n "$regrade_notes" ]; then
+        echo "  - ★ REGRADED, item verdicts moved from the prior grade (prior values kept in the ledger, never overwritten):" >> "$report"
+        printf '%s' "$regrade_notes" | sed 's/^/    /' >> "$report"
+      fi
       table_manifest_run "$label" "$n" "${pass_clean:+clean-}graded" "$row" "${gfs[@]}" || return 1
 
       # ★ Print the sentence that earned each HIT. Without it a grade is a verdict
@@ -1408,6 +1586,10 @@ number to quote."
         echo "$tail1"
         echo
         report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
+        # A regrade that kept its priors is the likeliest way to land here
+        # with reviews on disk, so the count is printed on this path too.
+        [ "$rescore" != 1 ] || [ "$regrade_kept_runs" -eq 0 ] ||
+          echo "- regrades that returned unusable and KEPT the prior grade on disk, unscored: $regrade_kept_runs"
       } >> "$report"
       frontload_grade_cost "$report" || return 1
       table_manifest_finish "$report" "$table_report" || return 1
@@ -1554,6 +1736,69 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     echo "$reason"
     echo
     report_run_exclusions "$invalid_notes" "$invalid_errors" "$suspect_notes" "$operator_invalid"
+    # ★ Confounds BEFORE the score (#39): the cap the runs ran under, the runs
+    # that could not have scored whatever the model knew, the candidate's own
+    # run-to-run spread, and what this regrade moved. A reader who sees the
+    # hit line first reads everything after it as a footnote.
+    local ncaps; ncaps=$(printf '%s' "$caps_seen" | wc -w | tr -d ' ')
+    if [ "$ncaps" -eq 0 ]; then
+      echo "- output cap: **not recorded** (no adapter declared one; see cadre_cap in docs/ADDING-AN-AGENT.md)"
+    elif [ "$ncaps" -eq 1 ] && [ -z "$cap_unrecorded" ]; then
+      echo "- output cap: **$(printf '%s' "${caps_seen# }") tokens** (declared by the adapter on every scored run)"
+    else
+      echo "- output cap: **mixed** ($(printf '%s' "${caps_seen# }" | tr ' ' ',' | sed 's/,/, /g')${cap_unrecorded:+; unrecorded on some scored runs}); the scored runs were not cap-matched, so their rates are not one measurement"
+    fi
+    echo "- runs not scored, output cut off (partial review on disk): $cutoff_runs"$partial_note
+    echo "- runs not scored, provider returned nothing: $empty_runs"$partial_note
+    [ "$capped_scored" -eq 0 ] ||
+      echo "- scored runs whose adapter reported the output cap was hit: $capped_scored (findings real; silence past the cut is not clearance)"
+    # ★ A REAL tab, not "\t": inside double quotes that is a backslash and a
+    # t, and `awk -F` would then split on neither. A pass label can hold a
+    # space, so the field separator has to be something a label does not carry.
+    local spread_rows="" nn tab
+    tab=$'\t'
+    for ((nn = 1; nn <= runs; nn++)); do
+      [ "${run_btotal[$nn]:-0}" -gt 0 ] || continue
+      spread_rows="$spread_rows$nn$tab${run_bhit[$nn]:-0}$tab${run_btotal[$nn]}$tab${run_bunres[$nn]:-0}$tab${run_passes[$nn]:-}"$'\n'
+    done
+    # Run k over every pass is one sweep of the set; the spread between sweeps
+    # is the floor a delta between two seats has to clear.
+    #
+    # ★ Two sweeps are only comparable when they graded the SAME PASSES. A
+    # pass whose run 2 was unusable contributes its items to slot 1 alone, so
+    # the gap between the slots' rates is partly the missing pass, not
+    # variance -- and EQUAL ITEM COUNTS DO NOT PROVE EQUAL CONTENTS: pass A
+    # scoring only in slot 1 and pass B only in slot 2 gives both slots the
+    # same denominator over completely different items -- and this number becomes the
+    # floor for the whole panel table, where an inflated one declares real
+    # seat differences to be noise. Same rail as the verdict guard above: a
+    # short denominator cannot support the claim, so the number is unavailable
+    # and the fractions are printed rather than divided.
+    # ★ UNRESOLVED is the same problem wearing a different hat. A slot rate is
+    # a LOW bound, so a split in one sweep and not the other moves the gap by
+    # the split rather than by the candidate. Refused for the same reason, and
+    # the fix is the one the report already names: tighten the key, re-grade.
+    # ★ Every branch prints the line. An absent spread line cannot be told
+    # apart from a check that never ran.
+    printf '%s' "$spread_rows" | awk -F '\t' -v req="$runs" '
+      { n++; r = 100 * $2 / $3
+        if (n == 1) seen = $5; else if ($5 != seen) mixed = 1
+        unres += $4
+        if (n == 1 || r < lo) lo = r
+        if (n == 1 || r > hi) hi = r
+        d = d (d ? ", " : "") "run " $1 ": " $2 "/" $3 ($4 > 0 ? " (+" $4 " unresolved)" : "") }
+      END {
+        if (req < 2) print "- run-to-run spread (blocking hit rate): **not measured** (1 run per pass; run at least 2 to measure the noise floor)"
+        else if (n < 2) print "- run-to-run spread (blocking hit rate): **not measured** (only " n + 0 " run slot produced graded blocking items)"
+        else if (mixed) print "- run-to-run spread (blocking hit rate): **unavailable**, the sweeps did not grade the same items (" d "); a pass missing from one sweep moves this gap by the pass, not by the candidate"
+        else if (unres) print "- run-to-run spread (blocking hit rate): **unavailable**, " unres " UNRESOLVED item(s) leave each sweep a lower bound (" d "); tighten the key and re-grade"
+        else printf "- run-to-run spread (blocking hit rate): **%.1fpp** (%s); a difference between two seats smaller than this is noise\n", hi - lo, d
+      }'
+    if [ "$rescore" = 1 ]; then
+      echo "- item verdicts moved by this regrade: $regrade_changed_items across $regrade_changed_runs run(s); every prior value is in a \`.grade.json.regraded.jsonl\` ledger beside its grade"
+      [ "$regrade_kept_runs" -eq 0 ] ||
+        echo "- regrades that returned unusable and KEPT the prior grade on disk, unscored: $regrade_kept_runs"
+    fi
     if [ "$suspect" -gt 0 ]; then
       echo "- blocking items hit: **NOT SCORED**"
     elif [ "$blocking_unresolved" -gt 0 ]; then

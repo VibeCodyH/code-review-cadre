@@ -318,6 +318,23 @@ candidate went in as SECONDARY. Never run alone, and a clean pass from it
 doesn't mean anything, because it produced one on a commit it had called
 blocking the run before. Same checkout, same prompt.
 
+### Read the deltas against the noise floor
+
+That "same checkout, same prompt" flip is the reason both the report and the
+matrix now state a noise floor before they state a rate. Run 1 over every pass
+is one sweep of your registered set and run 2 is another, so the spread between
+them is that candidate's own variance. `cadre panel` takes the largest spread
+any row measured against itself and names every row within it of the top rate
+as indistinguishable, rather than ordering them. If you graded at one run per
+pass, the floor reads NOT MEASURED, and the honest reading of the table is that
+no difference in it is established.
+
+Two other things get stated before the score, for the same reason: how many
+runs scored nothing because the output was cut off or the provider returned
+nothing, and what output cap the runs were dispatched under. When two rows ran
+under different caps, `cadre panel` refuses to compare them and says so — one
+seat cut off at half the budget is not a worse reviewer, it is a shorter one.
+
 ## Then actually use it: `cadre review`
 
 Everything above is the setup. The benchmark tells you who to seat; `cadre
@@ -787,6 +804,12 @@ is the whole reason Cadre measures YOUR repo instead of shipping a leaderboard.
   evidence behind it. Who speaks on your PRs is your call.
 - No cost estimate in dollars. `cadre run` prints a call count and that's it.
 - No resume past skipping outputs that already exist.
+- No cap-matched replay. When two seats ran under different output caps cadre
+  refuses the comparison; it does not truncate the larger run token-exactly and
+  re-score it, because that needs the serving stack's own tokenizer.
+- The noise floor is a spread across however many runs you asked for, usually
+  two. It says what a difference has to clear to be worth reading. It is not a
+  confidence interval, and two runs could not give you one.
 - No secret scanning. The credential check works off known credential filenames,
   and reads contents only for four config files. A key in a source file passes.
 - No sandbox. See above, and mean it.

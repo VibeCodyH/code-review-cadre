@@ -111,6 +111,35 @@ cadre_model() {
   return 0
 }
 
+# cadre_finish <reason> [completion_tokens]: why the model stopped, as the
+# PROVIDER reported it (#39). `length` means the output cap cut it off, `stop`
+# means it ended on its own; anything else is passed through as the provider
+# spelled it. The token count is the provider's, not a byte estimate. Same
+# trust as cadre_model: declare only what the CLI or API returned, never a
+# default, and say nothing when it did not -- EMPTY means "not reported".
+cadre_finish() {
+  [ -n "${CADRE_RUN_META:-}" ] || return 0
+  [ -n "${1:-}" ] || return 0
+  printf 'finish=%s\n' "$(printf '%s' "$1" | tr -d '\000-\037')" >> "$CADRE_RUN_META"
+  case "${2:-}" in
+    ''|*[!0-9]*) ;;
+    *) printf 'completion_tokens=%s\n' "$2" >> "$CADRE_RUN_META" ;;
+  esac
+  return 0
+}
+# cadre_cap <tokens>: the output cap the run was dispatched under (#39). Two
+# seats compared across different caps are not the same measurement, and the
+# report can only say so if the cap is on the record. Declare it from the value
+# actually sent; an adapter whose CLI exposes no cap says nothing.
+cadre_cap() {
+  [ -n "${CADRE_RUN_META:-}" ] || return 0
+  case "${1:-}" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  printf 'output_cap=%s\n' "$1" >> "$CADRE_RUN_META"
+  return 0
+}
+
 # --print-command: print the native invocation instead of running it.
 DRY="${AGENTCALL_DRY:-}"
 _run() {

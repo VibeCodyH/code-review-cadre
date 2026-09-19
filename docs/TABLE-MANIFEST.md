@@ -66,6 +66,14 @@ in JSON and `-` in the report.
 
 ## Freeze and regrade
 
+Regrading an existing grade appends to a `<grade>.regraded.jsonl` ledger beside
+it, carrying the prior item verdicts, the new ones, the keys that moved, and
+the key and harness hashes at the time. The ledger is copied into the table as
+`regrade_log` beside the grade it describes, with a relative path and a
+SHA-256 like every other artifact. A regrade whose judge came back unusable
+keeps the prior grade on disk, records that it was kept, and scores nothing on
+that pass.
+
 Tables start `open`. Regrading an open table replaces its report, results, and
 saved judge grades. A changed key changes the manifest's key hash. A key that
 changes while the table is being generated makes publication fail.

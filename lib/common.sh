@@ -1398,6 +1398,25 @@ json_escape() {
   printf '%s' "${1:-}" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+# meta_field <metafile> <name>: the LAST declaration of one field on the
+# adapter's meta channel, EMPTY when it never declared one. `meta_num` is the
+# same read gated to digits, because a `#` numeric field on the record is
+# emitted bare -- an adapter that wrote `completion_tokens=lots` would
+# otherwise put an unquoted word into the JSON and corrupt the line.
+meta_field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1; }
+meta_num() {
+  local v; v=$(meta_field "$1" "$2")
+  # ★ Digits are not enough: JSON has no leading zeros, so `02048` from an
+  # adapter (or from CADRE_OLLAMA_NUM_PREDICT=02048, which jq accepts for the
+  # request) writes a run record no JSON parser will read -- and it is the
+  # record every downstream reader joins on. Canonicalised through base-10
+  # arithmetic, and refused past 18 digits because bash arithmetic is 64-bit
+  # and would silently wrap a longer one into a different number.
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#v}" -le 18 ] || return 0
+  printf '%s' "$((10#$v))"
+}
+
 # record_event <logfile> <name>=<value>...
 #
 # Appends ONE JSON object as ONE line. A name ending in `#` is numeric: it is

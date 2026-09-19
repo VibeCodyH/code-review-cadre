@@ -359,6 +359,67 @@ prose and several reviewers have web access, so a public target can leak its own
 answer no matter how shallow the clone is. Checking it is on you, at the moment
 you pick the target. The answer-key template has a prompt for it.
 
+### Confounds are named before the score
+
+Three things decide a run before the model's skill does, so the report states
+them above the hit rate rather than below it.
+
+**The output cap.** A run the cap cut off is an auto-fail whatever the model
+knew. Two seats that ran under different caps are two measurements, and the
+report says so rather than comparing them: `cadre panel` refuses its
+hit-rate bounds line when caps differ across rows and names the fix, which is
+re-running the larger-cap seat at the smaller cap. Cadre does not replay a
+truncation to match caps for you — token-exact truncation needs the serving
+stack's own tokenizer, and a byte-count guess would be a worse claim than
+declining. An adapter declares the cap with `cadre_cap` and the reported stop
+reason with `cadre_finish`; an adapter that declares neither leaves the cap
+`not recorded`, which is a different statement from "no cap".
+
+**Runs that scored nothing.** Cut off with a partial on disk, and empty from
+the provider, are counted and printed separately. A seat whose rate is carried
+by them has a cap or a provider problem, not a result. A run whose adapter
+reported `finish_reason=length` and still produced a usable review IS scored —
+its findings are real — and is named, because its silence past the cut is not
+clearance.
+
+**The noise floor.** Run *k* over every pass is one sweep of the registered
+set, so the spread between sweeps is the candidate's own run-to-run variance.
+The report prints it as percentage points before the hit rate, `cadre panel`
+takes the largest spread any single row measured against itself as the floor
+for the whole table, and rows within that floor of the top rate are named
+rather than ranked. A candidate graded at one run per pass measured no spread
+and is listed as unmeasured — which is not the same as having no noise, and is
+why a one-run gauntlet cannot support a comparison at all.
+
+Two sweeps are only comparable when they graded the same passes, and equal item
+counts do not prove that: a pass scoring only in slot 1 and another only in
+slot 2 give both slots the same denominator over completely different items.
+That case, and any slot carrying an UNRESOLVED item, make the spread
+unavailable rather than a number — a slot rate is a lower bound once the judges
+have split, so the gap between two bounds is partly the split. A row whose rate
+is a range for the same reason is not placed in the panel grouping at all.
+
+### A regrade never overwrites the grade it replaces
+
+`cadre grade` re-scores reviews already on disk. Every replacement of an
+existing grade appends one line to a `<grade>.regraded.jsonl` ledger beside it:
+the prior item verdicts, the new ones, the keys that moved, and the SHA-256 of
+the two inputs that could have moved them (the answer key, and the harness
+digest that covers the rubric). A regrade that changed nothing is recorded too.
+The report names every moved verdict with its prior value, and the saved table
+carries the ledger beside the grade it describes.
+
+A regrade that comes back UNUSABLE does not write at all. The prior grade stays
+on disk, is NOT scored on that pass, and the run is reported as a grading
+failure with the provider's reply kept. The reason is the failure that already
+happened here in the other direction: a judge outage replacing nine usable
+grades with `{"unusable":true}` destroys a baseline that cost hours of review
+production to produce, to save one cheap call. The sweep exits 5 even if its
+other runs scored, because the refusal took a run that was scored out of the
+denominator, and "re-grade, do not re-review" is exactly the right instruction
+for it. A ledger that cannot be written refuses the swap too, and keeps the
+reply that was not applied beside the grade rather than discarding it.
+
 ## 6. What the report cannot tell you
 
 **Out-of-key findings.** A candidate that reports real bugs your key does not

@@ -590,6 +590,9 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs] [event] [roll]
     model="$(sed -n 's/^model=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
     adapter_note="$(sed -n 's/^note=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
     "adapter_attempts#=$(sed -n 's/^attempts=//p' "$OUT/$sl.md.part.meta" 2>/dev/null | tail -1)" \
+    finish_reason="$(meta_field "$OUT/$sl.md.part.meta" finish)" \
+    "completion_tokens#=$(meta_num "$OUT/$sl.md.part.meta" completion_tokens)" \
+    "output_cap#=$(meta_num "$OUT/$sl.md.part.meta" output_cap)" \
     language="$CHANGE_LANG" "ts#=$(date +%s)"
 }
 

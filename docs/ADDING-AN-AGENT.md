@@ -139,6 +139,23 @@ would be a claim. It lands on `runs.jsonl`, on column 12 of `slots.tsv`, and in
 the report's Receipts table, and `cadre receipts` names any seat that ran under
 more than one model instead of adding those rows together.
 
+**`cadre_finish <reason> [completion_tokens]`** and **`cadre_cap <tokens>`**
+ride the same channel and describe how the run ENDED, which is what separates
+a model that had nothing more to say from one the output cap cut off. Declare
+`length` when the provider says the cap stopped it and `stop` when it ended on
+its own; pass anything else through as the provider spelled it. The token count
+is the provider's own, never a byte estimate. `cadre_cap` is the cap the call
+was dispatched under, taken from the value you actually sent.
+
+Most CLI adapters cannot see either one — a coding CLI reports neither — and
+saying nothing is the correct answer there: the field stays EMPTY, and the
+report prints `not recorded`, which is a true statement where a default would
+be a claim. `agents.d/ollama.sh` is the worked example, because its reply
+carries `done_reason` and `eval_count` directly. What these buy: a scored run
+whose output was cut is named in the report instead of reading as a reviewer
+that found less, and two seats that ran under different caps are refused as a
+comparison instead of being ranked against each other.
+
 The one thing this asks of you: **do not append your own trailing summary to a
 review.** The check is edge-anchored, so a "review complete, 0 issues" footer your
 wrapper adds would satisfy it on behalf of a model that said nothing.

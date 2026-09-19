@@ -2,7 +2,8 @@
 
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
-`tests/review-smoke.sh` or `tests/engine-seam.sh` and run that suite. Anything backed only by a design
+`tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`
+or `tests/cost-first.sh` and run that suite. Anything backed only by a design
 description belongs under non-goals instead — naming what this does NOT
 protect against is half the point of the file.
 
@@ -149,8 +150,82 @@ the older `lib/aggregate.sh` carries `source` there, and `recorded` /
 Tests: "mixed: one row per schema", "mixed: the two secs never merge",
 "mixed: pre-#19 panels still read", "olddata: a source word is never a schema".
 
+**14. A regrade cannot destroy the grade it replaces.** Re-scoring writes to a
+side file, appends the prior verdicts to a `<grade>.regraded.jsonl` ledger
+beside the grade, and only then swaps. A regrade whose judge came back
+UNUSABLE does not swap at all: the prior grade stays on disk, scores nothing
+on that pass, and the run is reported as a grading failure with the provider's
+reply kept. Failing to append the ledger also refuses the swap, keeping the
+unapplied reply beside the grade — a regrade whose prior cannot be kept is the
+overwrite this prevents. A refused regrade exits 5 even when other runs scored,
+because it takes a run that WAS scored out of the table's denominator.
+Tests, in `tests/grading-confounds.sh`: the ledger records an unchanged
+regrade, a moved verdict keeps `before`/`after` and the key and harness
+hashes, an unusable regrade leaves the prior grade intact with
+`kept_prior: true`, an unwritable ledger keeps both the prior and the
+`.unapplied.json` reply, the refused case exits 5 beside a scored run, and
+`cadre run` reusing a grade appends nothing.
+
+**15. A confound is stated before the number it explains.** Output cap, runs
+that scored nothing because they were cut off or came back empty, scored runs
+whose adapter reported the cap was hit, the run-to-run spread, and what a
+regrade moved are all printed above the hit line in the report footer, and
+the noise floor is printed above the panel's rate table. An unrecorded cap
+prints `not recorded` rather than a default, and a spread measured from one
+sweep prints `not measured` rather than 0.
+Tests, in `tests/grading-confounds.sh`: each confound line is asserted to sit
+at a lower line number than `- blocking items hit:`; plus the `not recorded`,
+`mixed`, and `not measured` branches.
+
+**16. Rates from different output caps are not compared.** `cadre panel`
+refuses its observed hit-rate bounds when rows ran under different caps, names
+each row's cap and the fix, and suppresses the within-floor grouping for the
+same reason. A single row whose own runs straddled two caps refuses the
+comparison by itself, and says so in its own sentence rather than borrowing the
+cross-row one, which would be false about it. Cost bounds survive, because a
+per-row spend receipt is not a comparison between rows.
+Tests, in `tests/cost-first.sh`: "Output caps differ across rows", the refused
+bounds line, no within-floor line while caps differ, the internally-mixed row
+refusing alone once the other rows agree, and the comparison returning when
+every row is on one cap.
+
+**17. A rate difference smaller than the measured noise is not a ranking.**
+The floor is the largest run-to-run spread any single row showed against its
+own runs; rows within that floor of the top rate are named as indistinguishable
+rather than ordered. A table where no row ran a pass twice prints
+`Noise floor: NOT MEASURED` and no row is described as better than another. A
+row whose rate is an UNRESOLVED range is not placed against an exact one at
+all: comparing its low bound would call an exact row "top" over a row that may
+in fact be the highest. In the report, a spread is refused outright when the
+run slots did not grade the same passes, or when any slot carries an
+UNRESOLVED item, because a slot rate is then a lower bound rather than a rate.
+Tests, in `tests/cost-first.sh`: the unmeasured branch, the largest spread
+winning over the first read, the named set shrinking as the floor drops, and
+an unresolved row listed as not placed. In `tests/grading-confounds.sh`: two
+slots with equal denominators over different passes, and an unresolved slot.
+
 ## Non-goals, named
 
+- **Cap-matching is refused, not performed.** When two seats ran under
+  different output caps the harness says the comparison is unavailable; it
+  does not truncate the larger-cap run token-exactly and re-score it. That
+  replay needs the serving stack's own tokenizer, which cadre does not have
+  for a CLI seat, and a byte-count approximation would be a worse claim than
+  declining to compare.
+- **One noisy row sets the floor for the whole table.** The panel floor is a
+  maximum, not a per-pair figure, so a single seat that disagrees with itself
+  raises the bar every other row is read against and can bury a real
+  difference between two steady seats. The direction is deliberate — calling a
+  real difference noise costs you a seat, calling noise a difference staffs the
+  wrong one — but it is a choice, not a measurement.
+- **The noise floor is a spread, not a confidence interval.** It is computed
+  from however many run slots a gauntlet happened to produce, usually two.
+  It bounds what a delta has to clear to be worth reading; it does not give
+  the delta a p-value, and two runs cannot.
+- **The regrade ledger is provenance, not tamper-proofing.** It is a local
+  append-only file with no signature. It makes a changed grade visible instead
+  of silent; it cannot stop anyone editing it, the same scope #37 names for
+  the harness hashes it records.
 - **The preflight reads filenames, plus content for exactly four config
   files. A key in a source file passes.** An AWS key hardcoded in
   `src/config.js` is an ordinary tracked filename; it rides into a checkout
