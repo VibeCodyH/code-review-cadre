@@ -2368,6 +2368,213 @@ check "olddata: the schema reads unknown"     "awk '\$1 == \"openai\" && \$13 ==
 check "olddata: a source word is never a schema" "! awk '\$13 == \"recorded\" || \$13 == \"reconstructed\" { f=1 } END { exit !f }' <<<\"\$OUT\""
 check "olddata: both rows still counted"      "awk '\$1 == \"openai\" && \$3 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
 
+echo "== ★ seat health ledger =="
+# ★ #76. `cadre receipts` reads the record forward, into spend by family. This
+# reads it BACK, as a verdict on one seat across the panels it sat in, which is
+# a question nothing in cadre could answer before.
+#
+# Every case below is a way the rate can lie. The two that matter most:
+# a SKIPPED panel is not a failure (the seat never ran), and fewer than three
+# panels is not a clean bill (one bad panel out of two is 50% and means nothing).
+SD=$(case_dir seats)
+ev() {  # ev <file> <panel-or-pass> <seat> <state> <secs> <ts> [event] [run]
+  local f="$1" unit="$2" seat="$3" st="$4" secs="$5" ts="$6" evn="${7:-complete}" run="${8:-}"
+  mkdir -p "$(dirname "$f")"
+  if [ -n "$run" ]; then
+    printf '{"event":"%s","pass":"%s","run":%s,"seat":"%s","family":"acme","slug":"%s","state":"%s","secs":%s,"ts":%s}\n' \
+      "$evn" "$unit" "$run" "$seat" "$seat" "$st" "${secs:-null}" "$ts" >> "$f"
+  else
+    printf '{"event":"%s","panel":"%s","seat":"%s","family":"acme","slug":"%s","state":"%s","secs":%s,"ts":%s}\n' \
+      "$evn" "$unit" "$seat" "$seat" "$st" "${secs:-null}" "$ts" >> "$f"
+  fi
+}
+SR="$SD/state/reviews"
+
+# flaky: 2 ok of 3. steady: 3 ok of 3, fast. Both get a real verdict at n=3.
+for i in 1 2 3; do
+  ev "$SR/p$i/runs.jsonl" "p$i" steady ok 10 "$((1000 + i))"
+done
+ev "$SR/p1/runs.jsonl" p1 flaky ok     10 1001
+ev "$SR/p2/runs.jsonl" p2 flaky failed 4  1002
+ev "$SR/p3/runs.jsonl" p3 flaky ok     10 1003
+OUT=$(run_cadre "$SD" seats "$SR")
+check "seats: a healthy seat reads ok"   "awk '\$1 == \"steady\" && \$3 == 3 && \$12 == \"ok\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: 2 of 3 is UNRELIABLE"      "awk '\$1 == \"flaky\" && \$12 == \"UNRELIABLE\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the failure is not hidden" "awk '\$1 == \"flaky\" && \$7 == 1 && \$4 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: worst seat sorts first"    "[ \"\$(awk 'NR == 2 { print \$1 }' <<<\"\$OUT\")\" = flaky ]"
+check "seats: the thresholds are stated" "grep -q 'ok on under 80% of the panels it ran in' <<<\"\$OUT\""
+
+# ★ THE one that must never regress. A gated seat or one whose usage window was
+# closed (#61) never ran. Counting an absence against it is the same
+# silence-read-as-dissent error the synthesis denominators exist to prevent:
+# 3 ok + 2 skipped is 100%, not 60%, and it is not UNRELIABLE.
+SK="$SD/skipstate/reviews"
+for i in 1 2 3; do ev "$SK/p$i/runs.jsonl" "p$i" gated ok 10 "$((2000 + i))"; done
+ev "$SK/p4/runs.jsonl" p4 gated skipped "" 2004
+ev "$SK/p5/runs.jsonl" p5 gated skipped "" 2005
+OUT=$(run_cadre "$SD" seats --all "$SK")
+check "seats: skip is not in the numerator"   "awk '\$1 == \"gated\" && \$9 == \"100%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: skip is not in the denominator" "awk '\$1 == \"gated\" && \$3 == 5 && \$4 == 3 && \$8 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: a skipped seat is not UNRELIABLE" "! awk '\$12 == \"UNRELIABLE\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the exclusion is said out loud" "grep -q 'skipped panel(s) are in SKIP and in no rate' <<<\"\$OUT\""
+# Every panel skipped it: NEVER RAN, which is not the same fact as 0% and must
+# not read as one.
+ev "$SK/p1/runs.jsonl" p1 shelved skipped "" 2001
+ev "$SK/p2/runs.jsonl" p2 shelved skipped "" 2002
+ev "$SK/p3/runs.jsonl" p3 shelved skipped "" 2003
+OUT=$(run_cadre "$SD" seats --all "$SK")
+check "seats: never-ran is its own state" "awk '\$1 == \"shelved\" && \$0 ~ /NEVER RAN/ { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: never-ran has no rate"      "awk '\$1 == \"shelved\" && \$9 == \"-\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# ★ Under three panels there is no verdict, and the health column must SAY so.
+# A blank there would be read as health -- the same false-green shape as a
+# reviewer that produced nothing being counted as a clean review.
+TN="$SD/thin/reviews"
+ev "$TN/p1/runs.jsonl" p1 newbie failed 3 3001
+ev "$TN/p2/runs.jsonl" p2 newbie failed 3 3002
+OUT=$(run_cadre "$SD" seats "$TN")
+check "seats: 2 panels is not a verdict"  "awk '\$1 == \"newbie\" && \$0 ~ /NOT ENOUGH DATA, 2 panels/ { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: 0% alone is not UNRELIABLE" "! awk '\$12 == \"UNRELIABLE\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the no-verdict case prints" "grep -q 'nothing here is a verdict' <<<\"\$OUT\""
+
+# TOO SLOW is about the panels it SUCCEEDED in: a fast failure must not pull the
+# mean down and clear a slow seat, and an unmeasured secs must stay out of it
+# rather than enter as a zero.
+SL="$SD/slow/reviews"
+ev "$SL/p1/runs.jsonl" p1 plodder ok     300 4001
+ev "$SL/p2/runs.jsonl" p2 plodder ok     300 4002
+ev "$SL/p3/runs.jsonl" p3 plodder ok     300 4003
+ev "$SL/p4/runs.jsonl" p4 plodder failed 1   4004
+ev "$SL/p1/runs.jsonl" p1 untimed ok     ""  4001
+ev "$SL/p2/runs.jsonl" p2 untimed ok     ""  4002
+ev "$SL/p3/runs.jsonl" p3 untimed ok     ""  4003
+OUT=$(run_cadre "$SD" seats --all "$SL")
+check "seats: a slow seat is TOO SLOW"     "awk '\$1 == \"plodder\" && \$0 ~ /TOO SLOW/ { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the mean skips the failure"  "awk '\$1 == \"plodder\" && \$10 == 300 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: unmeasured secs is not zero" "awk '\$1 == \"untimed\" && \$10 == \"?\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: an untimed seat is not slow" "! awk '\$1 == \"untimed\" && \$0 ~ /TOO SLOW/ { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: slow reads the cause line"   "grep -q 'read the cause before swapping' <<<\"\$OUT\""
+
+# ★ A ROLL (#47) is a part of a seat, not a seat. It emits roll_complete for
+# exactly that reason, and counting rolls here would let a seat repeated x3
+# outvote one that ran once.
+RL="$SD/rolls/reviews"
+ev "$RL/p1/runs.jsonl" p1 repeater ok         10 5001
+ev "$RL/p1/runs.jsonl" p1 repeater failed     10 5001 roll_complete
+ev "$RL/p1/runs.jsonl" p1 repeater failed     10 5001 roll_complete
+OUT=$(run_cadre "$SD" seats --all "$RL")
+check "seats: rolls are not panels" "awk '\$1 == \"repeater\" && \$3 == 1 && \$4 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# A graded pass names itself `pass` + `run` and carries no `panel`. Run 2 is a
+# second observation of the seat, not a second row about the first.
+PS="$SD/passes/wow-x"
+ev "$PS/runs.jsonl" wow-x candidate ok     10 6001 complete 1
+ev "$PS/runs.jsonl" wow-x candidate failed 10 6002 complete 2
+OUT=$(run_cadre "$SD" seats --all "$SD/passes")
+check "seats: pass runs are separate panels" "awk '\$1 == \"candidate\" && \$3 == 2 && \$4 == 1 && \$7 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# --force re-measures a label and appends a SECOND completion for the same seat
+# in the same panel. That is one panel seen twice; the later row stands.
+DU="$SD/dupe/reviews"
+ev "$DU/p1/runs.jsonl" p1 remeasured failed 5  7001
+ev "$DU/p1/runs.jsonl" p1 remeasured ok     11 7002
+OUT=$(run_cadre "$SD" seats --all "$DU")
+check "seats: a re-measured panel is one panel" "awk '\$1 == \"remeasured\" && \$3 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the later row stands"             "awk '\$1 == \"remeasured\" && \$4 == 1 && \$7 == 0 { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# --last reads the RECENT window, ordered by ts. A seat that was broken and is
+# fixed must be able to stop reading UNRELIABLE.
+WN="$SD/window/reviews"
+ev "$WN/p1/runs.jsonl" p1 recovered failed 5 8001
+ev "$WN/p2/runs.jsonl" p2 recovered failed 5 8002
+ev "$WN/p3/runs.jsonl" p3 recovered ok     5 8003
+ev "$WN/p4/runs.jsonl" p4 recovered ok     5 8004
+ev "$WN/p5/runs.jsonl" p5 recovered ok     5 8005
+OUT=$(run_cadre "$SD" seats --all "$WN")
+check "seats: the whole record still reads UNRELIABLE" "awk '\$1 == \"recovered\" && \$0 ~ /UNRELIABLE/ { f=1 } END { exit !f }' <<<\"\$OUT\""
+OUT=$(run_cadre "$SD" seats --last 3 "$WN")
+check "seats: --last drops the old panels"  "awk '\$1 == \"recovered\" && \$3 == 3 && \$9 == \"100%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: --last names its window"      "grep -q \"each seat's 3 most recent panels\" <<<\"\$OUT\""
+check "seats: --all names its window"       "run_cadre '$SD' seats --all '$WN' | grep -q 'every panel on disk, per seat'"
+
+# ★ An unrecognised state is counted AGAINST the seat and NAMED. Binning it
+# silently is how a state added upstream would read as a healthy seat for
+# however long nobody noticed. The mutation this test survives: delete the
+# `unknown[...]` line and the footer disappears.
+UK="$SD/unknown/reviews"
+ev "$UK/p1/runs.jsonl" p1 future ok       10 9001
+ev "$UK/p2/runs.jsonl" p2 future ok       10 9002
+ev "$UK/p3/runs.jsonl" p3 future quarantined 10 9003
+OUT=$(run_cadre "$SD" seats --all "$UK")
+check "seats: an unknown state is named"    "grep -q 'Unrecognised state(s) counted against the seat: quarantined' <<<\"\$OUT\""
+check "seats: an unknown state costs the seat" "awk '\$1 == \"future\" && \$7 == 1 && \$9 == \"67%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# Operator errors are refusals, not empty tables.
+OUT=$(run_cadre "$SD" seats "$SD/nope" 2>&1); RC=$?
+check "seats: a missing dir is refused"  "[ '$RC' -ne 0 ] && grep -q 'not a directory' <<<\"\$OUT\""
+mkdir -p "$SD/bare"
+OUT=$(run_cadre "$SD" seats "$SD/bare" 2>&1); RC=$?
+check "seats: no record is refused"      "[ '$RC' -ne 0 ] && grep -q 'no runs.jsonl found' <<<\"\$OUT\""
+OUT=$(run_cadre "$SD" seats --last 0 "$WN" 2>&1); RC=$?
+check "seats: --last 0 is refused"       "[ '$RC' -ne 0 ]"
+
+# ---- the three a Codex review reproduced, 2026-09-18 ------------------------
+#
+# ★ A directory whose name contains a literal backslash-t. `awk -v x=VALUE`
+# interprets escapes in VALUE, so prefixing rows with the log PATH injected a real
+# tab, shifted every field, and dropped the whole file -- an EMPTY table, exit 0,
+# beside a seat that demonstrably ran. The log is keyed by an index now.
+BS="$SD/rev\test/reviews"
+ev "$BS/p1/runs.jsonl" p1 escaped ok 10 9101
+OUT=$(run_cadre "$SD" seats --all "$BS")
+check "seats: a backslash in the path keeps the row" "awk '\$1 == \"escaped\" && \$3 == 1 && \$4 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# ★ `sort -u` dedupes SPELLINGS, not files. Two spellings of one directory
+# counted every panel twice, which is not a cosmetic double: it turned two panels
+# of a seat (NOT ENOUGH DATA) into four (a confident UNRELIABLE).
+AL="$SD/alias/reviews"
+ev "$AL/p1/runs.jsonl" p1 aliased ok     10 9201
+ev "$AL/p2/runs.jsonl" p2 aliased failed 10 9202
+OUT=$(run_cadre "$SD" seats --all "$AL" "$AL/.")
+check "seats: two spellings are one directory" "awk '\$1 == \"aliased\" && \$3 == 2 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: an alias cannot manufacture a verdict" "! awk '\$12 == \"UNRELIABLE\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# ★ A panel is described by ONE row. p1 failed at 9301 and was re-measured ok at
+# 9101; p2 failed at 9200, BETWEEN the two. Under the max rule p1 keeps 9301 off
+# its superseded row and outranks p2, so --last 1 reads p1 -- whose state is now
+# ok -- and reports 100% for a seat whose most recent panel failed. Under the
+# rule that stands, p1 is 9101, p2 is later, and the answer is 0%.
+# ★ The first version of this fixture put p2 at 9302, which wins under BOTH
+# rules. It passed, and reverting the fix left it passing. Found by mutation,
+# not by reading it.
+TS="$SD/clock/reviews"
+ev "$TS/p1/runs.jsonl" p1 rewound failed 5 9301
+ev "$TS/p1/runs.jsonl" p1 rewound ok     5 9101
+ev "$TS/p2/runs.jsonl" p2 rewound failed 5 9200
+OUT=$(run_cadre "$SD" seats --last 1 "$TS")
+check "seats: --last follows the row that stands" "awk '\$1 == \"rewound\" && \$3 == 1 && \$9 == \"0%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
+# Panels sharing a timestamp must not reorder between runs. Deterministic is the
+# claim; WHICH one wins is not, and nothing should depend on it.
+TIE="$SD/tie/reviews"
+ev "$TIE/p1/runs.jsonl" p1 tied ok     5 9400
+ev "$TIE/p2/runs.jsonl" p2 tied failed 5 9400
+O1=$(run_cadre "$SD" seats --last 1 "$TIE"); O2=$(run_cadre "$SD" seats --last 1 "$TIE")
+check "seats: a ts tie is stable across runs" "[ \"\$O1\" = \"\$O2\" ]"
+
+# ★ A PARKED run is not a second panel. `cadre review` reclaims a label whose
+# holder died and renames the dead directory to `<label>.stale.<epoch>.<pid>`,
+# runs.jsonl and all -- so the archive and its replacement are two directories
+# describing ONE panel. Discovering both counted it twice, which is the alias
+# double again, arriving through a rename instead of a spelling. Verified
+# against the real park name built at cmd_review's `$out.stale.$(date +%s).$$`.
+PK="$SD/parked/reviews"
+ev "$PK/lbl/runs.jsonl" lbl parked ok 10 9501
+ev "$PK/lbl.stale.1700000000.4242/runs.jsonl" lbl parked failed 3 9401
+OUT=$(run_cadre "$SD" seats --all "$PK")
+check "seats: a parked archive is not a panel" "awk '\$1 == \"parked\" && \$3 == 1 && \$4 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the live panel is the one read"  "awk '\$1 == \"parked\" && \$9 == \"100%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
 # findings the human already dismissed, because the reviewers have no memory.

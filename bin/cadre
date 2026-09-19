@@ -115,6 +115,14 @@ then run that panel on the code you are about to ship.
                                         settled. Exits 0 when nothing is new.
   cadre receipts [dir ...]              total harness-side spend by family;
                                         defaults to $CADRE_HOME/reviews
+  cadre seats [--last N|--all] [dir ...]
+                                        per-seat health read back out of the run
+                                        record: UNRELIABLE (ok under 80% of the
+                                        panels it ran in) and TOO SLOW (over 120s
+                                        mean when it succeeds) are separate, and a
+                                        skipped panel counts as neither. Defaults
+                                        to $CADRE_HOME/reviews and the 5 most
+                                        recent panels per seat.
 
 <agent-spec> is anything agentcall takes: "codex", or "opencode:vendor/model".
 
@@ -1509,6 +1517,229 @@ cmd_receipts() {
   fi
 }
 
+# Read runs.jsonl back as a verdict on the SEAT (#76). `cadre receipts` answers
+# "which family ate the pool"; this answers "which seat should I swap". Nothing
+# in cadre asked that question before: the record held state and secs per seat
+# per panel and only ever got read forward, into one panel's own report.
+#
+# Two failure modes, deliberately not one score, because they send you to
+# different places:
+#   UNRELIABLE  ok on fewer than 80% of the panels it actually ran in. Swap it.
+#   TOO SLOW    over 120s mean on the panels it succeeded in. A panel is only as
+#               fast as its slowest seat, and this is usually a reasoning-effort
+#               setting rather than a bad model, so the line says read the cause
+#               before swapping.
+#
+# ★ `skipped` is NOT a failure and is excluded from BOTH sides of the rate. A
+# roster gate or a closed usage window (#61) means the seat never ran, and
+# counting that against it is the same absence-read-as-dissent error the
+# synthesis denominators exist to prevent. Skips get their own column instead.
+#
+# ★ Under three panels a seat gets NOT ENOUGH DATA, never a clean bill. One bad
+# panel out of two is 50% and means nothing, and a blank health column would be
+# read as health. Same rule as a graded pass: silence is not clearance.
+#
+# ★ `failed` and `inconclusive` stay apart here for the reason classify_run
+# keeps them apart -- the CLI broke, or the model would not hold the contract.
+# Both cost you a seat; only one of them is fixed in the adapter.
+cmd_seats() {
+  local roots=() d f last=5 tab=$'\t' rows raw logs=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --last)
+        last="${2:?--last needs a count}"
+        case "$last" in ''|*[!0-9]*) die "seats: --last takes a whole number of panels" ;; esac
+        [ "$last" -ge 1 ] || die "seats: --last must be at least 1"
+        shift 2 ;;
+      --all) last=0; shift ;;
+      -h|--help)
+        echo "usage: cadre seats [--last N | --all] [dir ...]"
+        echo "  Per-seat health over the panels on disk. Defaults to \$CADRE_HOME/reviews"
+        echo "  and to each seat's 5 most recent panels."
+        return 0 ;;
+      -*) die "seats: unknown option $1" ;;
+      *)  roots+=("$1"); shift ;;
+    esac
+  done
+  [ "${#roots[@]}" -gt 0 ] || roots=("$CADRE_HOME/reviews")
+  for d in "${roots[@]}"; do [ -d "$d" ] || die "seats: not a directory: $d"; done
+
+  # ★ Canonicalised BEFORE the dedupe, because `sort -u` compares spellings, not
+  # files. `cadre seats reviews ./reviews` otherwise finds every panel twice and
+  # the double is not cosmetic: it doubles PANELS, so two panels of a seat that
+  # should read NOT ENOUGH DATA read as a confident UNRELIABLE off four. A
+  # symlinked root aliases the same way.
+  # ★ A parked run is PRUNED, not counted. `cadre review` reclaims a label
+  # whose holder died and parks the dead directory as `<label>.stale.<epoch>.<pid>`
+  # (see cmd_review), runs.jsonl and all. That archive and its replacement are
+  # two directories describing ONE panel, so discovering both counts the panel
+  # twice -- the same shape as the alias double, arriving through a rename
+  # instead of through a spelling.
+  while IFS= read -r f; do logs+=("$f"); done \
+    < <(find "${roots[@]}" \
+          \( -type d -name '*.stale.*' -prune \) -o \
+          \( -type f -name runs.jsonl -print \) \
+        | while IFS= read -r f; do readlink -f -- "$f" || printf '%s\n' "$f"; done \
+        | sort -u)
+  [ "${#logs[@]}" -gt 0 ] || die "seats: no runs.jsonl found under ${roots[*]}"
+
+  # ★ record_rows, not a second JSON reader. It is cadre's own parser for cadre's
+  # own flat schema and it already returns EMPTY (never 0, never "null") for a
+  # field a record does not carry -- which is exactly how a pass row, which has
+  # `pass`/`run` and no `panel`, and a `skipped` row, whose `secs` is null, have
+  # to arrive here.
+  #
+  # ★ `complete` only. A roll (#47) emits roll_complete precisely so that one
+  # seat is one completion for every reader of this file; counting rolls here
+  # would let a seat repeated x3 outvote a seat that ran once.
+  # ★ The log is identified by an INDEX, never by its path. `awk -v x=VALUE`
+  # interprets escape sequences in VALUE, so a directory named `rev\test` arrives
+  # carrying a real tab, shifts every field of every row out of that file, and the
+  # whole log drops out of the table -- silently, exit 0, an empty table beside a
+  # seat that demonstrably ran. The index only has to be unique per log, and the
+  # canonical paths above are what make it so.
+  local i=0
+  raw=$(for f in "${logs[@]}"; do
+          i=$((i + 1))
+          record_rows "$f" complete panel pass run seat family state secs ts \
+            | awk -v FS="$tab" -v OFS="$tab" -v n="$i" '{ print n, $0 }'
+        done)
+  [ -n "$raw" ] || die "seats: no completed seats recorded under ${roots[*]}"
+
+  rows=$(printf '%s\n' "$raw" | awk -v FS="$tab" -v last="$last" -v now="$(date +%s)" '
+    $5 == "" { next }
+    {
+      seat = $5
+      # A panel identifies itself; a graded pass does not, so it is the label
+      # plus the run index -- run 2 of a pass is a second observation of the
+      # seat, not a second row about the first. The log PATH is part of the key
+      # so two roots holding a panel of the same name never merge.
+      unit = $1 SUBSEP ($2 != "" ? $2 : $3 "#" $4)
+      key  = seat SUBSEP unit
+      # ★ Units, not rows. A label re-measured with --force appends a second
+      # completion for the same seat in the same panel; that is one panel seen
+      # twice, and the later row is the one that stands.
+      # ★ The increment is its own statement. `seat SUBSEP ++ucount[seat]` inside
+      # a subscript is the classic awk concatenation ambiguity -- it parses as an
+      # ADDITION, so the counter is read (creating the key) and never incremented,
+      # and every seat then reports 0 panels with a populated FAMILY beside it.
+      if (!(key in seen)) {
+        seen[key] = 1
+        ucount[seat]++
+        ulist[seat SUBSEP ucount[seat]] = key
+      }
+      state[key] = $7; secs[key] = $8
+      if ($6 != "") fam[seat] = $6
+      # ★ LAST wins, not MAX, for the same reason state and secs do. A --force
+      # re-measure appends a second completion for one panel, and one panel has to
+      # be described by ONE row throughout. Taking the newest ts while taking the
+      # last state mixes two rows into one unit, and after a clock correction that
+      # walks backwards it hands --last the wrong panel: the superseded row keeps
+      # the high timestamp and outranks a genuinely later one.
+      if ($9 ~ /^[0-9]+$/) uts[key] = $9 + 0
+    }
+    END {
+      for (s in ucount) {
+        n = ucount[s]
+        split("", ord)
+        for (i = 1; i <= n; i++) ord[i] = ulist[s SUBSEP i]
+        # Newest first, so --last reads the RECENT window. Insertion sort: n is
+        # the number of panels one seat appears in, not the corpus.
+        for (i = 2; i <= n; i++) {
+          v = ord[i]; j = i - 1
+          while (j >= 1 && uts[ord[j]] < uts[v]) { ord[j + 1] = ord[j]; j-- }
+          ord[j + 1] = v
+        }
+        keep = (last > 0 && last < n) ? last : n
+        ok = 0; deg = 0; inc = 0; fail = 0; skip = 0; sumsecs = 0; nsecs = 0; newest = 0
+        for (i = 1; i <= keep; i++) {
+          k = ord[i]; st = state[k]
+          if (uts[k] > newest) newest = uts[k]
+          if (st == "ok") {
+            ok++
+            # An unmeasured secs stays out of the mean rather than entering it
+            # as a zero, which would drag a slow seat under the threshold.
+            if (secs[k] ~ /^[0-9]+$/) { sumsecs += secs[k]; nsecs++ }
+          }
+          else if (st == "degraded")     deg++
+          else if (st == "inconclusive") inc++
+          else if (st == "skipped")      skip++
+          else if (st == "failed")       fail++
+          # ★ An unrecognised state is counted against the seat AND named in the
+          # footer. Binning it silently is how a new state added upstream would
+          # read as a healthy seat for however long nobody noticed.
+          else { fail++; unknown[st == "" ? "(empty)" : st] = 1 }
+        }
+        ran = ok + deg + inc + fail
+        rate = ran > 0 ? (ok * 100.0) / ran : -1
+        mean = nsecs > 0 ? sumsecs / nsecs : -1
+        h = ""
+        if (ran == 0)        { h = "NEVER RAN, every panel skipped it"; rank = 4 }
+        else if (ran < 3)    { h = "NOT ENOUGH DATA, " ran " panel" (ran == 1 ? "" : "s"); rank = 3 }
+        else {
+          if (rate < 80)                 { h = "UNRELIABLE"; rank = 0 }
+          if (mean >= 0 && mean > 120)   { h = h (h == "" ? "" : " + ") "TOO SLOW"; if (h == "TOO SLOW") rank = 1 }
+          if (h == "")                   { h = "ok"; rank = 2 }
+        }
+        # ★ The sort key is an INTEGER (tenths of a percent), not the %.1f it
+        # used to be. Both printf here and `sort -n` outside read the decimal
+        # separator from the locale, so under a comma locale the key prints 66,7
+        # and sorts as 66 -- a silent reordering of the column read first.
+        # Precautionary: no comma locale is installed here to measure it on.
+        printf "R\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n", \
+          rank, (rate < 0 ? 9990 : int(rate * 10 + 0.5)), s, (fam[s] == "" ? "?" : fam[s]), \
+          keep, ok, deg, inc, fail, skip, \
+          (rate < 0 ? "-" : sprintf("%.0f%%", rate)), \
+          (mean < 0 ? "?" : sprintf("%.0f", mean)), \
+          (newest > 0 ? sprintf("%dd", int((now - newest) / 86400)) : "?"), h
+        total_skip += skip
+        if (ran >= 3) scored++
+      }
+      printf "K\t%d\n", total_skip + 0
+      printf "C\t%d\n", scored + 0
+      for (u in unknown) printf "U\t%s\n", u
+    }
+  ')
+
+  printf '%-30s %-10s %6s %4s %5s %7s %6s %5s %6s %7s %5s  %s\n' \
+    SEAT FAMILY PANELS OK DEGR INCONCL FAILED SKIP OK_RATE MEAN_SEC LAST HEALTH
+  printf '%s\n' "$rows" | awk -v FS="$tab" '$1 == "R"' \
+    | sort -t "$tab" -k2,2n -k3,3n -k4,4 \
+    | awk -v FS="$tab" '{
+        printf "%-30s %-10s %6d %4d %5d %7d %6d %5d %6s %7s %5s  %s\n", \
+          $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+      }'
+
+  local total_skip scored unknown_list
+  total_skip=$(printf '%s\n' "$rows" | awk -v FS="$tab" '$1 == "K" { print $2 }')
+  scored=$(printf '%s\n' "$rows"     | awk -v FS="$tab" '$1 == "C" { print $2 }')
+  unknown_list=$(printf '%s\n' "$rows" | awk -v FS="$tab" '$1 == "U" { print $2 }' \
+    | sort -u | paste -sd, - | sed 's/,/, /g')
+
+  echo
+  if [ "$last" -eq 0 ]; then
+    echo "Window: every panel on disk, per seat. PANELS is how many that was."
+  else
+    echo "Window: each seat's $last most recent panels. PANELS is how many it was actually in."
+  fi
+  echo "UNRELIABLE is ok on under 80% of the panels it ran in. TOO SLOW is over 120s mean"
+  echo "on the ones it succeeded in -- read the cause before swapping, it is usually a"
+  echo "reasoning-effort setting and not a bad model."
+  # ★ Printed on BOTH branches, the receipts rule: an absent warning cannot be
+  # told apart from a check that never ran.
+  if [ "${scored:-0}" -eq 0 ]; then
+    echo "No seat has three panels in this window yet, so nothing here is a verdict."
+  fi
+  if [ "${total_skip:-0}" -gt 0 ]; then
+    echo "$total_skip skipped panel(s) are in SKIP and in no rate: a gated seat or one whose"
+    echo "usage window was closed never ran, and an absence is not a failure."
+  fi
+  if [ -n "$unknown_list" ]; then
+    echo "Unrecognised state(s) counted against the seat: $unknown_list. A reader older than"
+    echo "the record is the likely cause; check lib/common.sh classify_run before trusting the rates."
+  fi
+}
+
 # Exits non-zero when a pass is broken. README and docs both say doctor FAILS a
 # pass whose key sits inside the checkout, so it has to actually fail.
 # ★ Prints and exits. It never writes your opencode config and never touches a
@@ -1784,6 +2015,7 @@ case "${1:-}" in
   ledger)    shift; cmd_ledger "$@" ;;
   settle)    shift; cmd_settle "$@" ;;
   receipts)  shift; cmd_receipts "$@" ;;
+  seats)     shift; cmd_seats "$@" ;;
   dataset)   shift; init_home; "$CADRE_ROOT/lib/aggregate.sh" "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "cadre: unknown command '$1'" >&2; echo; usage; exit 2 ;;

@@ -13,6 +13,30 @@ naming what we did not invent.
   [withmartian/code-review-benchmark](https://github.com/withmartian/code-review-benchmark)
   already tracks CodeRabbit, Copilot, Claude, Cursor, Codex, Gemini, Greptile,
   Qodo and others on a shared corpus.
+- **Repository-level ACR benchmarking, scored semantically and by line.**
+  [alibaba/aacr-bench](https://github.com/alibaba/aacr-bench) (Apache-2.0,
+  [arXiv:2601.19494](https://arxiv.org/abs/2601.19494), 14 authors) is the
+  closest published work to this one on the metric side, closer than
+  withmartian. Its README calls it *"the industry's first multilingual,
+  repository-level context-aware code review evaluation dataset"*: 200 real
+  pull requests, 50 projects, 10 languages, annotated AI-assisted and
+  expert-verified. It ships a pluggable reviewer layer
+  (`evaluation/reviewers/{claude,codex,ocr}.py`), an LLM judge and run pipeline
+  (`judge.py`, `pipeline.py`, `evaluate.py`), MCP servers that collect reviewer
+  findings, and per-reviewer token and wall-clock instrumentation with the
+  cross-vendor accounting written down. Semantic and line-level matching each
+  get their own precision, recall and F1, and the two NEST rather than stand
+  side by side: `evaluation/judge.py` filters every candidate
+  `path -> side -> line(k) -> semantic` and drops it the moment a stage fails,
+  so a finding at the wrong line can never reach semantic F1. Coverage
+  and line-position validity are the same two axes this repo opened its own
+  metric work on, and convergence from a 14-author paper is support for the
+  axis. It is not support for anyone's numbers, theirs or ours. The related
+  *"~1/9 of the tokens"* claim made by
+  [alibaba/open-code-review](https://github.com/alibaba/open-code-review) has
+  no published run record behind it, but their harness does instrument tokens,
+  so it is checkable by rerunning rather than unfalsifiable. Do not repeat it
+  as measured, and do not call it unmeasurable either.
 - **Headless multi-CLI wrappers.**
   [RobertTLange/headless-cli](https://github.com/RobertTLange/headless-cli).
   `bin/agentcall` started from its read-only recipes for a couple of the CLIs.
@@ -56,8 +80,8 @@ naming what we did not invent.
 
 ## What is actually different here
 
-Sourced from the closest competitor's own stated limitations, not from our
-opinion about it.
+Items 1-4 are sourced from the closest competitor's own stated limitations,
+not from our opinion about it. Item 5 is sourced from trying to do it their way.
 
 1. **BYO-repo.** withmartian is *"not a tool you apply to private repos… you can
    add new tools, but not evaluate against your own proprietary codebases."*
@@ -78,6 +102,21 @@ opinion about it.
 
 4. **Decorrelation is the objective.** Not "which reviewer scores highest" but
    "which reviewer fails on different items than the ones I already run."
+
+5. **The seat under test can be a subscription.** AACR-Bench drives every
+   reviewer through an API-metered environment contract:
+   `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` for Claude Code,
+   `CODEX_API_KEY` for Codex, `OCR_LLM_URL` / `OCR_LLM_TOKEN` for
+   OpenCodeReview. There is no path for a seat you already pay a flat rate
+   for, so scoring the tools a developer uses every day means paying a second
+   time, per token, for capability already owned. `bin/agentcall` drives the
+   CLI as you actually run it, on the plan you already have. Learned by
+   setting their harness up rather than by reading it: the environment
+   contract is visible in the source, what it costs to work around is not.
+   The smallest diff in a 15-instance pilot, four changed lines, cost about
+   $3.78 on a Claude arm that timed out at eleven minutes and produced no
+   findings, because the agent re-explores the repository per instance and
+   diff size does not bound spend.
 
 None of these are algorithmic novelties. They are a different question asked of
 the same machinery.
