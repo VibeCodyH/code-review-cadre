@@ -24,10 +24,11 @@ naming what we did not invent.
   (`evaluation/reviewers/{claude,codex,ocr}.py`), an LLM judge and run pipeline
   (`judge.py`, `pipeline.py`, `evaluate.py`), MCP servers that collect reviewer
   findings, and per-reviewer token and wall-clock instrumentation with the
-  cross-vendor accounting written down. The metrics are two independent axes,
-  semantic and line-level, each with its own precision, recall and F1:
-  `evaluate.py` carries `semantic_match` and `line_match` as separate booleans
-  per comment and reports `semantic_f1` and `line_f1` side by side. Coverage
+  cross-vendor accounting written down. Semantic and line-level matching each
+  get their own precision, recall and F1, and the two NEST rather than stand
+  side by side: `evaluation/judge.py` filters every candidate
+  `path -> side -> line(k) -> semantic` and drops it the moment a stage fails,
+  so a finding at the wrong line can never reach semantic F1. Coverage
   and line-position validity are the same two axes this repo opened its own
   metric work on, and convergence from a 14-author paper is support for the
   axis. It is not support for anyone's numbers, theirs or ours. The related

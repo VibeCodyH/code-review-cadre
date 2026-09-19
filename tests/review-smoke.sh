@@ -2562,6 +2562,19 @@ ev "$TIE/p2/runs.jsonl" p2 tied failed 5 9400
 O1=$(run_cadre "$SD" seats --last 1 "$TIE"); O2=$(run_cadre "$SD" seats --last 1 "$TIE")
 check "seats: a ts tie is stable across runs" "[ \"\$O1\" = \"\$O2\" ]"
 
+# ★ A PARKED run is not a second panel. `cadre review` reclaims a label whose
+# holder died and renames the dead directory to `<label>.stale.<epoch>.<pid>`,
+# runs.jsonl and all -- so the archive and its replacement are two directories
+# describing ONE panel. Discovering both counted it twice, which is the alias
+# double again, arriving through a rename instead of a spelling. Verified
+# against the real park name built at cmd_review's `$out.stale.$(date +%s).$$`.
+PK="$SD/parked/reviews"
+ev "$PK/lbl/runs.jsonl" lbl parked ok 10 9501
+ev "$PK/lbl.stale.1700000000.4242/runs.jsonl" lbl parked failed 3 9401
+OUT=$(run_cadre "$SD" seats --all "$PK")
+check "seats: a parked archive is not a panel" "awk '\$1 == \"parked\" && \$3 == 1 && \$4 == 1 { f=1 } END { exit !f }' <<<\"\$OUT\""
+check "seats: the live panel is the one read"  "awk '\$1 == \"parked\" && \$9 == \"100%\" { f=1 } END { exit !f }' <<<\"\$OUT\""
+
 echo "== ★ settled-decisions ledger =="
 # ★ The loop-breaker. Cadre reviews once, but anything that WRAPS it re-raises
 # findings the human already dismissed, because the reviewers have no memory.

@@ -1569,8 +1569,16 @@ cmd_seats() {
   # the double is not cosmetic: it doubles PANELS, so two panels of a seat that
   # should read NOT ENOUGH DATA read as a confident UNRELIABLE off four. A
   # symlinked root aliases the same way.
+  # ★ A parked run is PRUNED, not counted. `cadre review` reclaims a label
+  # whose holder died and parks the dead directory as `<label>.stale.<epoch>.<pid>`
+  # (see cmd_review), runs.jsonl and all. That archive and its replacement are
+  # two directories describing ONE panel, so discovering both counts the panel
+  # twice -- the same shape as the alias double, arriving through a rename
+  # instead of through a spelling.
   while IFS= read -r f; do logs+=("$f"); done \
-    < <(find "${roots[@]}" -type f -name runs.jsonl -print \
+    < <(find "${roots[@]}" \
+          \( -type d -name '*.stale.*' -prune \) -o \
+          \( -type f -name runs.jsonl -print \) \
         | while IFS= read -r f; do readlink -f -- "$f" || printf '%s\n' "$f"; done \
         | sort -u)
   [ "${#logs[@]}" -gt 0 ] || die "seats: no runs.jsonl found under ${roots[*]}"
