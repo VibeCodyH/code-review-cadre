@@ -14,5 +14,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git jq python3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: integrations/pi-review/package-lock.json
+      # tests/pi-review.sh drives `cadre review`, whose seat probe reads
+      # integrations/pi-review/node_modules/@earendil-works/pi-coding-agent.
+      # Without this the seat reports NOT INSTALLED and the test fails after
+      # its last passing assertion, with no message.
+      - name: Install the pi-review SDK adapter
+        working-directory: integrations/pi-review
+        run: npm ci
       - name: Run tests
         run: bash test.sh
