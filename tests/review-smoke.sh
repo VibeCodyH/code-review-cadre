@@ -1970,6 +1970,18 @@ OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
       "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
 check "a talking pi passes through"   "grep -q 'REVIEW: one finding' <<<\"\$OUT\""
 check "and keeps its exit code"       "[ $RC -eq 0 ]"
+# ★ The prompt reaches pi from a FILE, never a pipe, and rc is why. Piping it
+# under `set -o pipefail` (bin/agentcall:16) meant a pi that exits without
+# draining stdin left printf holding SIGPIPE, and pipefail returned 141 as the
+# pipeline's status -- so the assertion above came down to which process the
+# scheduler finished first. It passed here and on CI's push event while failing
+# on the pull_request event for the SAME sha. This stub refuses a FIFO, so the
+# regression is deterministic instead of a race.
+printf '#!/bin/sh\nif [ -p /dev/stdin ]; then echo "STDIN IS A PIPE"; exit 9; fi\necho "REVIEW: one finding."\nexit 0\n' > "$PD/bin/pi"
+OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
+      "$ROOT/bin/agentcall" pi -d /tmp -m ro 'review' 2>&1); RC=$?
+check "the prompt arrives on a file, not a pipe" "[ $RC -eq 0 ]"
+check "and the review still comes back"          "grep -q 'REVIEW: one finding' <<<\"\$OUT\""
 # A REAL failure keeps its nonzero status rather than being masked as empty.
 printf '#!/bin/sh\necho "400: model not found"\nexit 1\n' > "$PD/bin/pi"
 OUT=$(CADRE_AGENTS_D="$PD/agents.d" PATH="$PD/bin:$PATH" \
