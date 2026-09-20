@@ -1,6 +1,12 @@
 name: Tests
 
-on: [push, pull_request]
+# `push` is limited to main: on a branch with an open PR the two events fire the
+# same suite twice on the same sha, which doubles the minutes and — measured on
+# PR #83 — can report pass and fail simultaneously for one commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 permissions:
   contents: read
