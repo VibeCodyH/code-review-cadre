@@ -34,6 +34,7 @@ rm "$repo/src/deleted.ts"
 awk 'NR != 50' "$repo/src/pure.ts" > "$TMP/edited"
 cp "$TMP/edited" "$repo/src/pure.ts"
 printf 'new line\n' > "$repo/src/new.ts"
+printf 'one\ntwo' > "$repo/src/nonl.ts"      # last line has no newline
 printf '\0changed\n' > "$repo/binary.dat"
 mv "$repo/src/rename.ts" "$repo/src/renamed.ts"
 git -C "$repo" add -- .
@@ -48,11 +49,16 @@ scan() {
 
 scan 'src/unique.ts:30 src/unique.ts:2' 2 1
 check test "$ANCHOR_DRIFT_LIST" = 'src/unique.ts:2'
+scan 'src/unique.ts:900' 1 0
+check test "$ANCHOR_UNRESOLVED" -eq 1
+check test "$ANCHOR_UNRESOLVED_LIST" = 'src/unique.ts:900'
+scan 'src/nonl.ts:2' 1 0                       # an unterminated last line exists
+check test "$ANCHOR_UNRESOLVED" -eq 0
 scan 'src/myunique.ts:30' 1 0                    # no suffix unique.ts attribution
 scan 'unknown/src/unique.ts:900' 0 0           # no substring full-path attribution
 scan 'src/a/index.ts:30' 1 0                   # no sibling basename attribution
 scan 'index.ts:900 alias.ts:900' 0 0           # unchanged siblings also ambiguous
-scan 'unique.ts:900' 1 1
+scan 'unique.ts:900' 1 0
 scan 'app/(group)/[id]/a+(x).ts:30' 1 0
 scan 'a+(x).ts:30' 1 0
 scan 'src/space name.ts:30' 1 0
@@ -63,13 +69,14 @@ scan 'src/unique.ts:2–30 src/unique.ts:2+30' 0 0 # unsupported ranges cannot b
 scan 'src/unique.ts:2..30 src/unique.ts:2,30' 0 0
 scan 'src/unique.ts:1-2' 1 1
 scan 'src/unique.ts#L2-L30' 1 0
-scan 'src/unique.ts#L900-L901' 1 1
+scan 'src/unique.ts#L900-L901' 1 0
 scan 'src/unique.ts:27 src/unique.ts:33' 2 0    # the three context lines count
 scan 'src/deleted.ts:50' 1 0                   # old side exists, new side is empty
-scan 'src/deleted.ts:900 src/other.ts:30' 2 1
+scan 'src/pure.ts:60' 1 1                     # valid at the merge base, so normal drift
+scan 'src/deleted.ts:900 src/other.ts:30' 2 0
 scan 'src/pure.ts:50 src/pure.ts:30' 2 1        # per-file hunk isolation
 check test "$ANCHOR_DRIFT_LIST" = 'src/pure.ts:30'
-scan 'src/new.ts:1 src/new.ts:2' 2 1
+scan 'src/new.ts:1 src/new.ts:2' 2 0
 scan 'src/rename.ts:30 src/renamed.ts:30' 2 0   # renames are deletion + addition
 scan 'src/new.ts:0 src/new.ts:4-2 src/new.ts:1:99' 0 0
 scan 'binary.dat:900 missing.ts:900 localhost:3000 node:18' 0 0
@@ -86,8 +93,9 @@ check test "$ANCHOR_CHECKED" -eq 0
 # independently of context expansion in Git, including a deletion at EOF.
 printf 'src/deleted.ts:50 src/deleted.ts:1\n' > "$TMP/review"
 OUT=$(CADRE_ANCHOR_PATH=src/deleted.ts CADRE_ANCHOR_BASENAME=deleted.ts \
-      CADRE_ANCHOR_PATCH='@@ -50 +0,0 @@' awk -v unique=1 -f "$ROOT/lib/anchor-scan.awk" "$TMP/review")
-check test "$OUT" = $'2\t1\tsrc/deleted.ts:1'
+      CADRE_ANCHOR_PATCH='@@ -50 +0,0 @@' awk -v unique=1 -v oldlen=60 -v newlen=0 \
+        -f "$ROOT/lib/anchor-scan.awk" "$TMP/review")
+check test "$OUT" = $'2\t1\t0\tsrc/deleted.ts:1\t-'
 
 # Panel means per-run ratios, not pooled files, and keeps observations separate.
 mkdir -p "$TMP/home"
@@ -147,7 +155,7 @@ details
 details
 EOF
 sl=$(slug one)
-printf '**blocking** src/unique.ts:900 — dropped write and leaked token\nVerdict: blocking\n' > "$CADRE_HOME/alpha/$sl-run1.md"
+printf '**blocking** src/unique.ts:30 — dropped write and leaked token\nVerdict: blocking\n' > "$CADRE_HOME/alpha/$sl-run1.md"
 grade_one() {
   printf '%s\n' '{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"dropped write","K2":"leaked token"},"extras":[]}' > "$3"
 }
@@ -156,8 +164,7 @@ grade_rc=$?
 check test "$grade_rc" -eq 0
 [ "$grade_rc" -eq 0 ] || cat "$TMP/grade-output"
 report="$CADRE_HOME/report-$sl-by-$(slug j1,j2).md"
-check grep -qF 'run 1 anchor positions: 1/1 outside diff hunks' "$report"
-check grep -qF 'outside hunks: src/unique.ts:900' "$report"
+check grep -qF 'run 1 anchor positions: 0/1 outside diff hunks (possible position drift; advisory); 0/1 past end of file (unresolved coordinate)' "$report"
 check grep -qF '## Verdict: SEAT: can review alone' "$report"
 check grep -qF 'K1=HIT' "$report"
 check grep -qF 'run 1 coverage:' "$report"

@@ -465,6 +465,7 @@ coverage_scan() {
 anchor_scan() { # <review> <repo> <base> <sha>; sets ANCHOR_* (advisory only)
   local review="$1" dir="$2" base="$3" sha="$4" paths treepaths oldtree f bn shares blockers patch result
   ANCHOR_CHECKED=0 ANCHOR_DRIFT=0 ANCHOR_DRIFT_LIST=""
+  ANCHOR_UNRESOLVED=0 ANCHOR_UNRESOLVED_LIST=""
   [ -n "$base" ] && [ -r "$review" ] || return 0
   # Keep Git's C-quoted unusual paths out of this newline-based interface.
   # Tabs/newlines/backslashes/quotes in names are unavailable, never drift.
@@ -486,13 +487,23 @@ anchor_scan() { # <review> <repo> <base> <sha>; sets ANCHOR_* (advisory only)
       ' <<< "$treepaths")
     patch=$(git -C "$dir" diff --no-ext-diff --no-textconv --no-renames --unified=3 "$base...$sha" -- ":(literal)$f" 2>/dev/null) || continue
     patch=$(awk '/^@@ /' <<< "$patch")
+    local oldlen newlen
+    # Line counts at both ends (#80): a coordinate past EOF at both revs was
+    # invented, not drifted. NR, not wc -l: a last line with no newline counts.
+    oldlen=$(git -C "$dir" cat-file -p "$oldtree:$f" 2>/dev/null | awk 'END { print NR }') || oldlen=0
+    newlen=$(git -C "$dir" cat-file -p "$sha:$f" 2>/dev/null | awk 'END { print NR }') || newlen=0
     result=$(CADRE_ANCHOR_PATH="$f" CADRE_ANCHOR_BASENAME="$bn" CADRE_ANCHOR_PATCH="$patch" CADRE_ANCHOR_BLOCKERS="$blockers" \
-      awk -v unique="$shares" -f "$CADRE_ROOT/lib/anchor-scan.awk" "$review") || continue
-    local checked drift anchors
-    IFS=$'\t' read -r checked drift anchors <<< "$result"
+      awk -v unique="$shares" -v oldlen="$oldlen" -v newlen="$newlen" \
+        -f "$CADRE_ROOT/lib/anchor-scan.awk" "$review") || continue
+    local checked drift unresolved anchors unresolved_anchors
+    IFS=$'\t' read -r checked drift unresolved anchors unresolved_anchors <<< "$result"
+    [ "$anchors" = "-" ] && anchors=""
+    [ "$unresolved_anchors" = "-" ] && unresolved_anchors=""
     ANCHOR_CHECKED=$((ANCHOR_CHECKED + checked))
     ANCHOR_DRIFT=$((ANCHOR_DRIFT + drift))
+    ANCHOR_UNRESOLVED=$((ANCHOR_UNRESOLVED + unresolved))
     [ -z "$anchors" ] || ANCHOR_DRIFT_LIST="${ANCHOR_DRIFT_LIST:+$ANCHOR_DRIFT_LIST, }$anchors"
+    [ -z "$unresolved_anchors" ] || ANCHOR_UNRESOLVED_LIST="${ANCHOR_UNRESOLVED_LIST:+$ANCHOR_UNRESOLVED_LIST, }$unresolved_anchors"
   done <<< "$paths"
 }
 
@@ -1059,8 +1070,9 @@ remove that directory and re-run."
 
       anchor_scan "$rf" "$target" "$base" "$sha"
       if [ "$ANCHOR_CHECKED" -gt 0 ]; then
-        echo "- run $n anchor positions: $ANCHOR_DRIFT/$ANCHOR_CHECKED outside diff hunks (possible position drift; advisory)" >> "$report"
+        echo "- run $n anchor positions: $ANCHOR_DRIFT/$ANCHOR_CHECKED outside diff hunks (possible position drift; advisory); $ANCHOR_UNRESOLVED/$ANCHOR_CHECKED past end of file (unresolved coordinate)" >> "$report"
         [ "$ANCHOR_DRIFT" -eq 0 ] || echo "  - outside hunks: $ANCHOR_DRIFT_LIST" >> "$report"
+        [ "$ANCHOR_UNRESOLVED" -eq 0 ] || echo "  - past end of file: $ANCHOR_UNRESOLVED_LIST" >> "$report"
       else
         echo "- run $n anchor positions: — (no supported anchors with resolvable text hunks)" >> "$report"
       fi
