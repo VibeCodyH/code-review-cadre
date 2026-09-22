@@ -53,6 +53,12 @@ function scan(text, name,    pos,offset,before,tail,anchor,nums,count,first,last
         count = split(nums, range, "-")
         first = range[1] + 0; last = count == 1 ? first : range[2] + 0
         if (first < 1 || last < first || !hunks) continue
+        if (first > oldlen && first > newlen) {
+            checked++
+            unresolved++
+            unresolved_list = unresolved_list (unresolved_list == "" ? "" : ", ") path anchor
+            continue
+        }
         # Any overlap is enough: checking only a range's start over-accuses.
         overlap = 0
         for (k = 1; k <= hunks; k++)
@@ -69,4 +75,7 @@ function scan(text, name,    pos,offset,before,tail,anchor,nums,count,first,last
     if (path != basename || unique == 1) scan($0, path)
     if (unique == 1 && path != basename) scan($0, basename)
 }
-END { printf "%d\t%d\t%s\n", checked, drift, list }
+END {
+    printf "%d\t%d\t%d\t%s\t%s\n", checked, drift, unresolved,
+        list == "" ? "-" : list, unresolved_list == "" ? "-" : unresolved_list
+}
