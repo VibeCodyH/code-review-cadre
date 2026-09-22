@@ -1,0 +1,40 @@
+name: Tests
+
+# `push` is limited to main: on a branch with an open PR the two events fire the
+# same suite twice on the same sha, which doubles the minutes and — measured on
+# PR #83 — can report pass and fail simultaneously for one commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        # npm ci below runs dependency lifecycle scripts; don't leave the token
+        # on disk for them. Nothing in this job pushes.
+        with:
+          persist-credentials: false
+      - name: Install test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git jq python3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: integrations/pi-review/package-lock.json
+      # tests/pi-review.sh drives `cadre review`, whose seat probe reads
+      # integrations/pi-review/node_modules/@earendil-works/pi-coding-agent.
+      # Without this the seat reports NOT INSTALLED and the test fails after
+      # its last passing assertion, with no message.
+      - name: Install the pi-review SDK adapter
+        working-directory: integrations/pi-review
+        run: npm ci
+      - name: Run tests
+        run: bash test.sh

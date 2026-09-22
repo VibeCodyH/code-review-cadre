@@ -8,8 +8,9 @@ non-interactive. Text mode, not --mode json: see the exit-code trap.
 killed. Measured: rc=124 at every timeout, zero bytes on stdout AND stderr, with
 a model and prompt that answer fine otherwise. Under cadre that is survivable
 (CADRE_TIMEOUT kills it and it files as failed) but it wastes the whole timeout
-and reports nothing about why, so this adapter always feeds the prompt through a
-pipe. Do not "simplify" it to an argv call.
+and reports nothing about why, so this adapter always feeds the prompt on stdin.
+It is redirected from a FILE, not piped -- see run_pi. Do not "simplify" it to
+an argv call.
 ★ NOT --mode json, even though the JSON is richer. On an API error json mode
 exits 0 with the error only on stderr; text mode exits 1. An adapter's exit
 status is load-bearing in cadre -- classify_run reads it, and the synth slot has
@@ -64,18 +65,35 @@ CONTRACT
 }
 
 run_pi() {
-  local m=() out rc
+  local m=() out rc prompt_file
   [ -n "$model" ] && m=(--model "$model")
   if [ -n "$DRY" ]; then
     _run timeout -k 30 "$TIMEOUT" pi -p "${m[@]}"
     return 0
   fi
-  # No working-directory flag, so cd. The pipe is not optional: it is what keeps
-  # pi from waiting on a terminal that is never going to type anything.
-  out=$(mktemp)
-  ( cd "$dir" && printf '%s\n\n%s' "$prompt" "$(pi_output_contract)" \
-      | timeout -k 30 "$TIMEOUT" pi -p "${m[@]}" 2>&1 ) > "$out"
+  # No working-directory flag, so cd. Redirecting stdin is not optional: it is
+  # what keeps pi from waiting on a terminal that is never going to type
+  # anything. Do not "simplify" it to an argv call.
+  #
+  # ★ A FILE, not a pipe, and the difference is rc. Under `set -o pipefail`
+  # (bin/agentcall:16) a consumer that exits without draining stdin leaves the
+  # producer holding SIGPIPE, and pipefail returns THAT as the pipeline's
+  # status -- so rc stopped being pi's exit code and became whichever process
+  # the scheduler finished first. Measured at the shell: `printf <200KB> | sh -c
+  # 'echo hi; exit 0'` gives 141 under pipefail, the same redirected from a file
+  # gives 0. Text mode is chosen over --mode json precisely BECAUSE the exit
+  # status tells the truth (see the notes above) and classify_run reads it, so a
+  # status decided by a race is the one thing this adapter cannot afford. pi
+  # fast-failing on a bad model or missing auth is exactly that consumer.
+  #
+  # Third instance of the `agent_installed` shape at lib/common.sh:804. That one
+  # survives because head/tail bound the stream to a pipe-buffer's worth; this
+  # had no bound. A regular file on stdin is still never a terminal.
+  out=$(mktemp) prompt_file=$(mktemp)
+  printf '%s\n\n%s' "$prompt" "$(pi_output_contract)" > "$prompt_file"
+  ( cd "$dir" && timeout -k 30 "$TIMEOUT" pi -p "${m[@]}" 2>&1 < "$prompt_file" ) > "$out"
   rc=$?
+  rm -f "$prompt_file"
 
   # ★ EMPTY AT EXIT 0 is a real shape here, not a hypothetical. A model whose
   # turn ends with a `thinking` part and no `text` part leaves pi's text-mode
