@@ -204,6 +204,25 @@ winning over the first read, the named set shrinking as the floor drops, and
 an unresolved row listed as not placed. In `tests/grading-confounds.sh`: two
 slots with equal denominators over different passes, and an unresolved slot.
 
+**18. A test that fails internally cannot be reported as a pass.** `test.sh`
+lints every `tests/*.sh` before running it: it must either enable `set -e` in
+its first 15 lines (`set -e`, `set -euo pipefail`, etc.) or end on
+`[ "$FAIL" -eq 0 ]` as its last non-blank, non-comment line. A script that
+satisfies neither is reported `FAIL ... (no exit contract: ...)` with a
+non-zero receipt and is not executed, so the suite fails rather than counting
+the lie as a pass. `CADRE_TEST_DIR` overrides the discovery directory for
+self-testing without changing anything else.
+Tests: `tests/runner-contract.sh` (counter style) — an honest errexit pass and
+an honest counter-style pass both report PASS, the lying shape `false` then
+`echo` is rejected with "no exit contract" and a non-zero suite exit, an
+errexit script containing `false` then `echo` fails via errexit, an honest
+`exit 7` fails, and a clean all-pass fixture dir exits 0 proving the lint does
+not red-flag honest tests; the fixture dir never includes `runner-contract.sh`
+itself. Residual: the lint is a proxy — `set -e` has exemptions (commands
+inside `if`, `||`, `&&` and others do not abort) and a counter-style test can
+still forget to call `check`, so a missed assertion that never increments `FAIL`
+still passes.
+
 ## Non-goals, named
 
 - **Cap-matching is refused, not performed.** When two seats ran under
