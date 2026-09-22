@@ -16,6 +16,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        # npm ci below runs dependency lifecycle scripts; don't leave the token
+        # on disk for them. Nothing in this job pushes.
+        with:
+          persist-credentials: false
       - name: Install test prerequisites
         run: |
           sudo apt-get update
