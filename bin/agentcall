@@ -32,6 +32,20 @@ USER_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}"
 
 TIMEOUT="${CADRE_TIMEOUT:-900}"
 
+# #85: one private TMPDIR per call. Every adapter's bare mktemp (and agy's
+# ${TMPDIR:-/tmp}) lands in it, so one trap removes prompt files -- which carry
+# the whole diff -- even on INT/TERM/HUP, with no per-adapter cleanup. The
+# signal traps re-exit with the conventional codes so classify_run sees the
+# same status it always did; the EXIT trap keeps the adapter's rc as-is.
+# No adapter sets a trap of its own; if one ever does, it replaces these.
+if _cadre_tmp=$(mktemp -d "${TMPDIR:-/tmp}/cadre-agentcall.XXXXXXXX" 2>/dev/null); then
+  export TMPDIR="$_cadre_tmp"
+  trap 'rm -rf -- "$_cadre_tmp"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+fi
+
 AGENTS=""
 _load_dir() {
   [ -d "$1" ] || return 0

@@ -5262,6 +5262,73 @@ run_gaunt "$DL0" good,good2 terse >/dev/null 2>&1 || true
 RL0=$(ls "$DL0/home"/report-*.md | head -1)
 check "lang: no record reads 'not recorded'"   "grep -q '^Language: not recorded' '$RL0'"
 
+echo "== ★ per-run TMPDIR owned by agentcall (#85) =="
+# Every adapter's bare mktemp (and agy's ${TMPDIR:-/tmp}) must land inside one
+# dir that agentcall removes even on INT/TERM. Stub records the paths it
+# created so the test knows what to look for without scanning /tmp.
+TD=$(case_dir tmp85)
+cat > "$TD/agents.d/tmp85.sh" <<A
+run_tmp85() {
+  local pf out
+  pf=\$(mktemp); printf '%s' "\$prompt" > "\$pf"
+  out=\$(mktemp); printf 'hello' > "\$out"
+  printf '%s:%s:%s' "\$pf" "\$out" "\$TMPDIR" > "$TD/marker"
+  cat "\$out"
+  rm -f "\$pf" "\$out"
+  return \${TMP85_RC:-0}
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$TD/bin/tmp85"; chmod +x "$TD/bin/tmp85"
+# normal 0: rc passes through and per-run dir is gone (which implies the files are too)
+TMP85_RC=0
+OUT=$(TMP85_RC=0 CADRE_AGENTS_D="$TD/agents.d" PATH="$TD/bin:$PATH" "$ROOT/bin/agentcall" tmp85 -d /tmp -m ro "hi" 2>&1); RC=$?
+check "tmp85: normal rc 0 passes through" "[ $RC -eq 0 ]"
+check "tmp85: normal per-run dir gone" "d=\$(cut -d: -f3 < '$TD/marker' 2>/dev/null); [ -n \"\$d\" ] && [ ! -d \"\$d\" ]"
+check "tmp85: normal mktemp files gone" "IFS=: read pf out _ < '$TD/marker' 2>/dev/null; [ ! -e \"\$pf\" ] && [ ! -e \"\$out\" ]"
+# normal nonzero: rc must not be masked by the cleanup
+OUT=$(TMP85_RC=7 CADRE_AGENTS_D="$TD/agents.d" PATH="$TD/bin:$PATH" "$ROOT/bin/agentcall" tmp85 -d /tmp -m ro "hi" 2>&1); RC=$?
+check "tmp85: nonzero rc passes through" "[ $RC -eq 7 ]"
+check "tmp85: nonzero per-run dir gone" "d=\$(cut -d: -f3 < '$TD/marker' 2>/dev/null); [ -n \"\$d\" ] && [ ! -d \"\$d\" ]"
+# agy's ${TMPDIR:-/tmp} lands inside the same per-run dir
+cat > "$TD/agents.d/tmpagy.sh" <<A
+run_tmpagy() {
+  local pd
+  pd=\$(mktemp -d "\${TMPDIR:-/tmp}/cadre-agy.XXXXXXXX") || { echo "no dir"; return 1; }
+  printf '%s:%s' "\$pd" "\$TMPDIR" > "$TD/marker-agy"
+  printf 'ok'
+  rm -rf "\$pd"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$TD/bin/tmpagy"; chmod +x "$TD/bin/tmpagy"
+OUT=$(CADRE_AGENTS_D="$TD/agents.d" PATH="$TD/bin:$PATH" "$ROOT/bin/agentcall" tmpagy -d /tmp -m ro "hi" 2>&1); RC=$?
+check "tmp85: agy subdir inside per-run dir" "pd=\$(cut -d: -f1 < '$TD/marker-agy' 2>/dev/null); td=\$(cut -d: -f2 < '$TD/marker-agy' 2>/dev/null); case \"\$pd\" in \"\$td\"/*) true;; *) false;; esac"
+check "tmp85: agy per-run dir gone" "td=\$(cut -d: -f2 < '$TD/marker-agy' 2>/dev/null); [ -n \"\$td\" ] && [ ! -d \"\$td\" ]"
+# interrupted: stub sleeps after creating a file; TERM must exit 143 and the file must not remain
+cat > "$TD/agents.d/sleep85.sh" <<A
+run_sleep85() {
+  local pf
+  pf=\$(mktemp); printf 'secret' > "\$pf"
+  printf '%s:%s' "\$pf" "\$TMPDIR" > "$TD/marker-sleep"
+  sleep 10
+  cat "\$pf"
+  rm -f "\$pf"
+}
+A
+printf '#!/bin/sh\nexit 0\n' > "$TD/bin/sleep85"; chmod +x "$TD/bin/sleep85"
+rm -f "$TD/marker-sleep" "$TD/ac85_out" "$TD/ac85_rc" "$TD/ac85_pid"
+( CADRE_AGENTS_D="$TD/agents.d" PATH="$TD/bin:$PATH" "$ROOT/bin/agentcall" sleep85 -d /tmp -m ro "hi" > $TD/ac85_out 2>&1 & echo $! > $TD/ac85_pid; wait $(cat $TD/ac85_pid); echo $? > $TD/ac85_rc ) &
+# outer shell waits for the background job that issued wait; poll for pid file then send TERM
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -s $TD/ac85_pid ] && break; sleep 0.1; done
+# give the stub time to create its file
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$TD/marker-sleep" ] && break; sleep 0.1; done
+if [ -s $TD/ac85_pid ]; then kill -TERM $(cat $TD/ac85_pid) 2>/dev/null || true; fi
+# wait for the outer background to finish
+wait 2>/dev/null; sleep 0.2
+RC=$(cat $TD/ac85_rc 2>/dev/null || echo "?")
+check "tmp85: TERM exits 143" "[ \"$RC\" = 143 ]"
+check "tmp85: TERM per-run dir gone" "td=\$(cut -d: -f2 < '$TD/marker-sleep' 2>/dev/null); [ -n \"\$td\" ] && [ ! -d \"\$td\" ]"
+check "tmp85: TERM mktemp file gone" "pf=\$(cut -d: -f1 < '$TD/marker-sleep' 2>/dev/null); [ -n \"\$pf\" ] && [ ! -e \"\$pf\" ]"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
