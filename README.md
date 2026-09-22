@@ -919,13 +919,16 @@ Run it from the repository root:
 bash test.sh
 ```
 
-The runner discovers `tests/*.sh` and runs them serially, each with a fresh
+The runner discovers `tests/*.sh` (`CADRE_TEST_DIR` overrides the directory) and runs them serially, each with a fresh
 temporary home, `/usr/bin:/bin` on `PATH`, the `C.UTF-8` locale, and zero retry
 delay unless a test overrides it. It reports each script's result and counts
 scripts discovered, run, passed, and failed. These are script counts, not
 individual assertions. Any failure, empty discovery, or incomplete execution
 exits nonzero; failed scripts' output is printed in full. GitHub Actions runs
-the same command on pushes and pull requests.
+the same command on pushes and pull requests. Before running a test the runner
+lints its exit contract: the script must enable `set -e` in its first 15 lines
+or end on `[ "$FAIL" -eq 0 ]`; a script that satisfies neither is reported
+`FAIL ... (no exit contract: ...)` without being executed.
 
 Known pre-existing failure: [`tests/pi-review.sh`](tests/pi-review.sh) fails
 without the optional Pi SDK installed. It stubs `node`, but its panel test still

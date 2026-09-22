@@ -3,7 +3,8 @@
 set -uo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
 shopt -s nullglob
-tests=(tests/*.sh)
+test_dir=${CADRE_TEST_DIR:-tests}
+tests=("$test_dir"/*.sh)
 discovered=${#tests[@]}
 scratch=''
 
@@ -33,7 +34,7 @@ finish() {
   printf '\nTests discovered: %d\nTests run: %d\nTests passed: %d\nTests failed: %d\n' \
     "$discovered" "$run" "$passed" "$failed"
   if (( discovered == 0 )); then
-    printf 'ERROR: no tests discovered in tests/*.sh\n' >&2
+    printf 'ERROR: no tests discovered in %s/*.sh\n' "$test_dir" >&2
     status=1
   fi
   if (( discovered != run )); then
@@ -53,6 +54,22 @@ for index in "${!tests[@]}"; do
   test_file=${tests[$index]}
   if [[ ! -f "$test_file" || ! -r "$test_file" ]]; then
     printf 'ERROR: cannot execute %s (missing, unreadable, or not a regular file)\n' "$test_file" >&2
+    continue
+  fi
+  # Exit-contract lint (#82): the receipt is only as honest as the child's exit
+  # status, and a script that fails then ends on `echo` exits 0. Require either
+  # errexit near the top or the counter-style `[ "$FAIL" -eq 0 ]` as the last
+  # statement; anything else is refused unrun. A proxy, not a proof: see
+  # docs/ASSURANCE_CASE.md claim 18 for what it still misses.
+  last_line=$(grep -v -e '^[[:space:]]*$' -e '^[[:space:]]*#' "$test_file" | tail -n 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  # One awk, not `head | grep -q`: under pipefail an early-exiting grep can hand
+  # back head's SIGPIPE as the status (the #83 pi adapter bug).
+  if ! awk 'NR > 15 { exit } /^[[:space:]]*set[[:space:]]+[^#]*-[A-Za-z]*e[A-Za-z]*/ { found = 1; exit } END { exit !found }' "$test_file" \
+     && [[ "$last_line" != '[ "$FAIL" -eq 0 ]' ]]; then
+    reason="no set -e in the first 15 lines, and the last line is not [ \"\$FAIL\" -eq 0 ] (got: $last_line)"
+    printf 'FAIL %s (no exit contract: %s)\n' "$test_file" "$reason"
+    printf '1\n' > "$scratch/$index.status" || exit 1
+    printf 'no exit contract: %s\n' "$reason" > "$scratch/$index.log" || exit 1
     continue
   fi
   mkdir "$scratch/$index.home" || exit 1
