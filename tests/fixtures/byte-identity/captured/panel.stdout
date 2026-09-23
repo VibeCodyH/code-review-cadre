@@ -5,9 +5,10 @@ Graded-only cost and hit rates (observational)
 Report inputs, run counts and judges may differ. These ranges do not rank seats.
 Cost is est. tokens per credited blocking hit, using scored keyed runs only.
 Delivery failures and CLEAN probes contribute no spend; - is unavailable.
+ROUNDS is the fewest scored runs any pass had; under 2 a rate is one round's draw.
 
-CANDIDATE                                     EST.TOKENS/HIT   BLOCKING HIT RATE
-candidate  (judge: judge-2844475703)          300              75.0% (3 / 4)
+CANDIDATE                                     EST.TOKENS/HIT   ROUNDS  BLOCKING HIT RATE
+candidate  (judge: judge-2844475703)          300              2       75.0% (3 / 4)
 
 Observed blocking hit-rate bounds: 75.0% to 75.0% (1 report rows).
 Observed est. tokens per credited blocking hit: 300 to 300 (1 report rows).

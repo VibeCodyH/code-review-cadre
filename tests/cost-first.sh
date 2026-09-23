@@ -13,13 +13,14 @@ PASS=0 FAIL=0
 check() {
   if "$@"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$*"; fi
 }
-report() { # <file> <spec> <hits> <cost> [verdict]
+report() { # <file> <spec> <hits> <cost> [verdict] [rounds]
   cat > "$CADRE_HOME/$1" <<EOF
 # Gauntlet: \`$2\`
 
 ## p1
 - run 1: K1=HIT K2=MISS K3=MISS
 ## Verdict: ${5:-SEAT: needs a second reader}
+- rounds per pass behind the blocking hit rate: **${6:-2}** (the fewest scored runs any pass had)
 - blocking items hit: **$3**
 - est. tokens per blocking item hit: **$4**
 EOF
@@ -52,13 +53,13 @@ printf '\n### Operator-invalid runs\n- p1 run 2: old cost was - est. tokens per 
   >> "$CADRE_HOME/report-a-by-j1.md"
 OUT=$("$ROOT/bin/cadre" panel --save)
 check grep -qF 'Graded-only cost and hit rates (observational)' <<< "$OUT"
-check grep -qE '^alpha.*judge: j1.*40 +50\.0% \(1 / 2\)$' <<< "$OUT"
-check grep -qE '^alpha.*judge: j2.*80 +25\.0% to 50\.0%.*UNRESOLVED' <<< "$OUT"
-check grep -qE '^old +- +-$' <<< "$OUT"
-check grep -qE '^clean +- +-$' <<< "$OUT"
-check grep -qE '^nohits +- +0\.0% \(0 / 2\)$' <<< "$OUT"
-check grep -qE '^missing-receipt +- +100\.0% \(2 / 2\)$' <<< "$OUT"
-check grep -qE '^unusable +- +-$' <<< "$OUT"
+check grep -qE '^alpha.*judge: j1.*40 +2 +50\.0% \(1 / 2\)$' <<< "$OUT"
+check grep -qE '^alpha.*judge: j2.*80 +2 +25\.0% to 50\.0%.*UNRESOLVED' <<< "$OUT"
+check grep -qE '^old +- +- +-$' <<< "$OUT"
+check grep -qE '^clean +- +2 +-$' <<< "$OUT"
+check grep -qE '^nohits +- +2 +0\.0% \(0 / 2\)$' <<< "$OUT"
+check grep -qE '^missing-receipt +- +2 +100\.0% \(2 / 2\)$' <<< "$OUT"
+check grep -qE '^unusable +- +2 +-$' <<< "$OUT"
 check grep -qF 'Observed blocking hit-rate bounds: 0.0% to 100.0% (4 report rows).' <<< "$OUT"
 check grep -qF 'Observed est. tokens per credited blocking hit: 40 to 80 (2 report rows).' <<< "$OUT"
 check grep -qF 'NOTHING in this lineup catches: p1/K3' <<< "$OUT"
@@ -79,7 +80,7 @@ sed -i 's/[*][*]10[*][*]$/**10** (partial denominator)/' "$CADRE_HOME/report-a-b
 frontload_grade_cost "$CADRE_HOME/report-a-by-j1.md"
 check grep -qF 'est. tokens per credited blocking hit: **10** (partial denominator)' "$CADRE_HOME/report-a-by-j1.md"
 OUT=$("$ROOT/bin/cadre" panel)
-check grep -qE '^alpha.*judge: j1.*10 +50\.0%.*partial denominator' <<< "$OUT"
+check grep -qE '^alpha.*judge: j1.*10 +2 +50\.0%.*partial denominator' <<< "$OUT"
 
 # A missing cost must not erase a known partial hit-rate denominator. These
 # verdicts do not carry INCOMPLETE, so the footer is the only surviving receipt.
@@ -94,8 +95,8 @@ sed -i -e 's/0 to 1 \/ 2\*\*$/0 to 1 \/ 2** (1 UNRESOLVED)/' \
 frontload_grade_cost "$CADRE_HOME/report-partial-unresolved.md"
 check grep -qF 'blocking hit rate: **0.0% to 50.0% (0 to 1 / 2; UNRESOLVED)** (partial denominator)' "$CADRE_HOME/report-partial-unresolved.md"
 OUT=$("$ROOT/bin/cadre" panel)
-check grep -qE '^partial-zero +- +0\.0%.*partial denominator' <<< "$OUT"
-check grep -qE '^partial-unresolved +- +0\.0% to 50\.0%.*partial denominator' <<< "$OUT"
+check grep -qE '^partial-zero +- +2 +0\.0%.*partial denominator' <<< "$OUT"
+check grep -qE '^partial-unresolved +- +2 +0\.0% to 50\.0%.*partial denominator' <<< "$OUT"
 
 # No available metrics means no spread, including genuinely missing legacy data.
 rm -f "$CADRE_HOME"/report-*.md
@@ -198,7 +199,8 @@ has '- blocking hit rate: **0.0% (0 / 2)**'
 # A registered pass with no artifact makes even a zero-hit result partial.
 printf 'missing|%s|%s|%s|key.md\n' "$SHA" "$TMP/repo" "$SHA" >> "$CADRE_HOME/passes.conf"
 MISSES=1 grade
-has '## Verdict: DO NOT SLOT'
+# One round: a rate-derived DO NOT SLOT falls to the round floor (#23).
+has '## Verdict: ONE ROUND, not slottable'
 has '- est. tokens per credited blocking hit: **-** (partial denominator)'
 has '- blocking hit rate: **0.0% (0 / 2)** (partial denominator)'
 fixture
@@ -345,6 +347,52 @@ prose report-prose-by-j1.md '- output cap: not recorded after all'
 grade_report_metrics "$CADRE_HOME/report-prose-by-j1.md"
 check test "$METRIC_CAP" = -
 rm -f "$CADRE_HOME/report-prose-by-j1.md"
+
+# ---- #23: a rate is shown with its round count, and one round is not placed --
+rm -f "$CADRE_HOME"/report-*.md
+report report-a-by-j1.md alpha '1 / 2' 40
+report report-b-by-j1.md beta '2 / 2' 80 'SEAT: can review alone' 1
+report report-c-by-j1.md gamma '3 / 4' 20
+spread 60.0pp report-a-by-j1.md
+grade_report_metrics "$CADRE_HOME/report-a-by-j1.md"
+check test "$METRIC_ROUNDS" = 2
+grade_report_metrics "$CADRE_HOME/report-b-by-j1.md"
+check test "$METRIC_ROUNDS" = 1
+OUT=$("$ROOT/bin/cadre" panel)
+check grep -qE '^CANDIDATE +EST.TOKENS/HIT +ROUNDS +BLOCKING HIT RATE$' <<< "$OUT"
+check grep -qE '^beta  \(judge: j1\) +80 +1 +100\.0% \(2 / 2\)$' <<< "$OUT"
+# beta has the top rate off one round: it is not the top, it is not placed.
+check grep -qF 'Within the noise floor of the top rate (75.0%): alpha  (judge: j1), gamma  (judge: j1)' <<< "$OUT"
+check grep -qF 'Not placed, under 2 rounds per pass (or none recorded) behind their rate: beta  (judge: j1)' <<< "$OUT"
+# Mutation: a second round places it again, as the top.
+report report-b-by-j1.md beta '2 / 2' 80 'SEAT: can review alone' 2
+OUT=$("$ROOT/bin/cadre" panel)
+check grep -qF 'Within the noise floor of the top rate (100.0%): alpha  (judge: j1), beta  (judge: j1), gamma  (judge: j1)' <<< "$OUT"
+check test "$(grep -c 'Not placed, under 2 rounds' <<< "$OUT")" -eq 0
+# A report that predates the line has an UNKNOWN count, which is not enough.
+sed -i '/^- rounds per pass/d' "$CADRE_HOME/report-c-by-j1.md"
+grade_report_metrics "$CADRE_HOME/report-c-by-j1.md"
+check test "$METRIC_ROUNDS" = -
+OUT=$("$ROOT/bin/cadre" panel)
+check grep -qE '^gamma  \(judge: j1\) +20 +- +75\.0% \(3 / 4\)$' <<< "$OUT"
+check grep -qF 'Not placed, under 2 rounds per pass (or none recorded) behind their rate: gamma  (judge: j1)' <<< "$OUT"
+# Every row under the floor: nothing is ranked, and the fix is named.
+report report-a-by-j1.md alpha '1 / 2' 40 '' 1
+spread 60.0pp report-a-by-j1.md
+report report-b-by-j1.md beta '2 / 2' 80 '' 1
+OUT=$("$ROOT/bin/cadre" panel)
+check test "$(grep -c 'Within the noise floor of the top rate' <<< "$OUT")" -eq 0
+check grep -qF 'Nothing here is ranked: no row has an exact rate over 2 or more rounds per pass.' <<< "$OUT"
+# Operator prose and duplicates are not a count, the same rule as every field.
+report report-a-by-j1.md alpha '1 / 2' 40
+printf -- '- rounds per pass behind the blocking hit rate: **9** was the plan\n' >> "$CADRE_HOME/report-a-by-j1.md"
+grade_report_metrics "$CADRE_HOME/report-a-by-j1.md"
+check test "$METRIC_ROUNDS" = -
+report report-a-by-j1.md alpha '1 / 2' 40
+sed -i 's/^- rounds per pass behind the blocking hit rate: [*][*]2[*][*].*$/- rounds per pass behind the blocking hit rate: **2** (the fewest scored runs any pass had) as of last week/' "$CADRE_HOME/report-a-by-j1.md"
+grade_report_metrics "$CADRE_HOME/report-a-by-j1.md"
+check test "$METRIC_ROUNDS" = -
+rm -f "$CADRE_HOME"/report-*.md
 
 printf '%s passed; %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

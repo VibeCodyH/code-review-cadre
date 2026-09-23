@@ -34,6 +34,11 @@ cadre add-pass ref-<name>
 
 The `ref-` prefix is what triggers the contamination warning. Keep it.
 
+`add-pass` refuses a key item that does not cite a target `path:line` the fix
+changes, so the item is proved against both the defective tree and the fixed
+one. Keep the clone at the path you gave `make-pass` until the pass is
+registered; that is where the check reads the fix from.
+
 ## What is here
 
 - [`execa/`](execa/). MIT. Node child-process library. Every survivor is a

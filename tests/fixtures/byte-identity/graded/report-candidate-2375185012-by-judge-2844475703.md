@@ -5,7 +5,7 @@ Selection: `all-runs`. Excluded: **0** entries. Table: `report-candidate-2375185
 ## Cost and hits (graded-only)
 
 - est. tokens per credited blocking hit: **300**
-- blocking hit rate: **75.0% (3 / 4)**
+- blocking hit rate: **75.0% (3 / 4)** over **2** round(s) per pass
 - noise floor (run-to-run spread): **50.0pp**; a delta against another seat under this is noise
 
 Cost uses prompt and review bytes / 4 from scored keyed runs only. Delivery
@@ -17,6 +17,8 @@ Judge: `judge`. 2 run(s) per pass. Rubric: lib/prompts/judge.md.
 ## p1
 
 Language: `javascript` (dominant, by changed files; observational)
+
+Two-sided key check: not recorded (registered by hand, or before add-pass checked it), so no item here is proved to discriminate
 
 - run 1 coverage: 0/1 changed files mentioned
   - never mentioned: app.js
@@ -53,6 +55,7 @@ Caught 3/4 blocking items. Never the only reviewer on a change. That is not a ra
 - runs not scored, output cut off (partial review on disk): 0
 - runs not scored, provider returned nothing: 0
 - run-to-run spread (blocking hit rate): **50.0pp** (run 1: 2/2, run 2: 1/2); a difference between two seats smaller than this is noise
+- rounds per pass behind the blocking hit rate: **2** (the fewest scored runs any pass had)
 - blocking items hit: **3 / 4**
 - est. tokens per blocking item hit: **300**
 - changed-file coverage (mean over 1 keyed pass(es)): **0%**, thinnest on `p1` at 0%

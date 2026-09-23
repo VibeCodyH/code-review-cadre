@@ -303,7 +303,7 @@ cost_per_hit() {
 
 # Read only the grader's anchored footer fields. Missing/ambiguous legacy fields
 # stay unavailable; never reconstruct spend or turn an unresolved range exact.
-grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE,SPREAD,CAP}
+grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE,SPREAD,CAP,ROUNDS}
   local fields
   fields=$(awk '
     /^## Verdict: / {
@@ -319,6 +319,7 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
     # the first line stand as unambiguous. Same rule the hit/cost fields use.
     /^- run-to-run spread \(blocking hit rate\):/ { ns++; sp=$0 }
     /^- output cap:/ { ncap++; capl=$0 }
+    /^- rounds per pass behind the blocking hit rate:/ { nr++; rl=$0 }
     END {
       # Spread and cap are read whether or not the table scored: a cap mismatch
       # or a missing floor is a fact about the run, not about the verdict.
@@ -327,7 +328,12 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
       # setting; not recorded now" as a measured 2048, which is operator prose
       # promoted to a number -- the failure the hit/cost patterns above are
       # already anchored against. An unrecognised line is "-", never a value.
-      spread=cap="-"
+      spread=cap=rounds="-"
+      # Same end-to-end anchoring (#23). Legacy reports predate the line and
+      # stay "-": an unknown round count is never read as enough of them.
+      if (nr==1 && rl ~ /^- rounds per pass behind the blocking hit rate: \*\*[0-9]+\*\* \(the fewest scored runs any pass had\)(; below the floor of [0-9]+, so no seat is recommended from it)?$/) {
+        sub(/^- rounds per pass behind the blocking hit rate: \*\*/, "", rl); sub(/\*\*.*$/, "", rl); rounds=rl
+      }
       if (ns==1 && sp ~ /^- run-to-run spread \(blocking hit rate\): \*\*[0-9]+\.[0-9]pp\*\* \(run [0-9]+: [0-9]+\/[0-9]+.*\); a difference between two seats smaller than this is noise$/) {
         sub(/^- run-to-run spread \(blocking hit rate\): \*\*/, "", sp); sub(/pp\*\*.*$/, "", sp); spread=sp
       }
@@ -360,10 +366,10 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
           spend=cost+0
         }
       }
-      print lo, hi, total, spend, partial+0, spread, cap
+      print lo, hi, total, spend, partial+0, spread, cap, rounds
     }
   ' "$1")
-  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL METRIC_SPREAD METRIC_CAP <<< "$fields"
+  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL METRIC_SPREAD METRIC_CAP METRIC_ROUNDS <<< "$fields"
   METRIC_RATE='-'
   if [ "$METRIC_TOTAL" != - ]; then
     METRIC_RATE=$(awk -v lo="$METRIC_LOW" -v hi="$METRIC_HIGH" -v total="$METRIC_TOTAL" 'BEGIN {
@@ -386,7 +392,15 @@ frontload_grade_cost() { # <finished-report>
     echo "## Cost and hits (graded-only)"
     echo
     echo "- est. tokens per credited blocking hit: **$METRIC_COST**$note"
-    echo "- blocking hit rate: **$METRIC_RATE**$note"
+    # The round count on the rate's own line (#23), so no copy of the rate can
+    # be lifted without it. A rate of "-" has nothing to qualify.
+    if [ "$METRIC_RATE" = - ] || [ "$METRIC_ROUNDS" = - ]; then
+      echo "- blocking hit rate: **$METRIC_RATE**$note"
+    elif [ "$METRIC_ROUNDS" -lt "$ROUND_FLOOR" ]; then
+      echo "- blocking hit rate: **$METRIC_RATE**$note over **$METRIC_ROUNDS** round(s) per pass; below the floor of $ROUND_FLOOR, one round's draw and not a reviewer property"
+    else
+      echo "- blocking hit rate: **$METRIC_RATE**$note over **$METRIC_ROUNDS** round(s) per pass"
+    fi
     if [ "$METRIC_SPREAD" = - ]; then
       echo "- noise floor (run-to-run spread): **not measured**; no delta against another seat is distinguishable from noise"
     else
@@ -507,6 +521,17 @@ anchor_scan() { # <review> <repo> <base> <sha>; sets ANCHOR_* (advisory only)
   done <<< "$paths"
 }
 
+# ★ The round floor (#23). A rate from one round is one draw, not a property of
+# the reviewer: nuhuh, where this comes from, published its own reversals --
+# a seat at 0% on round one and 4.1% over three, another at 12.5% on round one
+# and 6.8% over ninety. A round is one scored run of a pass, and the count
+# behind a rate is the FEWEST any keyed pass contributed, because two run slots
+# over different passes are one round of each (the equal-denominators trap the
+# spread line already refuses). Below the floor a rate is still printed, with
+# its round count, but no seat is recommended from it. Two, because it is the
+# default run count and the least that can measure a spread at all.
+ROUND_FLOOR=2
+
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
 #
@@ -584,6 +609,108 @@ key_problems() {
     sev=$(key_severity "$kf" "$item")
     [ -n "$sev" ] || echo "$item's heading carries no BLOCKING/SHOULD-FIX/NIT severity word"
   done
+}
+
+# ---- two-sided key check (#23) ----------------------------------------------
+# An item is only allowed into the benchmark once it is proved on both trees:
+# present on the defective one, changed on the clean one. Without that, an item
+# no reviewer could ever hit and an item that is not a defect at all look
+# identical in the matrix -- both are just a K row -- and both bias the rate.
+#
+# The judge reads review text, so "the grading flags it" cannot be replayed
+# without a model call. What CAN be checked without one is the thing the grade
+# stands on: the item's own TARGET citation (keygen.md rule 7).
+#   defective side: a cited `path:line` resolves in the target tree, so there
+#                   is real code there for a reviewer to be pointed at
+#   clean side:     the reference fix changes that line (three lines of
+#                   context, the anchor_scan convention), so the clean tree does
+#                   not still hold the code the item calls a defect
+# One citation passing both is enough; the item's other citations may be
+# context. Old side only: the key's coordinates are the target's, and a line
+# number that only fits the fix is the rule-7 mistake this should catch.
+# ★ NAMED NON-GOAL: this proves the item points at repaired code. It does not
+# prove a judge scores a do-nothing review MISS or a review of the clean tree
+# MISS; both of those need model calls, and none is made here.
+
+# The item's heading and body, up to the next heading at its level or above.
+key_item_text() { # <keyfile> <item>
+  awk -v item="$2" '
+    /^#/ {
+      match($0, /^#+/); lv = RLENGTH
+      if (on && lv <= start) exit
+      if (!on && $0 ~ ("^#+ *[*]?[*]?" item "([^0-9A-Za-z_]|$)")) { on = 1; start = lv }
+    }
+    on { print }
+  ' "$1"
+}
+
+# Prints one problem per line; empty output means every item is proved. Reuses
+# lib/anchor-scan.awk, the literal-path citation matcher the grade report uses.
+key_two_sided() { # <keyfile> <repo> <target-sha> <fix-sha>
+  local kf="$1" dir="$2" target="$3" fix="$4" paths treepaths item text f bn shares blockers patch oldlen result
+  local checked drift unresolved anchors unresolved_anchors seen green past outside
+  key_is_clean "$kf" && return 0
+  git -C "$dir" cat-file -e "$target^{commit}" 2>/dev/null || { echo "the target $target is not in $dir"; return; }
+  git -C "$dir" cat-file -e "$fix^{commit}" 2>/dev/null || { echo "the reference fix $fix is not in $dir"; return; }
+  # The files the FIX commit changed, diffed against the TARGET: the old side
+  # is then in the key's coordinates even when commits landed in between.
+  paths=$(git -C "$dir" -c core.quotePath=false diff --name-only --no-renames "$fix^" "$fix" 2>/dev/null) ||
+    { echo "cannot read the reference fix $fix in $dir"; return; }
+  treepaths=$(git -C "$dir" -c core.quotePath=false ls-tree -r --name-only "$target" 2>/dev/null) ||
+    { echo "cannot list the target tree $target in $dir"; return; }
+  for item in $(key_items "$kf"); do
+    text=$(key_item_text "$kf" "$item")
+    seen=0 green=0 past="" outside=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in *\\*|*\"*|*$'\t'*) continue ;; esac
+      bn=${f##*/}
+      shares=$(awk -v b="$bn" '{p=$0; sub(/.*\//,"",p); if(p==b)n++} END{print n+0}' <<< "$treepaths")
+      blockers=$(awk -v f="$f" -v b="$bn" '
+        function suffix(s,t){return length(s)>length(t) && substr(s,length(s)-length(t)+1)==t}
+        {p=$0; sub(/.*\//,"",p); if(suffix($0,f) || suffix($0,b)) print; if(suffix(p,b)) print p}
+        ' <<< "$treepaths")
+      patch=$(git -C "$dir" diff --no-ext-diff --no-textconv --no-renames --unified=3 "$target" "$fix" -- ":(literal)$f" 2>/dev/null) || continue
+      # Both sides of every hunk become the old side, so the matcher cannot
+      # credit a citation that only fits the fixed file's numbering.
+      patch=$(sed -nE 's/^@@ -([0-9]+(,[0-9]+)?) \+[0-9]+(,[0-9]+)? @@.*/@@ -\1 +\1 @@/p' <<< "$patch")
+      oldlen=$(git -C "$dir" cat-file -p "$target:$f" 2>/dev/null | awk 'END { print NR }') || oldlen=0
+      # newlen=0: past the end of the TARGET file is past the end, full stop.
+      result=$(CADRE_ANCHOR_PATH="$f" CADRE_ANCHOR_BASENAME="$bn" CADRE_ANCHOR_PATCH="$patch" CADRE_ANCHOR_BLOCKERS="$blockers" \
+        awk -v unique="$shares" -v oldlen="${oldlen:-0}" -v newlen=0 \
+          -f "$CADRE_ROOT/lib/anchor-scan.awk" <<< "$text") || continue
+      IFS=$'\t' read -r checked drift unresolved anchors unresolved_anchors <<< "$result"
+      seen=$((seen + checked))
+      green=$((green + checked - drift - unresolved))
+      [ "$anchors" = - ] || outside="${outside:+$outside, }$anchors"
+      [ "$unresolved_anchors" = - ] || past="${past:+$past, }$unresolved_anchors"
+    done <<< "$paths"
+    [ "$green" -eq 0 ] || continue
+    if [ "$seen" -eq 0 ]; then
+      echo "$item cites no path:line in a file the reference fix changes ($(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')), so nothing ties it to the repair"
+    else
+      echo "$item has no citation the reference fix changes:${past:+ past the end of the file at the target: $past;}${outside:+ outside every line the fix changes, so the clean tree still holds that code: $outside;}" | sed 's/;$//'
+    fi
+  done
+}
+
+# The per-pass line the grade report prints, from what add-pass recorded.
+two_sided_line() { # <label> <keyfile>
+  local rec="$CADRE_HOME/passes.d/$1.two-sided" items proved="" added="" k
+  items=$(key_items "$2")
+  if [ ! -f "$rec" ]; then
+    echo "Two-sided key check: not recorded (registered by hand, or before add-pass checked it), so no item here is proved to discriminate"
+    return
+  fi
+  for k in $items; do
+    if grep -qx -- "$k" "$rec"; then proved="${proved:+$proved, }$k"
+    else added="${added:+$added, }$k"; fi
+  done
+  if [ -z "$added" ]; then
+    echo "Two-sided key check: ${proved:-no item} proved at add-pass (each cites a target line the reference fix changes)"
+  else
+    echo "Two-sided key check: ${proved:-no item} proved at add-pass; ★ $added added to the key since, with no two-sided proof"
+  fi
 }
 
 # run_gauntlet <agent-spec> <runs> <rescore 0|1> [pass-label]
@@ -699,6 +826,9 @@ remove that directory and re-run."
   # sweep of the set, run 2 another, and the spread between sweeps is the
   # candidate's own noise floor. Indexed by run number.
   local run_bhit=() run_btotal=() run_bunres=() run_passes=()
+  # Fewest scored runs any pass with blocking items contributed (#23). EMPTY
+  # until one does: no blocking item graded is no rounds, not zero of them.
+  local min_rounds=""
   local regrade_changed_items=0 regrade_changed_runs=0 regrade_kept_runs=0
   # ★ Two failures that must not share an exit code, because the caller's correct
   # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
@@ -953,6 +1083,9 @@ remove that directory and re-run."
     else
       { echo "Language: not recorded"; echo; } >> "$report"
     fi
+    # Stated per pass (#23): an unproved item scores exactly like a proved one,
+    # so the report is the only place the difference can show.
+    [ -n "$pass_clean" ] || { two_sided_line "$label" "$keyfile"; echo; } >> "$report"
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
       if [ "${run_leaks[$n]:-0}" -ge 2 ]; then
@@ -1462,6 +1595,11 @@ remove that directory and re-run."
     # nothing has no denominator to lend to a language.
     if [ "$pass_usable" -gt 0 ]; then
       lang_rows="$lang_rows${pass_lang:-unknown}	$label	$pass_bhit	$pass_btotal	$pass_bunres"$'\n'
+      # A usable run grades every item of its pass, so pass_usable IS this
+      # pass's round count behind the blocking rate.
+      if [ "$pass_btotal" -gt 0 ] && { [ -z "$min_rounds" ] || [ "$pass_usable" -lt "$min_rounds" ]; }; then
+        min_rounds=$pass_usable
+      fi
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
@@ -1690,6 +1828,23 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     esac
   fi
 
+  # ★ The round floor (#23), third guard of the same shape. Both directions of
+  # the rate verdict fall to it, unlike the two above: the reversals it exists
+  # for were a LOW first round as often as a high one, so "caught only 1/4" off
+  # one round is the same draw as "caught every one". A DEFER is not a rate, it
+  # is a quoted act already in hand, so that DO NOT SLOT stands, as a leak does.
+  if [ -n "$min_rounds" ] && [ "$min_rounds" -lt "$ROUND_FLOOR" ]; then
+    local rate_verdict=""
+    case "$slot" in
+      SEAT:*) rate_verdict=1 ;;
+      "DO NOT SLOT") [ "$defer_on_blocking" -gt 0 ] || rate_verdict=1 ;;
+    esac
+    if [ -n "$rate_verdict" ]; then
+      reason="At least one pass was scored in only $min_rounds run, so $blocking_hit/$blocking_total is one round's draw and not a property of \`$spec\`: single rounds have been measured reversing in both directions. Grade at least $ROUND_FLOOR runs per pass (the default) before slotting anything. On the one round: $reason"
+      slot="ONE ROUND, not slottable"
+    fi
+  fi
+
   # ★ Cost per blocking item hit sits BESIDE the hit rate; it never replaces it.
   # The seating question is not only "how many" but "at what spend": a 4/6 seat
   # at a tenth the cost can beat a 5/6 seat. Estimator is bytes/4 of harness-side
@@ -1806,6 +1961,15 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
         else if (unres) print "- run-to-run spread (blocking hit rate): **unavailable**, " unres " UNRESOLVED item(s) leave each sweep a lower bound (" d "); tighten the key and re-grade"
         else printf "- run-to-run spread (blocking hit rate): **%.1fpp** (%s); a difference between two seats smaller than this is noise\n", hi - lo, d
       }'
+    # ★ The round count sits beside every rate it qualifies (#23), and like the
+    # spread it is printed on every branch: an absent count reads as "enough".
+    if [ -z "$min_rounds" ]; then
+      echo "- rounds per pass behind the blocking hit rate: **-** (no pass graded a blocking item)"
+    elif [ "$min_rounds" -lt "$ROUND_FLOOR" ]; then
+      echo "- rounds per pass behind the blocking hit rate: **$min_rounds** (the fewest scored runs any pass had); below the floor of $ROUND_FLOOR, so no seat is recommended from it"
+    else
+      echo "- rounds per pass behind the blocking hit rate: **$min_rounds** (the fewest scored runs any pass had)"
+    fi
     if [ "$rescore" = 1 ]; then
       echo "- item verdicts moved by this regrade: $regrade_changed_items across $regrade_changed_runs run(s); every prior value is in a \`.grade.json.regraded.jsonl\` ledger beside its grade"
       [ "$regrade_kept_runs" -eq 0 ] ||

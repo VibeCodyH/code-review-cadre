@@ -234,6 +234,12 @@ and a model grades measures agreement with the model, so you read the draft
 before the pass will register. The setup step needs a human. `cadre run` after
 it does not.
 
+`cadre add-pass` also checks every key item against the tree on both sides of
+the fix. Each item must cite a `path:line` that exists in the target and that
+the fix changes. An item that cites no such line is refused by name: it
+cannot tell a reviewer that found the defect from one that did not. See
+[METHOD.md](docs/METHOD.md#every-item-is-proved-on-both-trees-before-it-counts).
+
 `cadre setup ~/my-repo --verify` optionally runs each shortlisted fix's tests
 twice: once at the fix, then on a fresh copy with only its source changes
 reverted and its tests retained. `verified` means the first command passed and
@@ -328,6 +334,11 @@ any row measured against itself and names every row within it of the top rate
 as indistinguishable, rather than ordering them. If you graded at one run per
 pass, the floor reads NOT MEASURED, and the honest reading of the table is that
 no difference in it is established.
+
+Every rate also carries its round count, the fewest scored runs any pass had,
+and one round is not a reviewer property. Below two rounds, the report
+withholds the seat (`ONE ROUND, not slottable`) and `cadre panel` does not
+place the row. The rate is still printed, with its count beside it.
 
 Two other things get stated before the score, for the same reason: how many
 runs scored nothing because the output was cut off or the provider returned

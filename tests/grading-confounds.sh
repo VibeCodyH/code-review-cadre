@@ -372,6 +372,74 @@ printf 'output_cap=02048\n' > "$META"
 record_event "$TMP/probe2.jsonl" event=complete "output_cap#=$(meta_num "$META" output_cap)"
 check jq -e '.output_cap == 2048' "$TMP/probe2.jsonl" >/dev/null
 
+# ---- 5. The round floor (#23) -------------------------------------------------
+# One round is one draw. Its rate is printed WITH its count, and no seat is
+# recommended from it, in either direction; a DEFER is an act, not a rate.
+grade_one() { printf '%s\n' "$JUDGE_SAYS" > "$3"; }
+fixture
+good 1
+grade 1 1
+check test "$RC" -eq 0
+has '## Verdict: ONE ROUND, not slottable'
+has 'At least one pass was scored in only 1 run'
+has 'On the one round: Caught every blocking item in every run (2/2).'
+has '- rounds per pass behind the blocking hit rate: **1** (the fewest scored runs any pass had); below the floor of 2, so no seat is recommended from it'
+has '- blocking hit rate: **100.0% (2 / 2)** over **1** round(s) per pass; below the floor of 2'
+check test "$(line_no '- rounds per pass behind')" -lt "$(line_no '- blocking items hit:')"
+grade_report_metrics "$REPORT"
+check test "$METRIC_ROUNDS" = 1
+# Mutation: a second round is the only change, and the seat comes back.
+good 2
+grade 2 1
+has '## Verdict: SEAT: can review alone'
+has '- rounds per pass behind the blocking hit rate: **2** (the fewest scored runs any pass had)'
+has '- blocking hit rate: **100.0% (4 / 4)** over **2** round(s) per pass'
+lacks 'ONE ROUND'
+lacks 'below the floor of 2'
+grade_report_metrics "$REPORT"
+check test "$METRIC_ROUNDS" = 2
+
+# A LOW single round is the same draw: "caught only 0/2" falls to the floor too.
+fixture
+good 1
+JUDGE_SAYS='{"items":{"K1":"MISS","K2":"MISS","K3":"MISS"},"quotes":{},"extras":[]}'
+grade 1 1
+has '## Verdict: ONE ROUND, not slottable'
+has 'On the one round: Caught only 0/2 blocking items'
+# ...but a quoted DEFER on a blocking item is evidence in hand, and stands.
+fixture
+good 1
+JUDGE_SAYS='{"items":{"K1":"DEFER","K2":"HIT","K3":"HIT"},"quotes":{"K1":"argued it was fine","K2":"token leak","K3":"duplicate read"},"extras":[]}'
+grade 1 1
+has '## Verdict: DO NOT SLOT'
+has 'Deferred on a BLOCKING item 1 time(s)'
+lacks 'ONE ROUND'
+
+# ★ Two run slots over DIFFERENT passes are one round of each, the same trap the
+# spread line refuses: p1 scores only in slot 1, p2 only in slot 2.
+fixture
+mkdir -p "$CADRE_HOME/p2"
+printf 'p2|%s|%s|%s|key.md\n' "$SHA" "$TMP/repo" "$SHA" >> "$CADRE_HOME/passes.conf"
+good 1
+: > "$(runfile 2).failed"
+printf 'blocking: dropped write and token leak; duplicate read\nVerdict: blocking\n' > "$CADRE_HOME/p2/$SL-run2.md"
+: > "$CADRE_HOME/p2/$SL-run1.md.failed"
+grade 2 1
+has '- rounds per pass behind the blocking hit rate: **1**'
+has '## Verdict: ONE ROUND, not slottable'
+# No blocking item graded is no rounds, not zero of them.
+fixture
+cat > "$CADRE_HOME/key.md" <<'KEY'
+#### K1 nit - a comment is out of date
+details
+KEY
+good 1
+JUDGE_SAYS='{"items":{"K1":"HIT"},"quotes":{"K1":"dropped write"},"extras":[]}'
+grade 1 1
+has '- rounds per pass behind the blocking hit rate: **-** (no pass graded a blocking item)'
+has '## Verdict: INCONCLUSIVE'
+JUDGE_SAYS='{"items":{"K1":"HIT","K2":"HIT","K3":"HIT"},"quotes":{"K1":"dropped write","K2":"token leak","K3":"duplicate read"},"extras":[]}'
+
 # ---- the declaration seam ----------------------------------------------------
 # ★ Static, like tests/engine-seam.sh: these are crossings between the adapter
 # and the record, and the fixtures above write the record directly, so deleting

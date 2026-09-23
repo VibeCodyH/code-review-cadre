@@ -31,6 +31,43 @@ diff into a rubric is tedious. But the model is transcribing evidence, not
 inventing it, and `cadre add-pass` refuses to register a key that still carries
 the draft marker.
 
+### Every item is proved on both trees before it counts
+
+An item that no reviewer could possibly hit and an item that is not a defect at
+all look identical in the matrix: both are a K row, and both bias the rate
+without saying so. So an item is registered only when it is proved in both
+directions, against the defective tree and the clean one:
+
+- **defective side**: one of the item's own `path:line` citations resolves in
+  the target tree. There is real code there to point a reviewer at.
+- **clean side**: the reference fix changes that same line (three lines of
+  context, the rule the report's anchor check uses). The clean tree does not
+  still hold the code the item calls a defect.
+
+`cadre make-pass` records the source repo, target and fix beside the draft
+(`passes.d/<label>.fix`, never in the checkout), and `cadre add-pass` refuses
+the pass and names each item that has no citation passing both. One citation
+is enough; the item's other citations can be context. Only the target's
+numbering counts, so a line number that fits only the fixed file (keygen rule
+7) is reported as past the end of the file. A CLEAN key has no items and
+nothing to prove.
+
+That means an item the fix never touched is refused, including one the key
+author verified by hand in the target: with no reference fix there is no clean
+side to prove it against. Drop it, or treat it as an out-of-key finding.
+
+Each keyed pass in a grade report states what was proved: the items proved at
+`add-pass`, any item added to the key since (the out-of-key findings §6 asks
+you to fold in arrive this way, with no proof), or `not recorded` for a pass
+registered by hand or before the check existed.
+
+Named non-goal: the judge reads review text, so "the grading flags it on the
+defective tree and not on the clean one" cannot be replayed without model calls,
+and none is made here. This proves the item points at repaired code. It does not
+prove that a judge scores a do-nothing review MISS, or a review of the clean
+tree MISS. A key edited after registration is not re-checked; only the list of
+item names is compared.
+
 ## 2. Two miner rules that came out of running it, not designing it
 
 `cadre setup` mines pairs where commit B repairs commit A: for each fix-shaped
@@ -390,6 +427,27 @@ for the whole table, and rows within that floor of the top rate are named
 rather than ranked. A candidate graded at one run per pass measured no spread
 and is listed as unmeasured — which is not the same as having no noise, and is
 why a one-run gauntlet cannot support a comparison at all.
+
+**The round count.** A rate from one round is one draw, not a property of the
+reviewer. nuhuh, where this rule comes from (#23), published its own
+reversals: one seat at 0% on round one and 4.1% over three rounds, another at
+12.5% on round one and 6.8% over ninety. A round is one scored run of a pass, and the count behind a rate
+is the **fewest** scored runs any pass with blocking items contributed. Two run
+slots over different passes are one round of each, the same trap the spread
+line refuses. The report prints that count on the rate's own line and in the
+footer above the hit line. `cadre panel` prints it as a `ROUNDS` column beside
+every rate.
+
+Below a floor of two rounds, the default run count, the rate is still printed
+with its count, but nothing is ranked on it. A `SEAT:` verdict, or a `DO NOT
+SLOT` from a low hit rate, becomes `ONE ROUND, not slottable`, with the
+one-round reason kept inside it. Both directions fall because the published
+reversals went both ways. A quoted DEFER on a blocking item is an act already
+in hand rather than a rate, so its `DO NOT SLOT` stands, as a leak does. In
+`cadre panel`, a row under the floor, or one from a report that predates the
+count, is named as not placed and is kept out of the within-floor grouping.
+`--selection first-run` is one round by construction, so it never recommends
+a seat.
 
 Two sweeps are only comparable when they graded the same passes, and equal item
 counts do not prove that: a pass scoring only in slot 1 and another only in

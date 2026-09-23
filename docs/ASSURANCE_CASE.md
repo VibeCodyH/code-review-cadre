@@ -3,10 +3,10 @@
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
 `tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`,
-`tests/cost-first.sh`, `tests/panel-accounting.sh` or `tests/byte-identity.sh`
-and run that suite. Anything backed only by a design description belongs
-under non-goals instead — naming what this does NOT protect against is half
-the point of the file.
+`tests/cost-first.sh`, `tests/key-two-sided.sh`, `tests/panel-accounting.sh`
+or `tests/byte-identity.sh` and run that suite. Anything backed only by a
+design description belongs under non-goals instead — naming what this does NOT
+protect against is half the point of the file.
 
 The form is borrowed from alibaba/open-code-review's `ASSURANCE_CASE.md`. The
 bar is not: theirs backs each claim with a description of the design; every
@@ -255,8 +255,48 @@ Test: `tests/byte-identity.sh` itself. Residual: it sees only what the fixture
 exercises (one job, diff mode, no adjudication, no real adapter or model), and
 timings are compared as present or `null`, not by value.
 
+**21. A key item is registered only when it is proved on both trees.**
+`cadre add-pass` refuses a keyed pass unless each item cites a `path:line`
+that resolves in the target tree and that the reference fix changes (three
+lines of context, target numbering only). The reference fix is recorded by
+`make-pass` beside the meta, never in the checkout. An item that cites nothing
+the fix touched, a line past the target's end, or a line only the fixed file
+has is refused by name, and nothing is registered. Each keyed pass in a grade
+report states which items were proved, which were added since, or that
+nothing was recorded.
+Tests, in `tests/key-two-sided.sh`: a proved citation, a unique basename, one
+passing citation among context, the outside-the-fix / past-the-end / fix-only
+numbering / no-citation / untouched-file refusals, one item's citation not
+proving another, add-pass refusing without a recorded fix, refusing a bad
+item and then registering once only that citation is corrected, a CLEAN key
+registering with no proof, the per-pass report line including an item added
+after registration, and make-pass writing the record outside the checkout.
+
+**22. No seat is recommended from one round.** The report counts the fewest
+scored runs any pass with blocking items had, and prints it beside the rate on
+the rate's own line and above the hit line in the footer. Below two, a
+`SEAT:` verdict or a rate-based `DO NOT SLOT` becomes `ONE ROUND, not
+slottable`; a quoted DEFER still disqualifies. Two run slots over different
+passes count as one round each. `cadre panel` prints `ROUNDS` beside every rate
+and does not place a row under the floor, or with no recorded count, in the
+within-floor grouping.
+Tests, in `tests/grading-confounds.sh`: one round withholds the seat and a
+second round alone restores it; a low single round falls too; a DEFER stands;
+slots over different passes are one round; no blocking item prints `-`. In
+`tests/cost-first.sh`: the `ROUNDS` column, a one-round top rate not placed and
+then placed after a second round, a legacy report not placed, every row under
+the floor ranking nothing, and operator prose not read as a count.
+
 ## Non-goals, named
 
+- **The two-sided key check proves a citation, not a grade.** It shows that an
+  item points at code the reference fix repaired. It does not replay the judge,
+  so it cannot show that a do-nothing review scores MISS or that a review of
+  the clean tree scores MISS; both need model calls. A key edited after
+  registration is not re-checked: the report compares item names, not bodies.
+- **Two rounds is a floor, not a sample size.** It separates one draw from a
+  repeated one. It does not make a two-round rate stable. The reversals that
+  motivated it moved over three and ninety rounds.
 - **Cap-matching is refused, not performed.** When two seats ran under
   different output caps the harness says the comparison is unavailable; it
   does not truncate the larger-cap run token-exactly and re-score it. That

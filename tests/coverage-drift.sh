@@ -159,7 +159,8 @@ printf '**blocking** src/unique.ts:30 — dropped write and leaked token\nVerdic
 grade_one() {
   printf '%s\n' '{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"dropped write","K2":"leaked token"},"extras":[]}' > "$3"
 }
-run_gauntlet one 1 1 > "$TMP/grade-output" 2>&1
+cp "$CADRE_HOME/alpha/$sl-run1.md" "$CADRE_HOME/alpha/$sl-run2.md"   # two rounds: a seat needs them (#23)
+run_gauntlet one 2 1 > "$TMP/grade-output" 2>&1
 grade_rc=$?
 check test "$grade_rc" -eq 0
 [ "$grade_rc" -eq 0 ] || cat "$TMP/grade-output"
