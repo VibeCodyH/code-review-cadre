@@ -2,8 +2,9 @@
 
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
-`tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`
-or `tests/cost-first.sh` and run that suite. Anything backed only by a design
+`tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`,
+`tests/key-two-sided.sh` or `tests/cost-first.sh` and run that suite. Anything
+backed only by a design
 description belongs under non-goals instead — naming what this does NOT
 protect against is half the point of the file.
 
@@ -223,7 +224,30 @@ inside `if`, `||`, `&&` and others do not abort) and a counter-style test can
 still forget to call `check`, so a missed assertion that never increments `FAIL`
 still passes.
 
+**19. A key item is registered only when it is proved on both trees.**
+`cadre add-pass` refuses a keyed pass unless each item cites a `path:line`
+that resolves in the target tree and that the reference fix changes (three
+lines of context, target numbering only). The reference fix is recorded by
+`make-pass` beside the meta, never in the checkout. An item that cites nothing
+the fix touched, a line past the target's end, or a line only the fixed file
+has is refused by name, and nothing is registered. Each keyed pass in a grade
+report states which items were proved, which were added since, or that
+nothing was recorded.
+Tests, in `tests/key-two-sided.sh`: a proved citation, a unique basename, one
+passing citation among context, the outside-the-fix / past-the-end / fix-only
+numbering / no-citation / untouched-file refusals, one item's citation not
+proving another, add-pass refusing without a recorded fix, refusing a bad
+item and then registering once only that citation is corrected, a CLEAN key
+registering with no proof, the per-pass report line including an item added
+after registration, and make-pass writing the record outside the checkout.
+
 ## Non-goals, named
+
+- **The two-sided key check proves a citation, not a grade.** It shows that an
+  item points at code the reference fix repaired. It does not replay the judge,
+  so it cannot show that a do-nothing review scores MISS or that a review of
+  the clean tree scores MISS; both need model calls. A key edited after
+  registration is not re-checked: the report compares item names, not bodies.
 
 - **Cap-matching is refused, not performed.** When two seats ran under
   different output caps the harness says the comparison is unavailable; it

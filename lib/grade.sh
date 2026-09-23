@@ -586,6 +586,108 @@ key_problems() {
   done
 }
 
+# ---- two-sided key check (#23) ----------------------------------------------
+# An item is only allowed into the benchmark once it is proved on both trees:
+# present on the defective one, changed on the clean one. Without that, an item
+# no reviewer could ever hit and an item that is not a defect at all look
+# identical in the matrix -- both are just a K row -- and both bias the rate.
+#
+# The judge reads review text, so "the grading flags it" cannot be replayed
+# without a model call. What CAN be checked without one is the thing the grade
+# stands on: the item's own TARGET citation (keygen.md rule 7).
+#   defective side: a cited `path:line` resolves in the target tree, so there
+#                   is real code there for a reviewer to be pointed at
+#   clean side:     the reference fix changes that line (three lines of
+#                   context, the anchor_scan convention), so the clean tree does
+#                   not still hold the code the item calls a defect
+# One citation passing both is enough; the item's other citations may be
+# context. Old side only: the key's coordinates are the target's, and a line
+# number that only fits the fix is the rule-7 mistake this should catch.
+# ★ NAMED NON-GOAL: this proves the item points at repaired code. It does not
+# prove a judge scores a do-nothing review MISS or a review of the clean tree
+# MISS; both of those need model calls, and none is made here.
+
+# The item's heading and body, up to the next heading at its level or above.
+key_item_text() { # <keyfile> <item>
+  awk -v item="$2" '
+    /^#/ {
+      match($0, /^#+/); lv = RLENGTH
+      if (on && lv <= start) exit
+      if (!on && $0 ~ ("^#+ *[*]?[*]?" item "([^0-9A-Za-z_]|$)")) { on = 1; start = lv }
+    }
+    on { print }
+  ' "$1"
+}
+
+# Prints one problem per line; empty output means every item is proved. Reuses
+# lib/anchor-scan.awk, the literal-path citation matcher the grade report uses.
+key_two_sided() { # <keyfile> <repo> <target-sha> <fix-sha>
+  local kf="$1" dir="$2" target="$3" fix="$4" paths treepaths item text f bn shares blockers patch oldlen result
+  local checked drift unresolved anchors unresolved_anchors seen green past outside
+  key_is_clean "$kf" && return 0
+  git -C "$dir" cat-file -e "$target^{commit}" 2>/dev/null || { echo "the target $target is not in $dir"; return; }
+  git -C "$dir" cat-file -e "$fix^{commit}" 2>/dev/null || { echo "the reference fix $fix is not in $dir"; return; }
+  # The files the FIX commit changed, diffed against the TARGET: the old side
+  # is then in the key's coordinates even when commits landed in between.
+  paths=$(git -C "$dir" -c core.quotePath=false diff --name-only --no-renames "$fix^" "$fix" 2>/dev/null) ||
+    { echo "cannot read the reference fix $fix in $dir"; return; }
+  treepaths=$(git -C "$dir" -c core.quotePath=false ls-tree -r --name-only "$target" 2>/dev/null) ||
+    { echo "cannot list the target tree $target in $dir"; return; }
+  for item in $(key_items "$kf"); do
+    text=$(key_item_text "$kf" "$item")
+    seen=0 green=0 past="" outside=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$f" in *\\*|*\"*|*$'\t'*) continue ;; esac
+      bn=${f##*/}
+      shares=$(awk -v b="$bn" '{p=$0; sub(/.*\//,"",p); if(p==b)n++} END{print n+0}' <<< "$treepaths")
+      blockers=$(awk -v f="$f" -v b="$bn" '
+        function suffix(s,t){return length(s)>length(t) && substr(s,length(s)-length(t)+1)==t}
+        {p=$0; sub(/.*\//,"",p); if(suffix($0,f) || suffix($0,b)) print; if(suffix(p,b)) print p}
+        ' <<< "$treepaths")
+      patch=$(git -C "$dir" diff --no-ext-diff --no-textconv --no-renames --unified=3 "$target" "$fix" -- ":(literal)$f" 2>/dev/null) || continue
+      # Both sides of every hunk become the old side, so the matcher cannot
+      # credit a citation that only fits the fixed file's numbering.
+      patch=$(sed -nE 's/^@@ -([0-9]+(,[0-9]+)?) \+[0-9]+(,[0-9]+)? @@.*/@@ -\1 +\1 @@/p' <<< "$patch")
+      oldlen=$(git -C "$dir" cat-file -p "$target:$f" 2>/dev/null | awk 'END { print NR }') || oldlen=0
+      # newlen=0: past the end of the TARGET file is past the end, full stop.
+      result=$(CADRE_ANCHOR_PATH="$f" CADRE_ANCHOR_BASENAME="$bn" CADRE_ANCHOR_PATCH="$patch" CADRE_ANCHOR_BLOCKERS="$blockers" \
+        awk -v unique="$shares" -v oldlen="${oldlen:-0}" -v newlen=0 \
+          -f "$CADRE_ROOT/lib/anchor-scan.awk" <<< "$text") || continue
+      IFS=$'\t' read -r checked drift unresolved anchors unresolved_anchors <<< "$result"
+      seen=$((seen + checked))
+      green=$((green + checked - drift - unresolved))
+      [ "$anchors" = - ] || outside="${outside:+$outside, }$anchors"
+      [ "$unresolved_anchors" = - ] || past="${past:+$past, }$unresolved_anchors"
+    done <<< "$paths"
+    [ "$green" -eq 0 ] || continue
+    if [ "$seen" -eq 0 ]; then
+      echo "$item cites no path:line in a file the reference fix changes ($(printf '%s' "$paths" | paste -sd, - | sed 's/,/, /g')), so nothing ties it to the repair"
+    else
+      echo "$item has no citation the reference fix changes:${past:+ past the end of the file at the target: $past;}${outside:+ outside every line the fix changes, so the clean tree still holds that code: $outside;}" | sed 's/;$//'
+    fi
+  done
+}
+
+# The per-pass line the grade report prints, from what add-pass recorded.
+two_sided_line() { # <label> <keyfile>
+  local rec="$CADRE_HOME/passes.d/$1.two-sided" items proved="" added="" k
+  items=$(key_items "$2")
+  if [ ! -f "$rec" ]; then
+    echo "Two-sided key check: not recorded (registered by hand, or before add-pass checked it), so no item here is proved to discriminate"
+    return
+  fi
+  for k in $items; do
+    if grep -qx -- "$k" "$rec"; then proved="${proved:+$proved, }$k"
+    else added="${added:+$added, }$k"; fi
+  done
+  if [ -z "$added" ]; then
+    echo "Two-sided key check: ${proved:-no item} proved at add-pass (each cites a target line the reference fix changes)"
+  else
+    echo "Two-sided key check: ${proved:-no item} proved at add-pass; ★ $added added to the key since, with no two-sided proof"
+  fi
+}
+
 # run_gauntlet <agent-spec> <runs> <rescore 0|1> [pass-label]
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"
@@ -953,6 +1055,9 @@ remove that directory and re-run."
     else
       { echo "Language: not recorded"; echo; } >> "$report"
     fi
+    # Stated per pass (#23): an unproved item scores exactly like a proved one,
+    # so the report is the only place the difference can show.
+    [ -n "$pass_clean" ] || { two_sided_line "$label" "$keyfile"; echo; } >> "$report"
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
       if [ "${run_leaks[$n]:-0}" -ge 2 ]; then

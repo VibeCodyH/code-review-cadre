@@ -55,7 +55,9 @@ then run that panel on the code you are about to ship.
   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
                                         build the leak-controlled checkout and
                                         DRAFT an answer key for you to correct
-  cadre add-pass <label>                register a corrected draft as a pass
+  cadre add-pass <label>                register a corrected draft as a pass;
+                                        refuses an item that cites no target
+                                        line the fix changes
   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
   cadre grade <agent-spec> [runs] [label] [--selection all-runs|first-run] [--freeze]
                                         re-grade outputs; optionally freeze the table
@@ -330,6 +332,11 @@ cmd_make_pass() {
   [ "$n" -lt 2 ] && echo "  ⚠ only one commit visible (target is a root commit), edit the base field in passes.conf by hand"
   printf '%s|%s|%s|%s|%s\n' "$label" "${target:0:9}" "$dest" "$base" "keys/$label.md" \
     > "$CADRE_HOME/passes.d/$label.meta"
+  # The reference fix, for add-pass's two-sided check (#23). Beside the meta,
+  # never in the checkout: the checkout must not be able to reach the future.
+  printf '%s\t%s\t%s\n' "$(readlink -f "$repo")" \
+    "$(git -C "$repo" rev-parse "$target^{commit}")" "$(git -C "$repo" rev-parse "$fix^{commit}")" \
+    > "$CADRE_HOME/passes.d/$label.fix"
 
   cat <<EOF
 
@@ -339,6 +346,10 @@ draft key: $keyfile
 measures agreement-with-the-generator, not review quality. The fix commit is
 your external evidence; the draft is just a transcription of it, and it will
 get severities wrong, invent items, or miss the point of the repair.
+
+Every K item must cite a TARGET path:line that the fix changes. add-pass
+checks that against $repo and refuses an item that cites none: an item the
+fix never touched has no clean side to prove it against.
 
 Then register it:
 
@@ -362,7 +373,27 @@ cmd_add_pass() {
     die "severity is read out of each item's heading, so an item without one scores as if it does not matter"
   }
   grep -q "^$label|" "$PASSES" 2>/dev/null && die "pass '$label' is already registered"
+  # ★ Two-sided (#23): every item proved on the defective tree AND the clean
+  # one before it can count. See key_two_sided in lib/grade.sh. A CLEAN key
+  # has no items, so there is nothing to prove.
+  local fixrec="$CADRE_HOME/passes.d/$label.fix" frepo ftarget ffix
+  if ! key_is_clean "$keyfile"; then
+    [ -s "$fixrec" ] || die "no reference fix recorded for '$label' at $fixrec.
+     make-pass writes it. For a draft made before it did, write one line by hand:
+       printf '%s\\t%s\\t%s\\n' <repo-dir> <full-target-sha> <full-fix-sha> > $fixrec"
+    IFS=$'\t' read -r frepo ftarget ffix < "$fixrec"
+    probs=$(key_two_sided "$keyfile" "$frepo" "$ftarget" "$ffix")
+    [ -z "$probs" ] || {
+      echo "cadre: refusing to register '$label'. Not every item is proved on both trees:" >&2
+      printf '%s\n' "$probs" | sed 's/^/  /' >&2
+      die "an item must cite a line on the target (${ftarget:0:9}) that the reference fix (${ffix:0:9}) changes. Correct the citation, or drop the item: with no clean side it cannot tell a reviewer that found the defect from one that did not"
+    }
+  fi
   cat "$meta" >> "$PASSES"
+  if ! key_is_clean "$keyfile"; then
+    key_items "$keyfile" > "$CADRE_HOME/passes.d/$label.two-sided"
+    echo "two-sided: $(key_items "$keyfile" | paste -sd' ' -) each cite a target line the reference fix changes"
+  fi
   echo "registered: $(cat "$meta")"
   echo "next: cadre run codex 2"
 }
