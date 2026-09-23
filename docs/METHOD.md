@@ -441,3 +441,8 @@ scores as a miss.
 Receipts are harness-side measurements only. They do not measure hidden
 reasoning tokens, provider-side billing, or retries a CLI performs internally;
 those happen beyond the adapter boundary and are not visible to cadre.
+
+Time the harness spent that no timer covered is not dropped either. Each panel
+records its wall clock beside the seat and pre-pass seconds, and the
+difference as `unattributed_secs` (docs/DATASET.md, the `panel` event), so the
+seat column is never read as the whole cost of a panel.

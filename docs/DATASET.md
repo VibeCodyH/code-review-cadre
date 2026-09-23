@@ -127,6 +127,40 @@ happened to register, not cross-language ground truth. It exists so that
 per-language splits can fall out of ordinary BYO-repo use over time; it is
 not a benchmark claim, and no such claim should be quoted from it.
 
+## `panel` — the wall clock and what no timer covered
+
+The last event a finished panel writes to its `runs.jsonl` is one `panel`
+event. It sets the panel's measured wall clock against the parts that have
+their own timers and records the difference, so the totals always reconcile:
+
+    wall_secs = prerun_secs + seat_secs + unattributed_secs
+
+- **wall_secs** — measured on its own, from the start of `run-review.sh` to
+  just before the Receipts table. The table, the scratch cleanup and any
+  synthesis run after it and are **not timed**; the report says so.
+- **prerun_secs** — the `--prerun` command. `null` when there was none: it was
+  never timed, which is different from taking zero seconds.
+- **seat_secs** — the sum of the `secs` of this panel's `complete` rows,
+  exactly the Receipts "panel total". `null` when no seat was timed. A seat
+  with no timer (not installed, skipped) adds nothing here, and
+  `untimed_seats` counts those; whatever they took is inside the residual.
+- **unattributed_secs** — the residual, signed and never clamped. With
+  `jobs` = 1 every timer is a disjoint slice of the wall clock, so it is
+  never negative: a negative value means a second was counted twice, and the
+  report and stderr both say so. With `jobs` > 1 seat timers overlap by design,
+  and a negative value is that overlap, not harness time.
+- **est_tokens** / **unattributed_tokens** — the Receipts token estimate, and
+  its residual as `null`. There is no measured token total to reconcile
+  against (the estimate is a sum of per-seat estimates, and a provider's bill
+  is invisible from here), so the residual is unmeasured, never 0.
+
+It is a new event name, so every reader that selects `dispatch` or `complete`
+(slots.tsv, `cadre receipts`, `cadre seats`) is untouched. A panel killed
+before its report has no `panel` event, the same way a seat cut off mid-flight
+has a `dispatch` and no `complete`. The evidence export carries it whole as
+`shared/panel.jsonl`. Benchmark passes report no total beside their per-run
+seconds and write no such event.
+
 ## Known blind spots
 
 1. **No ground truth.** Above. This is the big one.
