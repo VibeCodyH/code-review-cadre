@@ -2,10 +2,11 @@
 
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
-`tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`
-or `tests/cost-first.sh` and run that suite. Anything backed only by a design
-description belongs under non-goals instead — naming what this does NOT
-protect against is half the point of the file.
+`tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`,
+`tests/cost-first.sh`, `tests/panel-accounting.sh` or `tests/byte-identity.sh`
+and run that suite. Anything backed only by a design description belongs
+under non-goals instead — naming what this does NOT protect against is half
+the point of the file.
 
 The form is borrowed from alibaba/open-code-review's `ASSURANCE_CASE.md`. The
 bar is not: theirs backs each claim with a description of the design; every
@@ -222,6 +223,37 @@ itself. Residual: the lint is a proxy — `set -e` has exemptions (commands
 inside `if`, `||`, `&&` and others do not abort) and a counter-style test can
 still forget to call `check`, so a missed assertion that never increments `FAIL`
 still passes.
+
+**19. A panel's time reconciles, and a residual is recorded rather than
+absorbed.** The `panel` event in `runs.jsonl` carries the measured wall clock,
+the pre-pass and seat seconds, and `unattributed_secs` = wall minus both, so
+the three always add up. A seat with no timer adds nothing and is counted in
+`untimed_seats`. The residual is signed: with seats run one at a time it
+cannot go negative, so a negative one is reported in the report and on stderr
+as a second counted twice; under `--jobs N` it is reported as overlap. The
+token residual is `null`, because no measured token total exists to reconcile.
+Tests, in `tests/panel-accounting.sh`: "totals reconcile exactly", "sequential
+residual is not negative", "the uninstalled seat is untimed", "token residual
+is unmeasured", "so the residual is negative, and kept", "report flags double
+counting", and the readers `receipts`, `seats` and the evidence export still
+reading a panel that carries the event. Residual: seconds are whole, so a
+residual under a second per timer is invisible, and the time after the clock
+stops (the Receipts table, cleanup, synthesis) is named as untimed, not
+measured.
+
+**20. A change that claims to be behavior-neutral cannot move a fixture
+artifact unseen.** `tests/byte-identity.sh` replays one synthetic panel (a seat
+in every delivery state, a misconfigured seat, a repeated seat, a gated seat,
+a synthesis) and one graded pass through stub adapters, and compares every
+file they leave, including the prompts handed to the synthesizer and the
+judge, byte for byte with `tests/fixtures/byte-identity/`. Only clocks, the
+temp directory and the harness's own identity hashes are normalized, and
+docs/BYTE-IDENTITY.md lists each one. A mismatch prints the diff and fails; an
+intended change regenerates the goldens with `--accept`, so the move is in
+the commit.
+Test: `tests/byte-identity.sh` itself. Residual: it sees only what the fixture
+exercises (one job, diff mode, no adjudication, no real adapter or model), and
+timings are compared as present or `null`, not by value.
 
 ## Non-goals, named
 

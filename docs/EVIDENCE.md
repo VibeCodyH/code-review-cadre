@@ -34,7 +34,10 @@ do not prove that a provider produced the review.
 Raw `findings.json` keeps its original `source.file` references. The export
 manifest's `source_locations` maps those filenames to their exported paths.
 Run events and slot rows are split by seat; the mapping lists every resulting
-file, while source hashes describe the original unsplit inputs.
+file, while source hashes describe the original unsplit inputs. The one event
+that belongs to no seat, the panel's wall clock and its `unattributed_secs`
+residual (see [the dataset contract](DATASET.md)), is exported whole as
+`shared/panel.jsonl`; older panels without it export as before.
 
 ## Capture happens before the reviewers run
 

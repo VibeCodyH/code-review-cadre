@@ -944,6 +944,14 @@ lints its exit contract: the script must enable `set -e` in its first 15 lines
 or end on `[ "$FAIL" -eq 0 ]`; a script that satisfies neither is reported
 `FAIL ... (no exit contract: ...)` without being executed.
 
+A harness change that claims to leave results alone has to pass
+[`tests/byte-identity.sh`](tests/byte-identity.sh): it replays a fixed
+synthetic panel and graded pass through stub adapters and compares every
+artifact byte for byte with the committed goldens. An intended change
+regenerates them with `bash tests/byte-identity.sh --accept`, so the move is a
+diff in the commit. See [the byte-identity gate](docs/BYTE-IDENTITY.md) for
+exactly which fields are normalized.
+
 Known pre-existing failure: [`tests/pi-review.sh`](tests/pi-review.sh) fails
 without the optional Pi SDK installed. It stubs `node`, but its panel test still
 checks whether the SDK is installed. The runner reports this failure.

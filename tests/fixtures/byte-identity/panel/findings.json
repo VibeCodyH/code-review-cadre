@@ -1,0 +1,156 @@
+{
+  "schema": "cadre/findings@1",
+  "target": {
+    "base_tree": "7e481b3f1997d0101562a059fe1baae62437dbff",
+    "reviewed_tree": "e3323ae7ddf623d3eaf07d3555d85890565e0a69"
+  },
+  "panel": [
+    {
+      "reviewer": "finder",
+      "state": "ok",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "trunc",
+      "state": "degraded",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "dead",
+      "state": "absent",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "waffle",
+      "state": "absent",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "ghost",
+      "state": "absent",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "twice",
+      "state": "ok",
+      "skipped_gate": null,
+      "skipped_reason": null
+    },
+    {
+      "reviewer": "gated",
+      "state": "skipped",
+      "skipped_gate": "?min-lines=999",
+      "skipped_reason": "diff is 2 lines"
+    }
+  ],
+  "synthesis": {
+    "status": "ok",
+    "agent": "synth"
+  },
+  "verify": {
+    "ran": false
+  },
+  "claims": [
+    {
+      "reviewer": "finder",
+      "reviewer_state": "ok",
+      "severity_stated": "blocking",
+      "source": {
+        "file": "finder-1328352139.md",
+        "line": 1
+      },
+      "source_text": "- blocking: app.js drops the write when the retry path runs",
+      "location": null
+    },
+    {
+      "reviewer": "finder",
+      "reviewer_state": "ok",
+      "severity_stated": "should-fix",
+      "source": {
+        "file": "finder-1328352139.md",
+        "line": 2
+      },
+      "source_text": "* **Severity**: should-fix",
+      "location": null
+    },
+    {
+      "reviewer": "finder",
+      "reviewer_state": "ok",
+      "severity_stated": "nit",
+      "source": {
+        "file": "finder-1328352139.md",
+        "line": 3
+      },
+      "source_text": "#### **1. `nit`** rename the counter",
+      "location": null
+    },
+    {
+      "reviewer": "trunc",
+      "reviewer_state": "degraded",
+      "severity_stated": "should-fix",
+      "source": {
+        "file": "trunc-2787845321.md.partial",
+        "line": 1
+      },
+      "source_text": "- should-fix: the counter is never reset",
+      "location": null
+    },
+    {
+      "reviewer": "twice",
+      "reviewer_state": "ok",
+      "severity_stated": "nit",
+      "source": {
+        "file": "twice-1349581934.md",
+        "line": 5
+      },
+      "source_text": "- nit: the fixture file has no trailing comment",
+      "location": null
+    },
+    {
+      "reviewer": "twice",
+      "reviewer_state": "ok",
+      "severity_stated": "nit",
+      "source": {
+        "file": "twice-1349581934.md",
+        "line": 10
+      },
+      "source_text": "- nit: the fixture file has no trailing comment",
+      "location": null
+    }
+  ],
+  "findings": [
+    {
+      "severity": "blocking",
+      "agreement": {
+        "numerator": 1,
+        "denominator": 3
+      },
+      "source": {
+        "file": "synthesis.md",
+        "line": 6
+      },
+      "source_text": "- blocking [1/3]: app.js drops the write when the retry path runs",
+      "status": null,
+      "ledger_id": null
+    },
+    {
+      "severity": "should-fix",
+      "agreement": {
+        "numerator": 2,
+        "denominator": 3
+      },
+      "source": {
+        "file": "synthesis.md",
+        "line": 7
+      },
+      "source_text": "- should-fix [2/3]: the counter is never reset",
+      "status": null,
+      "ledger_id": null
+    }
+  ]
+}

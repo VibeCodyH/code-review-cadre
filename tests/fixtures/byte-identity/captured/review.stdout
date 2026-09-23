@@ -1,0 +1,21 @@
+reviewing a8290164d..6890fd791 | 6 reviewer(s) | jobs=1
+6 independent lineage(s) across 6 seat(s)
+  finder: started
+  finder: 142 bytes in <n>s
+  trunc: started
+  trunc: DEGRADED after <n>s, stopped early, partial review kept as trunc-2787845321.md.partial
+  dead: started
+  dead: FAILED after <n>s (rc=1), kept as dead-988114467.md.failed
+  waffle: started
+  waffle: INCONCLUSIVE after <n>s (rc=0), returned text but no review, kept as waffle-3929603487.md.inconclusive
+  ghost: started
+  ghost: NOT INSTALLED
+  twice: started, 2 rolls
+  twice roll 1: 65 bytes in <n>s
+  twice roll 2: 65 bytes in <n>s
+  twice: union of 2 rolls, 2 complete -> ok
+
+2 ok, 1 degraded, 1 inconclusive, 2 failed, 1 skipped. Report: <SANDBOX>/state/reviews/fixture/report.md
+synthesizing 3 review(s) (2 full, 1 partial) with synth ...
+saved: <SANDBOX>/state/reviews/fixture/synthesis.md
+saved: <SANDBOX>/state/reviews/fixture/findings.json
