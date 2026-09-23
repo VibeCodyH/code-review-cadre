@@ -241,6 +241,21 @@ item and then registering once only that citation is corrected, a CLEAN key
 registering with no proof, the per-pass report line including an item added
 after registration, and make-pass writing the record outside the checkout.
 
+**20. No seat is recommended from one round.** The report counts the fewest
+scored runs any pass with blocking items had, and prints it beside the rate on
+the rate's own line and above the hit line in the footer. Below two, a
+`SEAT:` verdict or a rate-based `DO NOT SLOT` becomes `ONE ROUND, not
+slottable`; a quoted DEFER still disqualifies. Two run slots over different
+passes count as one round each. `cadre panel` prints `ROUNDS` beside every rate
+and does not place a row under the floor, or with no recorded count, in the
+within-floor grouping.
+Tests, in `tests/grading-confounds.sh`: one round withholds the seat and a
+second round alone restores it; a low single round falls too; a DEFER stands;
+slots over different passes are one round; no blocking item prints `-`. In
+`tests/cost-first.sh`: the `ROUNDS` column, a one-round top rate not placed and
+then placed after a second round, a legacy report not placed, every row under
+the floor ranking nothing, and operator prose not read as a count.
+
 ## Non-goals, named
 
 - **The two-sided key check proves a citation, not a grade.** It shows that an
@@ -248,7 +263,9 @@ after registration, and make-pass writing the record outside the checkout.
   so it cannot show that a do-nothing review scores MISS or that a review of
   the clean tree scores MISS; both need model calls. A key edited after
   registration is not re-checked: the report compares item names, not bodies.
-
+- **Two rounds is a floor, not a sample size.** It separates one draw from a
+  repeated one. It does not make a two-round rate stable. The reversals that
+  motivated it moved over three and ninety rounds.
 - **Cap-matching is refused, not performed.** When two seats ran under
   different output caps the harness says the comparison is unavailable; it
   does not truncate the larger-cap run token-exactly and re-score it. That

@@ -335,6 +335,11 @@ as indistinguishable, rather than ordering them. If you graded at one run per
 pass, the floor reads NOT MEASURED, and the honest reading of the table is that
 no difference in it is established.
 
+Every rate also carries its round count, the fewest scored runs any pass had,
+and one round is not a reviewer property. Below two rounds, the report
+withholds the seat (`ONE ROUND, not slottable`) and `cadre panel` does not
+place the row. The rate is still printed, with its count beside it.
+
 Two other things get stated before the score, for the same reason: how many
 runs scored nothing because the output was cut off or the provider returned
 nothing, and what output cap the runs were dispatched under. When two rows ran

@@ -428,6 +428,27 @@ rather than ranked. A candidate graded at one run per pass measured no spread
 and is listed as unmeasured — which is not the same as having no noise, and is
 why a one-run gauntlet cannot support a comparison at all.
 
+**The round count.** A rate from one round is one draw, not a property of the
+reviewer. nuhuh, where this rule comes from (#23), published its own
+reversals: one seat at 0% on round one and 4.1% over three rounds, another at
+12.5% on round one and 6.8% over ninety. A round is one scored run of a pass, and the count behind a rate
+is the **fewest** scored runs any pass with blocking items contributed. Two run
+slots over different passes are one round of each, the same trap the spread
+line refuses. The report prints that count on the rate's own line and in the
+footer above the hit line. `cadre panel` prints it as a `ROUNDS` column beside
+every rate.
+
+Below a floor of two rounds, the default run count, the rate is still printed
+with its count, but nothing is ranked on it. A `SEAT:` verdict, or a `DO NOT
+SLOT` from a low hit rate, becomes `ONE ROUND, not slottable`, with the
+one-round reason kept inside it. Both directions fall because the published
+reversals went both ways. A quoted DEFER on a blocking item is an act already
+in hand rather than a rate, so its `DO NOT SLOT` stands, as a leak does. In
+`cadre panel`, a row under the floor, or one from a report that predates the
+count, is named as not placed and is kept out of the within-floor grouping.
+`--selection first-run` is one round by construction, so it never recommends
+a seat.
+
 Two sweeps are only comparable when they graded the same passes, and equal item
 counts do not prove that: a pass scoring only in slot 1 and another only in
 slot 2 give both slots the same denominator over completely different items.

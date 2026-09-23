@@ -3206,7 +3206,12 @@ gauntlet_case() {  # gauntlet_case <dir> <spec> <judgeA-verdicts> <judgeB-verdic
 run_gaunt() {  # run_gaunt <dir> <judge-spec> <candidate>
   local d="$1" j="$2" c="$3"
   CADRE_HOME="$d/home" CADRE_WORK="$d/work" CADRE_AGENTS_D="$d/agents.d" \
-  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" locked_run "$c" 1 p1 2>&1
+  CADRE_JUDGE="$j" PATH="$d/bin:$PATH" locked_run "$c" "${GAUNT_RUNS:-1}" p1 2>&1
+}
+# A second round of the same review and grades: a seat needs two (#23).
+second_round() {  # second_round <dir> <spec>
+  local f sl; sl=$(slug "$2")
+  for f in "$1/home/p1/$sl-run1".*; do cp "$f" "${f/-run1./-run2.}"; done
 }
 HITBOTH='{"items":{"K1":"HIT","K2":"HIT"},"quotes":{"K1":"the write is dropped","K2":"the token leaks"},"verdict":"found","extras":[]}'
 SPLITK2='{"items":{"K1":"HIT","K2":"MISS"},"quotes":{"K1":"the write is dropped"},"verdict":"found","extras":[]}'
@@ -3216,6 +3221,9 @@ D=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D" terse "$HITBOTH" "$HITBOTH"
 OUT=$(run_gaunt "$D" good,good2 terse)
 R=$(ls "$D/home"/report-*.md | head -1)
 check "gate: agreement scores"        "grep -q 'blocking items hit: \*\*2 / 2\*\*' '$R'"
+check "gate: one round seats nobody"  "grep -q 'Verdict: ONE ROUND, not slottable' '$R'"
+second_round "$D" terse
+OUT=$(GAUNT_RUNS=2 run_gaunt "$D" good,good2 terse)
 check "gate: and seats the candidate" "grep -q 'Verdict: SEAT: can review alone' '$R'"
 # Not the word anywhere -- the header explains the rule and should say it. No
 # ITEM may be unresolved, and no range may be reported.
@@ -3765,7 +3773,8 @@ check "scoped: says it is one pass"   "grep -q 'Scoped with a pass argument' '$R
 # not the benchmark" there would be a false alarm on the smallest real setup.
 # The guard asks what was left out, not whether an argument was passed.
 D2=$(mktemp -d -p "$SANDBOX"); gauntlet_case "$D2" terse "$HITBOTH" "$HITBOTH"
-OUT=$(run_gaunt "$D2" good,good2 terse)
+second_round "$D2" terse
+OUT=$(GAUNT_RUNS=2 run_gaunt "$D2" good,good2 terse)
 R2=$(ls "$D2/home"/report-*.md | head -1)
 check "scoped: one-pass registry seats" "grep -q 'Verdict: SEAT: can review alone' '$R2'"
 check "scoped: no false scope warning"  "! grep -q 'SCOPED to one pass' '$R2'"

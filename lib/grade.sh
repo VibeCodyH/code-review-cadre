@@ -303,7 +303,7 @@ cost_per_hit() {
 
 # Read only the grader's anchored footer fields. Missing/ambiguous legacy fields
 # stay unavailable; never reconstruct spend or turn an unresolved range exact.
-grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE,SPREAD,CAP}
+grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RATE,SPREAD,CAP,ROUNDS}
   local fields
   fields=$(awk '
     /^## Verdict: / {
@@ -319,6 +319,7 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
     # the first line stand as unambiguous. Same rule the hit/cost fields use.
     /^- run-to-run spread \(blocking hit rate\):/ { ns++; sp=$0 }
     /^- output cap:/ { ncap++; capl=$0 }
+    /^- rounds per pass behind the blocking hit rate:/ { nr++; rl=$0 }
     END {
       # Spread and cap are read whether or not the table scored: a cap mismatch
       # or a missing floor is a fact about the run, not about the verdict.
@@ -327,7 +328,12 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
       # setting; not recorded now" as a measured 2048, which is operator prose
       # promoted to a number -- the failure the hit/cost patterns above are
       # already anchored against. An unrecognised line is "-", never a value.
-      spread=cap="-"
+      spread=cap=rounds="-"
+      # Same end-to-end anchoring (#23). Legacy reports predate the line and
+      # stay "-": an unknown round count is never read as enough of them.
+      if (nr==1 && rl ~ /^- rounds per pass behind the blocking hit rate: \*\*[0-9]+\*\* \(the fewest scored runs any pass had\)(; below the floor of [0-9]+, so no seat is recommended from it)?$/) {
+        sub(/^- rounds per pass behind the blocking hit rate: \*\*/, "", rl); sub(/\*\*.*$/, "", rl); rounds=rl
+      }
       if (ns==1 && sp ~ /^- run-to-run spread \(blocking hit rate\): \*\*[0-9]+\.[0-9]pp\*\* \(run [0-9]+: [0-9]+\/[0-9]+.*\); a difference between two seats smaller than this is noise$/) {
         sub(/^- run-to-run spread \(blocking hit rate\): \*\*/, "", sp); sub(/pp\*\*.*$/, "", sp); spread=sp
       }
@@ -360,10 +366,10 @@ grade_report_metrics() { # <report>; sets METRIC_{LOW,HIGH,TOTAL,COST,PARTIAL,RA
           spend=cost+0
         }
       }
-      print lo, hi, total, spend, partial+0, spread, cap
+      print lo, hi, total, spend, partial+0, spread, cap, rounds
     }
   ' "$1")
-  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL METRIC_SPREAD METRIC_CAP <<< "$fields"
+  read -r METRIC_LOW METRIC_HIGH METRIC_TOTAL METRIC_COST METRIC_PARTIAL METRIC_SPREAD METRIC_CAP METRIC_ROUNDS <<< "$fields"
   METRIC_RATE='-'
   if [ "$METRIC_TOTAL" != - ]; then
     METRIC_RATE=$(awk -v lo="$METRIC_LOW" -v hi="$METRIC_HIGH" -v total="$METRIC_TOTAL" 'BEGIN {
@@ -386,7 +392,15 @@ frontload_grade_cost() { # <finished-report>
     echo "## Cost and hits (graded-only)"
     echo
     echo "- est. tokens per credited blocking hit: **$METRIC_COST**$note"
-    echo "- blocking hit rate: **$METRIC_RATE**$note"
+    # The round count on the rate's own line (#23), so no copy of the rate can
+    # be lifted without it. A rate of "-" has nothing to qualify.
+    if [ "$METRIC_RATE" = - ] || [ "$METRIC_ROUNDS" = - ]; then
+      echo "- blocking hit rate: **$METRIC_RATE**$note"
+    elif [ "$METRIC_ROUNDS" -lt "$ROUND_FLOOR" ]; then
+      echo "- blocking hit rate: **$METRIC_RATE**$note over **$METRIC_ROUNDS** round(s) per pass; below the floor of $ROUND_FLOOR, one round's draw and not a reviewer property"
+    else
+      echo "- blocking hit rate: **$METRIC_RATE**$note over **$METRIC_ROUNDS** round(s) per pass"
+    fi
     if [ "$METRIC_SPREAD" = - ]; then
       echo "- noise floor (run-to-run spread): **not measured**; no delta against another seat is distinguishable from noise"
     else
@@ -506,6 +520,17 @@ anchor_scan() { # <review> <repo> <base> <sha>; sets ANCHOR_* (advisory only)
     [ -z "$unresolved_anchors" ] || ANCHOR_UNRESOLVED_LIST="${ANCHOR_UNRESOLVED_LIST:+$ANCHOR_UNRESOLVED_LIST, }$unresolved_anchors"
   done <<< "$paths"
 }
+
+# ★ The round floor (#23). A rate from one round is one draw, not a property of
+# the reviewer: nuhuh, where this comes from, published its own reversals --
+# a seat at 0% on round one and 4.1% over three, another at 12.5% on round one
+# and 6.8% over ninety. A round is one scored run of a pass, and the count
+# behind a rate is the FEWEST any keyed pass contributed, because two run slots
+# over different passes are one round of each (the equal-denominators trap the
+# spread line already refuses). Below the floor a rate is still printed, with
+# its round count, but no seat is recommended from it. Two, because it is the
+# default run count and the least that can measure a spread at all.
+ROUND_FLOOR=2
 
 # Which band a hit count falls in. Named so the range logic can ask the question
 # at both ends and compare, rather than duplicating the thresholds.
@@ -801,6 +826,9 @@ remove that directory and re-run."
   # sweep of the set, run 2 another, and the spread between sweeps is the
   # candidate's own noise floor. Indexed by run number.
   local run_bhit=() run_btotal=() run_bunres=() run_passes=()
+  # Fewest scored runs any pass with blocking items contributed (#23). EMPTY
+  # until one does: no blocking item graded is no rounds, not zero of them.
+  local min_rounds=""
   local regrade_changed_items=0 regrade_changed_runs=0 regrade_kept_runs=0
   # ★ Two failures that must not share an exit code, because the caller's correct
   # response to them is opposite. A missing REVIEW is fifteen minutes of a model's
@@ -1567,6 +1595,11 @@ remove that directory and re-run."
     # nothing has no denominator to lend to a language.
     if [ "$pass_usable" -gt 0 ]; then
       lang_rows="$lang_rows${pass_lang:-unknown}	$label	$pass_bhit	$pass_btotal	$pass_bunres"$'\n'
+      # A usable run grades every item of its pass, so pass_usable IS this
+      # pass's round count behind the blocking rate.
+      if [ "$pass_btotal" -gt 0 ] && { [ -z "$min_rounds" ] || [ "$pass_usable" -lt "$min_rounds" ]; }; then
+        min_rounds=$pass_usable
+      fi
     fi
     echo >> "$report"
   done < "$CADRE_HOME/passes.conf"
@@ -1795,6 +1828,23 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
     esac
   fi
 
+  # ★ The round floor (#23), third guard of the same shape. Both directions of
+  # the rate verdict fall to it, unlike the two above: the reversals it exists
+  # for were a LOW first round as often as a high one, so "caught only 1/4" off
+  # one round is the same draw as "caught every one". A DEFER is not a rate, it
+  # is a quoted act already in hand, so that DO NOT SLOT stands, as a leak does.
+  if [ -n "$min_rounds" ] && [ "$min_rounds" -lt "$ROUND_FLOOR" ]; then
+    local rate_verdict=""
+    case "$slot" in
+      SEAT:*) rate_verdict=1 ;;
+      "DO NOT SLOT") [ "$defer_on_blocking" -gt 0 ] || rate_verdict=1 ;;
+    esac
+    if [ -n "$rate_verdict" ]; then
+      reason="At least one pass was scored in only $min_rounds run, so $blocking_hit/$blocking_total is one round's draw and not a property of \`$spec\`: single rounds have been measured reversing in both directions. Grade at least $ROUND_FLOOR runs per pass (the default) before slotting anything. On the one round: $reason"
+      slot="ONE ROUND, not slottable"
+    fi
+  fi
+
   # ★ Cost per blocking item hit sits BESIDE the hit rate; it never replaces it.
   # The seating question is not only "how many" but "at what spend": a 4/6 seat
   # at a tenth the cost can beat a 5/6 seat. Estimator is bytes/4 of harness-side
@@ -1911,6 +1961,15 @@ ambiguous. Tighten the key and re-grade. Do not pick a judge."
         else if (unres) print "- run-to-run spread (blocking hit rate): **unavailable**, " unres " UNRESOLVED item(s) leave each sweep a lower bound (" d "); tighten the key and re-grade"
         else printf "- run-to-run spread (blocking hit rate): **%.1fpp** (%s); a difference between two seats smaller than this is noise\n", hi - lo, d
       }'
+    # ★ The round count sits beside every rate it qualifies (#23), and like the
+    # spread it is printed on every branch: an absent count reads as "enough".
+    if [ -z "$min_rounds" ]; then
+      echo "- rounds per pass behind the blocking hit rate: **-** (no pass graded a blocking item)"
+    elif [ "$min_rounds" -lt "$ROUND_FLOOR" ]; then
+      echo "- rounds per pass behind the blocking hit rate: **$min_rounds** (the fewest scored runs any pass had); below the floor of $ROUND_FLOOR, so no seat is recommended from it"
+    else
+      echo "- rounds per pass behind the blocking hit rate: **$min_rounds** (the fewest scored runs any pass had)"
+    fi
     if [ "$rescore" = 1 ]; then
       echo "- item verdicts moved by this regrade: $regrade_changed_items across $regrade_changed_runs run(s); every prior value is in a \`.grade.json.regraded.jsonl\` ledger beside its grade"
       [ "$regrade_kept_runs" -eq 0 ] ||

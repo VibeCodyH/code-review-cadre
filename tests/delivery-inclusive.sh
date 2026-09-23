@@ -84,7 +84,10 @@ has '### Operator-invalid runs'
 has 'p1 run 6: Operator stopped this run to fix the route.'
 has 'run 5: **UNUSABLE** (TIMED OUT'
 has 'run 1: K1=HIT K2=HIT K3=HIT'
-has '## Verdict: SEAT: can review alone'
+# One scored round (run 10's grade is an outage), so the round floor (#23)
+# holds the seat back; the graded-only reason still stands inside it.
+has '## Verdict: ONE ROUND, not slottable'
+has 'On the one round: Caught every blocking item in every run (2/2).'
 check test "$(wc -l < "$TMP/judge-calls")" -eq 4
 
 # Operator prose must not create a new pass or a grade in the panel matrix.
@@ -167,7 +170,8 @@ for bad_marker in '{}' '{"reason":"  \n\t"}' '{"reason":false}' '{"reason":"\u00
   check test "$RC" -eq 1
   has '### Rejected invalid-run markers'
   has 'nonblank string reason; exclusion rejected'
-  has '## Verdict: SEAT: can review alone'
+  has '## Verdict: ONE ROUND, not slottable'
+  has 'On the one round: Caught every blocking item in every run (2/2).'
   has '| graded-only | 2 / 2 | 3 / 3 |'
   has '| delivery-inclusive | 2 / 2 | 3 / 3 |'
   has 'run 1: K1=HIT K2=HIT K3=HIT'

@@ -502,7 +502,7 @@ cmd_panel() {
   declare -A grade seen rowspec passitems firstv flip
   declare -A filecov_sum filecov_runs
   declare -A metric_rate metric_cost metric_low metric_high metric_total metric_note
-  declare -A metric_spread metric_cap
+  declare -A metric_spread metric_cap metric_rounds
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
     # ★ An INVALID report measured nothing about the candidate. Its surviving
@@ -523,7 +523,7 @@ cmd_panel() {
       # observation cannot supply one unambiguous cost/rate summary.
       metric_rate[$rowid]='-'; metric_cost[$rowid]='-'
       metric_low[$rowid]='-'; metric_high[$rowid]='-'; metric_total[$rowid]='-'
-      metric_spread[$rowid]='-'; metric_cap[$rowid]='-'
+      metric_spread[$rowid]='-'; metric_cap[$rowid]='-'; metric_rounds[$rowid]='-'
       metric_note[$rowid]=' (multiple report files)'
     else
       rows+=("$rowid"); seen[row:$rowid]=1; rowspec[$rowid]=$spec
@@ -531,6 +531,7 @@ cmd_panel() {
       metric_rate[$rowid]="$METRIC_RATE"; metric_cost[$rowid]="$METRIC_COST"
       metric_low[$rowid]="$METRIC_LOW"; metric_high[$rowid]="$METRIC_HIGH"; metric_total[$rowid]="$METRIC_TOTAL"
       metric_spread[$rowid]="$METRIC_SPREAD"; metric_cap[$rowid]="$METRIC_CAP"
+      metric_rounds[$rowid]="$METRIC_ROUNDS"
       metric_note[$rowid]=''
       [ "$METRIC_PARTIAL" -eq 0 ] || metric_note[$rowid]=' (partial denominator)'
     fi
@@ -683,10 +684,13 @@ cmd_panel() {
     echo "${pfx}Report inputs, run counts and judges may differ. These ranges do not rank seats."
     echo "${pfx}Cost is est. tokens per credited blocking hit, using scored keyed runs only."
     echo "${pfx}Delivery failures and CLEAN probes contribute no spend; - is unavailable."
+    echo "${pfx}ROUNDS is the fewest scored runs any pass had; under $ROUND_FLOOR a rate is one round's draw."
     echo "$pfx"
-    printf '%s%-44s  %-15s  %s\n' "$pfx" CANDIDATE EST.TOKENS/HIT 'BLOCKING HIT RATE'
+    # ★ ROUNDS beside the rate (#23): the fewest scored runs any pass of that
+    # report had. A rate read without it is a rate read as a reviewer property.
+    printf '%s%-44s  %-15s  %-6s  %s\n' "$pfx" CANDIDATE EST.TOKENS/HIT ROUNDS 'BLOCKING HIT RATE'
     for s in "${rows[@]}"; do
-      printf '%s%-44s  %-15s  %s%s\n' "$pfx" "$s" "${metric_cost[$s]}" "${metric_rate[$s]}" "${metric_note[$s]}"
+      printf '%s%-44s  %-15s  %-6s  %s%s\n' "$pfx" "$s" "${metric_cost[$s]}" "${metric_rounds[$s]}" "${metric_rate[$s]}" "${metric_note[$s]}"
     done
     echo "$pfx"
     for s in "${rows[@]}"; do
@@ -720,11 +724,15 @@ cmd_panel() {
     # The same refusal the verdict makes when a range straddles a slot band:
     # the key cannot yet tell, so nothing is ranked against it. Listed by name,
     # because a row silently dropped from a comparison reads as a row that lost.
+    # ★ Rows under the round floor are not placed either (#23), and neither is
+    # a row whose count was never recorded: one round is one draw, and naming
+    # it beside the top rate is the single-round verdict the report refuses.
     if [ "$floor" != - ] && [ "$capmix" -eq 0 ]; then
       for s in "${rows[@]}"; do
-        printf '%s\t%s\t%s\t%s\n' "${metric_low[$s]}" "${metric_high[$s]}" "${metric_total[$s]}" "$s"
-      done | awk -F '\t' -v pfx="$pfx" -v floor="$floor" '
+        printf '%s\t%s\t%s\t%s\t%s\n' "${metric_low[$s]}" "${metric_high[$s]}" "${metric_total[$s]}" "$s" "${metric_rounds[$s]}"
+      done | awk -F '\t' -v pfx="$pfx" -v floor="$floor" -v rfloor="$ROUND_FLOOR" '
         $1!="-" && $2!="-" && $3!="-" && $3>0 {
+          if ($5 == "-" || $5 + 0 < rfloor) { f = f (f ? ", " : "") $4; next }
           if ($1 != $2) { u = u (u ? ", " : "") $4; next }
           r[NR]=100*$1/$3; name[NR]=$4; if (!n || r[NR]>top) top=r[NR]; n++
         }
@@ -733,8 +741,10 @@ cmd_panel() {
             for (i = 1; i <= NR; i++) if (i in r && top - r[i] < floor) w = w (w ? ", " : "") name[i]
             printf "%sWithin the noise floor of the top rate (%.1f%%): %s\n", pfx, top, w
           }
+          if (f) print pfx "Not placed, under " rfloor " rounds per pass (or none recorded) behind their rate: " f
           if (u) print pfx "Not placed, their rate is an UNRESOLVED range rather than a rate: " u
-          if (!n && u) print pfx "Every row carries a split, so nothing here is ranked. Tighten the key and re-grade."
+          if (!n && u && !f) print pfx "Every row carries a split, so nothing here is ranked. Tighten the key and re-grade."
+          else if (!n && f) print pfx "Nothing here is ranked: no row has an exact rate over " rfloor " or more rounds per pass. Grade at least " rfloor " runs per pass."
         }'
     fi
     echo "$pfx"
