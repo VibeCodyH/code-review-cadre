@@ -3,9 +3,10 @@
 Claims about what the harness protects, each backed by a test that fails if
 the claim stops being true. To verify one, grep the quoted name in
 `tests/review-smoke.sh`, `tests/engine-seam.sh`, `tests/grading-confounds.sh`,
-`tests/cost-first.sh` or `tests/panel-accounting.sh` and run that suite.
-Anything backed only by a design description belongs under non-goals instead
-— naming what this does NOT protect against is half the point of the file.
+`tests/cost-first.sh`, `tests/panel-accounting.sh` or `tests/byte-identity.sh`
+and run that suite. Anything backed only by a design description belongs
+under non-goals instead — naming what this does NOT protect against is half
+the point of the file.
 
 The form is borrowed from alibaba/open-code-review's `ASSURANCE_CASE.md`. The
 bar is not: theirs backs each claim with a description of the design; every
@@ -239,6 +240,20 @@ reading a panel that carries the event. Residual: seconds are whole, so a
 residual under a second per timer is invisible, and the time after the clock
 stops (the Receipts table, cleanup, synthesis) is named as untimed, not
 measured.
+
+**20. A change that claims to be behavior-neutral cannot move a fixture
+artifact unseen.** `tests/byte-identity.sh` replays one synthetic panel (a seat
+in every delivery state, a misconfigured seat, a repeated seat, a gated seat,
+a synthesis) and one graded pass through stub adapters, and compares every
+file they leave, including the prompts handed to the synthesizer and the
+judge, byte for byte with `tests/fixtures/byte-identity/`. Only clocks, the
+temp directory and the harness's own identity hashes are normalized, and
+docs/BYTE-IDENTITY.md lists each one. A mismatch prints the diff and fails; an
+intended change regenerates the goldens with `--accept`, so the move is in
+the commit.
+Test: `tests/byte-identity.sh` itself. Residual: it sees only what the fixture
+exercises (one job, diff mode, no adjudication, no real adapter or model), and
+timings are compared as present or `null`, not by value.
 
 ## Non-goals, named
 

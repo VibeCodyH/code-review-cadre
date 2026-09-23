@@ -1,0 +1,16 @@
+mode:      diff
+target:    <SANDBOX>/repo
+base:      a8290164da2f708869e7127071ad164b2acdc069
+snapshot:  6890fd79191ca7f93ad5faeed6a5c8e0950c7403
+untracked: 0 file(s) carried in
+base-tree: 7e481b3f1997d0101562a059fe1baae62437dbff
+reviewed-tree: e3323ae7ddf623d3eaf07d3555d85890565e0a69
+diff-sha256: 7c3909fbb7fc68a59b746e219e511bc7cff7c5969fe087d7e6b567f4bd91a970
+roster:    finder trunc dead waffle ghost twice
+rolls:     twice=2
+roster-layer: explicit
+roster-path: ''
+language:  javascript
+prompt:    1135120976
+harness:   <harness>
+cadre:     <cadre>

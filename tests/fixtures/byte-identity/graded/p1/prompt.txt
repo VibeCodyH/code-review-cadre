@@ -1,0 +1,30 @@
+Review the commits on the current checkout that are not on a8290164da2f708869e7127071ad164b2acdc069:
+
+  git log --oneline a8290164da2f708869e7127071ad164b2acdc069..HEAD
+  git diff a8290164da2f708869e7127071ad164b2acdc069...HEAD
+
+Report defects in priority order: data loss, security, correctness bugs that
+reach production, then missing test coverage for the changed paths.
+
+Never claim to have executed something you did not. If a finding is
+reasoning rather than a reproduction, say "by inspection".
+
+Rate each defect by CONSEQUENCE, not by how far it is from how you would have
+written it:
+  blocking   - data loss or corruption, auth bypass, secret exposure, or
+               silently wrong output reaching a user. Deleting or overwriting
+               a live row counts even when the race is narrow; so does an
+               unbounded leak (orphaned objects, unbilled spend) and a
+               permission gate whose intended audience you cannot settle.
+  should-fix - a real bug with a bounded blast radius: it fails loudly, needs
+               an unlikely input, or gets caught before production. Also
+               missing test coverage on a path this diff changes.
+  nit        - style, naming, or preference. Cannot produce a wrong result.
+If you cannot name the consequence, it is a nit. Do not inflate severity to
+make a finding sound worth reporting.
+
+For each defect give file and line, what breaks, and what triggers it: the
+concrete input where one exists, otherwise the specific state, configuration,
+or ordering. A coverage gap has no trigger, so name the untested path instead.
+Do not restate what the diff does. Do not pad with nits. If you
+find nothing worth flagging, say so plainly.

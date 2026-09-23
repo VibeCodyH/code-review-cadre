@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "candidate": "candidate",
+  "selection": "all-runs",
+  "run_source": "Latest retained completion for each numbered run slot; not historical dispatch attempts.",
+  "runs": [
+    {
+      "label": "p1",
+      "run": 1,
+      "run_id": "p1/candidate-2375185012-run1",
+      "status": "graded",
+      "items": {
+        "K1": "HIT",
+        "K2": "HIT",
+        "K3": "MISS"
+      },
+      "grades": [
+        {
+          "file": "grades/p1-1143132456/candidate-2375185012-run1.by-judge-2844475703.grade.json",
+          "sha256": "1f5b7cb6b6fcdaeda6eda15aeacf9dfd0eba8a6f949330179f09270b8bc0f9da"
+        }
+      ]
+    },
+    {
+      "label": "p1",
+      "run": 2,
+      "run_id": "p1/candidate-2375185012-run2",
+      "status": "graded",
+      "items": {
+        "K1": "HIT",
+        "K2": "MISS",
+        "K3": "MISS"
+      },
+      "grades": [
+        {
+          "file": "grades/p1-1143132456/candidate-2375185012-run2.by-judge-2844475703.grade.json",
+          "sha256": "6f32cd1bf015d84e6a40af49beb3d62399f01b9743d15f164e9272b9f32c97c1"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "scored": true,
+    "graded_only": {
+      "blocking": {
+        "hit_low": 3,
+        "hit_high": 3,
+        "total": 4,
+        "unresolved": 0
+      },
+      "all_items": {
+        "hit_low": 3,
+        "hit_high": 3,
+        "total": 6,
+        "unresolved": 0
+      }
+    },
+    "delivery_inclusive": {
+      "blocking": {
+        "hit_low": 3,
+        "hit_high": 3,
+        "total": 4,
+        "unresolved": 0
+      },
+      "all_items": {
+        "hit_low": 3,
+        "hit_high": 3,
+        "total": 6,
+        "unresolved": 0
+      }
+    }
+  }
+}
