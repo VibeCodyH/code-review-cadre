@@ -1618,9 +1618,10 @@ cmd_receipts() {
 #               before swapping.
 #
 # ★ `skipped` is NOT a failure and is excluded from BOTH sides of the rate. A
-# roster gate or a closed usage window (#61) means the seat never ran, and
-# counting that against it is the same absence-read-as-dissent error the
-# synthesis denominators exist to prevent. Skips get their own column instead.
+# roster gate, a closed usage window (#61) or a dead model (#76) means the seat
+# never ran, and counting that against it is the same absence-read-as-dissent
+# error the synthesis denominators exist to prevent. Skips get their own column
+# instead.
 #
 # ★ Under three panels a seat gets NOT ENOUGH DATA, never a clean bill. One bad
 # panel out of two is 50% and means nothing, and a blank health column would be
@@ -1818,8 +1819,9 @@ cmd_seats() {
     echo "No seat has three panels in this window yet, so nothing here is a verdict."
   fi
   if [ "${total_skip:-0}" -gt 0 ]; then
-    echo "$total_skip skipped panel(s) are in SKIP and in no rate: a gated seat or one whose"
-    echo "usage window was closed never ran, and an absence is not a failure."
+    echo "$total_skip skipped panel(s) are in SKIP and in no rate: a gated seat, one whose"
+    echo "usage window was closed, or one whose model is not served never ran, and an"
+    echo "absence is not a failure."
   fi
   if [ -n "$unknown_list" ]; then
     echo "Unrecognised state(s) counted against the seat: $unknown_list. A reader older than"

@@ -227,6 +227,18 @@ and declined to flag it, which is exactly backwards.
     rm -f "$pf"
     return 0
   fi
+  # And the same model is missing in either role (#76). Only the record is
+  # read here; the probe runs at the reviewer gate, not for the merge.
+  local dead why
+  if dead=$(dead_cached "$synth"); then
+    IFS=$'\t' read -r until why <<< "$dead"
+    until_iso=$(epoch_iso "$until")
+    echo "synthesis SKIPPED, model not served ($why), benched until $until_iso ($synth). Individual reviews are intact in $out." >&2
+    printf '\n> Synthesis (`%s`) SKIPPED, model not served, benched until %s. Individual reviews are intact.\n' \
+      "$synth" "$until_iso" >> "$out/report.md"
+    rm -f "$pf"
+    return 0
+  fi
   echo "synthesizing $usable review(s)${pcount:+ ($n full$pcount)} with $synth ..."
   local rc=0
   while :; do

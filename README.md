@@ -666,6 +666,20 @@ paying for the same refusal again. A reset that cannot be parsed skips the seat
 for one hour. The record is forgotten the moment the reset passes, so nothing
 is ever benched longer than its own refusal said.
 
+A model the provider **does not serve** is the same waste with no reset
+attached. A gateway's model list is not its service list: on NVIDIA NIM, 5 of
+24 listed ids answered and the rest 404'd. An adapter that can ask cheaply
+defines a liveness probe (`alive_<agent>`, see
+[ADDING-AN-AGENT.md](docs/ADDING-AN-AGENT.md)), and before dispatch cadre asks
+it. Only an answer that the model does not exist is recorded, under
+`$CADRE_HOME/dead/`, and the seat is `skipped` until the record expires: one
+day, or `CADRE_DEAD_TTL` seconds. Delete the file to re-probe sooner. A probe
+that could not reach the host, was refused auth, or got an answer it could not
+read is not a dead model; the seat is dispatched and the real call says what is
+wrong. `ollama` is the one shipped adapter with a probe; the rest are
+dispatched as before. `CADRE_PROBE=0` turns probing off, and existing records
+still skip.
+
 
 One adapter has a second, narrower retry. `agy`'s print stream sometimes ends
 `status=ERROR` with a complete review already written, minutes inside every
@@ -881,9 +895,9 @@ seat. **TOO SLOW** is over 120s mean on the ones it succeeded in, and a panel is
 only as fast as its slowest seat — but that is usually a reasoning-effort
 setting rather than a bad model, so read the cause before swapping.
 
-A **skipped** panel is neither. A roster gate or a closed usage window means the
-seat never ran, and it is excluded from both sides of the rate: an absence is
-not a failure. Under three panels a seat gets NOT ENOUGH DATA rather than a
+A **skipped** panel is neither. A roster gate, a closed usage window, or a model
+the provider does not serve means the seat never ran, and it is excluded from
+both sides of the rate: an absence is not a failure. Under three panels a seat gets NOT ENOUGH DATA rather than a
 clean bill, because one bad panel out of two is 50% and means nothing.
 
 ## Adding a reviewer

@@ -145,6 +145,35 @@ It runs offline and exits nonzero on a mismatch. See
 Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
 `--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
 
+## Skipped seats: closed windows and dead models
+
+Two records under `$CADRE_HOME` skip a seat before dispatch, as `skipped` in
+`slots.tsv`, `runs.jsonl` and the report, out of the panel counts and the
+synthesis. Both are per seat spec, so one model on a gateway does not bench the
+others, and both are honored for the `--synth` seat too.
+
+| record | written when | skipped until | gate in the report |
+|---|---|---|---|
+| `windows/<seat>` | a refusal states its reset (#61) | the stated reset, or one hour | `window` |
+| `dead/<seat>` | the adapter's liveness probe answers `dead` (#76) | `CADRE_DEAD_TTL` seconds, default 86400 | `dead` |
+
+The dead-model probe is `alive_<agent>` in the adapter
+([ADDING-AN-AGENT.md](ADDING-AN-AGENT.md)), asked before each seat whose
+record is missing or expired. Ask it by hand:
+
+```
+agentcall --alive ollama -M box/qwen3-judge
+```
+
+It prints `alive`, `dead: <why>`, `unknown: <why>`, or `unprobed: <agent> has no
+liveness probe`. Only `dead` is recorded. `unknown` means the probe could not
+tell (no network, bad auth, wrong host) and the seat is dispatched. Today only
+`ollama` has a probe, asking `/api/show`. `CADRE_PROBE=0` skips probing and
+still honors existing records; `CADRE_PROBE_TIMEOUT` (30) bounds each probe.
+Records expire on their own. To clear one sooner, delete the file. A review
+left with no usable review exits 1 when either record skipped a seat: a seat
+that was asked for and could not answer is not a scope exclusion.
+
 ## The call cadre makes
 
 Generated with `agentcall --print-command <agent> -d . "hello"`, which is the

@@ -449,7 +449,7 @@ CHANGE_LANG=$(detect_language "$TPL" "$BASE" HEAD)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
 # skipped-seat path as roster gates: slots.tsv status, report line, out of
 # panel seat counts and synthesis. See seat_declarations in common.sh.
-_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0
+_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0; dead_skipped=0
 for _spec in "${reviewers[@]}"; do
   _block=""
   if _block=$(capability_block "$_spec" reviewer "$PROMPT"); then
@@ -471,10 +471,33 @@ for _spec in "${reviewers[@]}"; do
     echo "  $_spec: SKIPPED, $_reason"
     continue
   fi
+  # ★ A model the provider does not serve (#76), the same skip with its own
+  # gate name. A fresh record skips without asking; otherwise the adapter's
+  # liveness probe is asked, if it has one, and only a `dead` answer is kept.
+  # `unknown` is the operator's side and dispatches: the real call is what says
+  # what is wrong. CADRE_PROBE=0 turns the probe off; records are still honored.
+  _probe=""
+  if _dead=$(dead_cached "$_spec"); then
+    IFS=$'\t' read -r _until _why <<< "$_dead"
+    _until=$(epoch_iso "$_until")
+  elif [ "${CADRE_PROBE:-1}" != 0 ]; then
+    _probe=$(seat_probe "$_spec")
+    case "$_probe" in
+      dead:*)    _why=$(trim "${_probe#dead:}"); _until=$(dead_record "$_spec" "$_why") ;;
+      unknown:*) echo "  $_spec: liveness probe could not tell ($(trim "${_probe#unknown:}")); dispatching" ;;
+    esac
+  fi
+  if [ -n "$_dead" ] || [ "${_probe%%:*}" = dead ]; then
+    _reason="model not served ($_why), benched until $_until"
+    skipped_rows+=("$_spec"$'\t'"dead"$'\t'"$_reason")
+    dead_skipped=$((dead_skipped + 1))
+    echo "  $_spec: SKIPPED, $_reason"
+    continue
+  fi
   _kept+=("$_spec")
 done
 reviewers=("${_kept[@]}")
-unset _kept _spec _block _decl _reason _until
+unset _kept _spec _block _decl _reason _until _dead _why _probe
 
 {
   # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
@@ -991,6 +1014,8 @@ for row in "${skipped_rows[@]}"; do
       echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT" ;;
     window)
       echo "- \`$spec\` — SKIPPED, $reason (its last refusal stated the reset)." >> "$REPORT" ;;
+    dead)
+      echo "- \`$spec\` — SKIPPED, $reason (its adapter's liveness probe was told the model does not exist)." >> "$REPORT" ;;
     *)
       echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
   esac
@@ -1203,9 +1228,11 @@ fi
 [ $((ok_count + degraded_count)) -gt 0 ] || {
   # Intentional roster/capability exclusions can leave no work to do. A
   # requested panel benched by quota still owes the caller a failed run.
-  [ "$window_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
-  if [ "$window_skipped" -gt 0 ]; then
-    echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+  # A dead model is the same: a seat that was asked for and cannot answer.
+  [ "$window_skipped" -eq 0 ] && [ "$dead_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  if [ "$window_skipped" -gt 0 ] || [ "$dead_skipped" -gt 0 ]; then
+    [ "$window_skipped" -gt 0 ] && echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+    [ "$dead_skipped" -gt 0 ] && echo "no usable reviews; $dead_skipped reviewer(s) skipped because the provider does not serve their model." >&2
     exit 1
   fi
   echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }

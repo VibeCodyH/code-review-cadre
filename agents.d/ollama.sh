@@ -54,8 +54,11 @@ bin_ollama() {
   echo cadre-ollama-no-host-configured
 }
 
-run_ollama() {
-  local host="" name="$model" base url ctx payload out err cap
+# Sets the CALLER's `base` and `name` from $model. Shared by run and alive so
+# the probe asks the same host the review would.
+_ollama_target() {
+  local host=""
+  name="$model"
   case "$model" in
     */*) host="${model%%/*}"; name="${model#*/}" ;;
   esac
@@ -76,6 +79,37 @@ run_ollama() {
       esac
     fi
   fi
+}
+
+# ★ Liveness probe (#76). /api/show, not a generation: it answers "is this
+# model on this server" for zero tokens and without loading the weights. Only a
+# 404 whose error NAMES a model as not found is `dead`. A wrong port, a proxy,
+# or some other web server also answers 404, and that is the operator's to fix
+# -- cached as dead, it would bench a model that is fine behind the right URL.
+alive_ollama() {
+  local base name code body
+  _ollama_target
+  body=$(mktemp)
+  code=$(jq -n --arg m "$name" '{model:$m, name:$m}' \
+    | curl -sS --max-time "$TIMEOUT" -o "$body" -w '%{http_code}' \
+           -H 'Content-Type: application/json' --data-binary @- "$base/api/show" 2>/dev/null)
+  case "$code" in
+    200) echo alive ;;
+    404)
+      if jq -e '(.error // "") | test("model.*not found"; "i")' "$body" >/dev/null 2>&1; then
+        echo "dead: $base: $(jq -r '.error' "$body")"
+      else
+        echo "unknown: $base answered 404 without naming the model; check the host"
+      fi ;;
+    ''|000) echo "unknown: could not reach $base" ;;
+    *)      echo "unknown: $base answered HTTP $code" ;;
+  esac
+  rm -f "$body"
+}
+
+run_ollama() {
+  local name base url ctx payload out err cap
+  _ollama_target
   url="$base/api/generate"
   ctx="${CADRE_OLLAMA_NUM_CTX:-24576}"
 

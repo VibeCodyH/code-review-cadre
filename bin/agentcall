@@ -5,6 +5,7 @@
 #   agentcall <agent> ... < prompt.txt        # prompt on stdin
 #   agentcall --list                          # agents + what each is good for
 #   agentcall --probe [agent ...]             # auth/health check
+#   agentcall --alive <agent> [-M MODEL]      # is this model served? (#76)
 #   agentcall --print-command <agent> ...     # show the invocation, run nothing
 #   agentcall --new <name>                    # scaffold an adapter
 #
@@ -56,7 +57,7 @@ _load_dir() {
     # A user adapter REPLACES the shipped one. Sourcing alone leaves a shipped
     # nomodel_/noprompt_ marker alive, still rejecting what the override
     # supports, so clear the contract first. Partial overrides are worse.
-    [ "$1" = "$USER_D" ] && unset -f "nomodel_$n" "noprompt_$n" "notes_$n" "cannot_$n" 2>/dev/null
+    [ "$1" = "$USER_D" ] && unset -f "nomodel_$n" "noprompt_$n" "notes_$n" "cannot_$n" "alive_$n" 2>/dev/null
     # shellcheck disable=SC1090
     . "$f"
     case " $AGENTS " in *" $n "*) ;; *) AGENTS="$AGENTS $n" ;; esac
@@ -190,6 +191,7 @@ agentcall <agent> [-d DIR] [-m ro|rw] [-M MODEL] [PROMPT]
           --list                     agents + what each is good for
           --installed                just the names that are on your PATH
           --probe [agent ...]        auth/health check
+          --alive <agent> [-M MODEL] is this model served? alive|dead|unknown|unprobed
           --print-command <agent> …  show the native invocation, run nothing
           --new <name>               scaffold an adapter
 
@@ -261,6 +263,34 @@ probe_one() {
   esac
 }
 
+# ★ The dead-model probe (#76), and deliberately not probe_one above. That one
+# asks "does the CLI answer at all" with a real prompt; this asks the adapter
+# one narrower question -- does the provider serve THIS model -- through an
+# optional alive_<agent>(), which prints one line:
+#   alive | dead: <why> | unknown: <why>
+# `dead` is reserved for the provider saying the model does not exist (a 404
+# naming it, model_not_found). No network, bad auth, a wrong host, or anything
+# the adapter cannot read is `unknown`: cadre caches `dead` and skips the seat,
+# so a probe that guesses benches a working model for a day. Anything else the
+# adapter prints is normalised to `unknown`, and an adapter with no probe says
+# `unprobed` and is dispatched as before. $model is in scope, $TIMEOUT is
+# CADRE_PROBE_TIMEOUT (30s default): a probe is a few tokens, not a review.
+# shellcheck disable=SC2034
+alive_one() {
+  local a="$1" out
+  command -v "run_$a" >/dev/null 2>&1 || die "unknown agent '$a' (have:$AGENTS)"
+  if ! command -v "alive_$a" >/dev/null 2>&1; then
+    echo "unprobed: $a has no liveness probe"; return 0
+  fi
+  TIMEOUT="${CADRE_PROBE_TIMEOUT:-30}"
+  out=$(alive_"$a" 2>&1)
+  out=$(printf '%s' "${out%%$'\n'*}" | tr -d '\000-\037')
+  case "$out" in
+    alive|dead:*|unknown:*) echo "$out" ;;
+    *) echo "unknown: $a probe gave no answer it could stand behind: ${out:0:160}" ;;
+  esac
+}
+
 # run_agent <agent> <dir> <mode> <model> <prompt>
 # Adapters read $dir/$mode/$model/$prompt as locals of this function.
 # shellcheck disable=SC2034
@@ -321,6 +351,13 @@ case "$1" in
   --new)   shift; scaffold_agent "${1:-}"; exit 0 ;;
   --print-command) DRY=1; shift ;;
   --probe) shift; for a in ${*:-$AGENTS}; do probe_one "$a"; done; exit 0 ;;
+  --alive)
+    shift; [ -n "${1:-}" ] || die "--alive needs an agent"
+    agent="$1"; shift; model=""
+    while getopts "M:" opt; do
+      case "$opt" in M) model="$OPTARG" ;; *) usage; exit 2 ;; esac
+    done
+    alive_one "$agent"; exit 0 ;;
   -h|--help) usage; exit 0 ;;
 esac
 
