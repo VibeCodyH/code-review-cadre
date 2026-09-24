@@ -88,6 +88,31 @@ key borrow 'The write is dropped.' 'src/app.js:12 is where.'
 P=$(probs borrow)
 check grep -q '^K1 cites no path:line' <<< "$P"
 check test "$(grep -c '^K2' <<< "$P")" -eq 0
+
+# ★ A commit between the target and the fix edits the SAME file the fix does.
+# target..fix carries that edit too, so its line must not be credited to the
+# fix: only fix^..fix is the repair.
+R2="$TMP/repo2"
+mkdir -p "$R2/src"
+git -C "$R2" init -q
+git -C "$R2" config user.name Test
+git -C "$R2" config user.email test@example.invalid
+seq -f 'line %g' 1 20 > "$R2/src/app.js"
+git -C "$R2" add -A; git -C "$R2" commit -qm base
+sed -i '12s/.*/defect/' "$R2/src/app.js"
+git -C "$R2" commit -qam 'feat: target'
+TARGET2=$(git -C "$R2" rev-parse HEAD)
+sed -i '3s/.*/unrelated/' "$R2/src/app.js"
+git -C "$R2" commit -qam 'chore: in between, same file'
+sed -i '12s/.*/fixed/' "$R2/src/app.js"
+git -C "$R2" commit -qam 'fix: repair line 12'
+FIX2=$(git -C "$R2" rev-parse HEAD)
+probs2() { key_two_sided "$KD/$1.md" "$R2" "$TARGET2" "$FIX2"; }
+check test -z "$(probs2 good)"
+check grep -qF 'K1 has no citation the reference fix changes: outside every line the fix changes, so the clean tree still holds that code: src/app.js:3' <<< "$(probs2 outside)"
+# Context of the in-between edit is not the fix's either.
+key nearby 'src/app.js:5 drops the write.'
+check grep -qF 'outside every line the fix changes, so the clean tree still holds that code: src/app.js:5' <<< "$(probs2 nearby)"
 # The Scoring rules section cites src/app.js:3 and must not be read as K2's.
 check test "$(key_item_text "$KD/pair.md" K2 | grep -c 'Scoring rules')" -eq 0
 # K1 is not K10.

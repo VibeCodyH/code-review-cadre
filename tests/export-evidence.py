@@ -301,11 +301,12 @@ class EvidenceExportTest(unittest.TestCase):
     def test_panel_event_refused_when_inconsistent(self):
         path = self.source / "runs.jsonl"
         original = path.read_bytes()
-        good = b'{"event":"panel","panel":"synthetic-task","wall_secs":9,"unattributed_secs":-2}\n'
+        good = b'{"event":"panel","panel":"synthetic-task","wall_secs":9,"seat_secs":11,"unattributed_secs":-2}\n'
         variants = [(original + good + good, "duplicate panel event"),
                     (original + good.replace(b"synthetic-task", b"other-task"), "different panel"),
                     (original + good.replace(b'"wall_secs":9', b'"wall_secs":-9'), "wall_secs"),
-                    (original + good.replace(b'"wall_secs":9', b'"wall_secs":"9"'), "wall_secs")]
+                    (original + good.replace(b'"wall_secs":9', b'"wall_secs":"9"'), "wall_secs"),
+                    (original + good.replace(b'"seat_secs":11', b'"seat_secs":12'), "do not reconcile")]
         for data, message in variants:
             with self.subTest(message=message):
                 path.write_bytes(data)

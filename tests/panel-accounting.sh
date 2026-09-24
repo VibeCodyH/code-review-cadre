@@ -88,7 +88,7 @@ review par --roster nap,nap2,nap3 --jobs 3
 check "jobs 3 is recorded"              "[ \"\$(field par jobs)\" = 3 ]"
 check "seat seconds pass the wall clock" "[ \"\$(field par seat_secs)\" -gt \"\$(field par wall_secs)\" ]"
 check "so the residual is negative, and kept" "[ \"\$(field par unattributed_secs)\" -lt 0 ]"
-check "report calls it overlap"         "grep -q 'a negative figure is that overlap' '$CADRE_HOME/reviews/par/report.md'"
+check "report calls it overlap"         "grep -q 'a negative figure means overlap outweighed the rest' '$CADRE_HOME/reviews/par/report.md'"
 check "not double counting"             "! grep -q 'counted twice' '$CADRE_HOME/reviews/par/report.md' '$SANDBOX/par.err'"
 
 echo "== a clock that runs backwards is reported, not clamped =="

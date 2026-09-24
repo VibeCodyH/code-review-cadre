@@ -203,6 +203,13 @@ def parse_events(data, rows):
                 if value is not None and (type(value) is not int
                                           or (value < 0 and field != "unattributed_secs")):
                     raise ValueError("invalid numeric panel field: " + field)
+            # The residual is defined as wall minus its timed parts, with an
+            # untimed part adding nothing (run-review.sh); a record where that
+            # does not hold was not written by the harness.
+            if event.get("wall_secs") is not None and event.get("unattributed_secs") is not None:
+                if event["wall_secs"] != ((event.get("prerun_secs") or 0) + (event.get("seat_secs") or 0)
+                                          + event["unattributed_secs"]):
+                    raise ValueError("panel seconds do not reconcile")
             panel_records.append(raw)
             continue
         seat = event.get("seat")

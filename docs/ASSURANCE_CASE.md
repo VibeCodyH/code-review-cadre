@@ -230,7 +230,7 @@ the pre-pass and seat seconds, and `unattributed_secs` = wall minus both, so
 the three always add up. A seat with no timer adds nothing and is counted in
 `untimed_seats`. The residual is signed: with seats run one at a time it
 cannot go negative, so a negative one is reported in the report and on stderr
-as a second counted twice; under `--jobs N` it is reported as overlap. The
+as a second counted twice; under `--jobs N` it is reported as a net balance, never as a measure of overlap. The
 token residual is `null`, because no measured token total exists to reconcile.
 Tests, in `tests/panel-accounting.sh`: "totals reconcile exactly", "sequential
 residual is not negative", "the uninstalled seat is untimed", "token residual

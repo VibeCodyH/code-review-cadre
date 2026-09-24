@@ -143,12 +143,16 @@ their own timers and records the difference, so the totals always reconcile:
 - **seat_secs** — the sum of the `secs` of this panel's `complete` rows,
   exactly the Receipts "panel total". `null` when no seat was timed. A seat
   with no timer (not installed, skipped) adds nothing here, and
-  `untimed_seats` counts those; whatever they took is inside the residual.
+  `untimed_seats` counts those. With `jobs` = 1 whatever they took is inside
+  the residual; with `jobs` > 1 it may have run alongside a timed seat and
+  appear nowhere.
 - **unattributed_secs** — the residual, signed and never clamped. With
   `jobs` = 1 every timer is a disjoint slice of the wall clock, so it is
   never negative: a negative value means a second was counted twice, and the
   report and stderr both say so. With `jobs` > 1 seat timers overlap by design,
-  and a negative value is that overlap, not harness time.
+  so the residual is a NET balance: overlap pulls it down, harness and untimed
+  work push it up, and neither can be read off it alone. A negative value
+  says overlap outweighed the rest, not how much overlap there was.
 - **est_tokens** / **unattributed_tokens** — the Receipts token estimate, and
   its residual as `null`. There is no measured token total to reconcile
   against (the estimate is a sum of per-seat estimates, and a provider's bill

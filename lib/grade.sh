@@ -648,7 +648,7 @@ key_item_text() { # <keyfile> <item>
 # lib/anchor-scan.awk, the literal-path citation matcher the grade report uses.
 key_two_sided() { # <keyfile> <repo> <target-sha> <fix-sha>
   local kf="$1" dir="$2" target="$3" fix="$4" paths treepaths item text f bn shares blockers patch oldlen result
-  local checked drift unresolved anchors unresolved_anchors seen green past outside
+  local checked drift unresolved anchors unresolved_anchors seen green past outside between
   key_is_clean "$kf" && return 0
   git -C "$dir" cat-file -e "$target^{commit}" 2>/dev/null || { echo "the target $target is not in $dir"; return; }
   git -C "$dir" cat-file -e "$fix^{commit}" 2>/dev/null || { echo "the reference fix $fix is not in $dir"; return; }
@@ -674,9 +674,15 @@ key_two_sided() { # <keyfile> <repo> <target-sha> <fix-sha>
       # Both sides of every hunk become the old side, so the matcher cannot
       # credit a citation that only fits the fixed file's numbering.
       patch=$(sed -nE 's/^@@ -([0-9]+(,[0-9]+)?) \+[0-9]+(,[0-9]+)? @@.*/@@ -\1 +\1 @@/p' <<< "$patch")
+      # ★ target..fix also carries every edit that landed between the target
+      # and the fix. A line those commits changed (or sits in their context) is
+      # not the fix's repair, so it earns nothing -- even when a fix hunk
+      # overlaps it. Refusing a real item there is the safe side of the error.
+      between=$(git -C "$dir" diff --no-ext-diff --no-textconv --no-renames --unified=3 "$target" "$fix^" -- ":(literal)$f" 2>/dev/null) || continue
       oldlen=$(git -C "$dir" cat-file -p "$target:$f" 2>/dev/null | awk 'END { print NR }') || oldlen=0
       # newlen=0: past the end of the TARGET file is past the end, full stop.
       result=$(CADRE_ANCHOR_PATH="$f" CADRE_ANCHOR_BASENAME="$bn" CADRE_ANCHOR_PATCH="$patch" CADRE_ANCHOR_BLOCKERS="$blockers" \
+        CADRE_ANCHOR_EXCLUDE="$between" \
         awk -v unique="$shares" -v oldlen="${oldlen:-0}" -v newlen=0 \
           -f "$CADRE_ROOT/lib/anchor-scan.awk" <<< "$text") || continue
       IFS=$'\t' read -r checked drift unresolved anchors unresolved_anchors <<< "$result"

@@ -1265,7 +1265,7 @@ PANEL_T1=$(date +%s)
     echo "> ⚠ **The timers add up to more than the wall clock**: ${panel_wall}s of wall time, ${panel_parts}, so **${panel_unattr#-}s are counted twice**. Seats ran one at a time, so their timers cannot overlap; the secs column above is suspect until this is found."
     echo "cadre: ⚠ panel timers exceed its wall clock by ${panel_unattr#-}s with --jobs 1; some second is counted twice (runs.jsonl, event panel)" >&2
   elif [ "$JOBS" -gt 1 ]; then
-    echo "> Wall clock: **${panel_wall}s** for this panel up to this table; ${panel_parts}. Seats ran up to $JOBS at a time, so their seconds overlap and do not lay end to end: **unattributed ${panel_unattr}s**, and a negative figure is that overlap, not harness time."
+    echo "> Wall clock: **${panel_wall}s** for this panel up to this table; ${panel_parts}. Seats ran up to $JOBS at a time, so their seconds overlap and do not lay end to end: **unattributed ${panel_unattr}s**, a net balance: overlap pulls it down, harness time and untimed seats push it up, so a negative figure means overlap outweighed the rest, not how much there was."
   else
     echo "> Wall clock: **${panel_wall}s** for this panel up to this table; ${panel_parts}. **Unattributed: ${panel_unattr}s**, harness time no timer covers (checkout copies, the prompt build, record writes)."
   fi
