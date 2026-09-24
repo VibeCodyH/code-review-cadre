@@ -1,0 +1,41 @@
+Noise floor: 50.0pp, the largest run-to-run spread one row showed against
+itself (candidate  (judge: judge-2844475703)). Read every rate difference below against it.
+
+Graded-only cost and hit rates (observational)
+Report inputs, run counts and judges may differ. These ranges do not rank seats.
+Cost is est. tokens per credited blocking hit, using scored keyed runs only.
+Delivery failures and CLEAN probes contribute no spend; - is unavailable.
+ROUNDS is the fewest scored runs any pass had; under 2 a rate is one round's draw.
+
+CANDIDATE                                     EST.TOKENS/HIT   ROUNDS  BLOCKING HIT RATE
+candidate  (judge: judge-2844475703)          300              2       75.0% (3 / 4)
+
+Observed blocking hit-rate bounds: 75.0% to 75.0% (1 report rows).
+Observed est. tokens per credited blocking hit: 300 to 300 (1 report rows).
+Unresolved hit rates contribute their lower/upper bounds; cost uses credited hits.
+Within the noise floor of the top rate (75.0%): candidate  (judge: judge-2844475703)
+
+pass p1
+CANDIDATE                                   K1      K2      K3      FILES % (runs)
+candidate  (judge: judge-2844475703)        HIT     HIT*    MISS    0% (2)
+
+FILES: mean changed-file mention coverage across measured runs; - is unavailable.
+Shared basenames are excluded. Mentions do not prove a file was reviewed.
+
+★ Caught only by a reviewer whose OWN runs disagreed: p1/K2
+  Those cells are marked *. The candidate found it in one run and missed
+  it in another, on the same checkout and the same prompt, so this is
+  coverage on a coin flip. Run more runs before you staff around it:
+  a cell that flips is what variance looks like, and at two runs it is
+  indistinguishable from a lineage that genuinely covers what the rest
+  of the panel misses.
+
+★ NOTHING in this lineup catches: p1/K3
+  This is the most useful line here. Adding a higher-scoring candidate
+  that agrees with the others changes nothing. Add a model family you
+  do not already have and see whether it covers these.
+
+Pick the smallest set of rows that covers every column. Prefer a
+candidate that covers a column no one else does, even at a lower total.
+Weigh FILES alongside item hits; a high hit rate can still leave files unmentioned.
+cadre does not choose for you.

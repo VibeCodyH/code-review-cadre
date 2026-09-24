@@ -1,0 +1,107 @@
+judge(s): judge   candidate: candidate
+up to 2 review calls + 2 judge calls.
+(a ceiling, not a plan: outputs and grades that already exist are reused)
+
+==> p1: running candidate
+pass p1 @ 6890fd791 | reviewers: candidate | 2 run(s)
+  candidate run1 ...
+    111 bytes in <n>s
+  candidate run2 ...
+    70 bytes in <n>s
+done. Outputs in <SANDBOX>/state/p1
+  2 usable, 0 not usable, of 2 requested run(s)
+==> p1: grading
+
+# Gauntlet: `candidate`
+
+Selection: `all-runs`. Excluded: **0** entries. Table: `report-candidate-2375185012-by-judge-2844475703.table/manifest.json`. Status: `open`.
+
+## Cost and hits (graded-only)
+
+- est. tokens per credited blocking hit: **300**
+- blocking hit rate: **75.0% (3 / 4)** over **2** round(s) per pass
+- noise floor (run-to-run spread): **50.0pp**; a delta against another seat under this is noise
+
+Cost uses prompt and review bytes / 4 from scored keyed runs only. Delivery
+failures and CLEAN probes contribute no spend here. This is an estimate;
+`-` means unavailable or not scored.
+
+Judge: `judge`. 2 run(s) per pass. Rubric: lib/prompts/judge.md.
+
+## p1
+
+Language: `javascript` (dominant, by changed files; observational)
+
+Two-sided key check: not recorded (registered by hand, or before add-pass checked it), so no item here is proved to discriminate
+
+- run 1 coverage: 0/1 changed files mentioned
+  - never mentioned: app.js
+- run 1 anchor positions: — (no supported anchors with resolvable text hunks)
+- run 1: K1=HIT K2=HIT K3=MISS, verdict "found"
+  - K1 ↳ "FOUND-K1"
+  - K2 ↳ "FOUND-K2"
+- run 2 coverage: 0/1 changed files mentioned
+  - never mentioned: app.js
+- run 2 anchor positions: — (no supported anchors with resolvable text hunks)
+- run 2: K1=HIT K2=MISS K3=MISS, verdict "found"
+  - K1 ↳ "FOUND-K1"
+
+## Hit rates
+
+| basis | blocking items hit | all items hit |
+|---|---|---|
+| graded-only | 3 / 4 | 3 / 6 |
+| delivery-inclusive | 3 / 4 | 3 / 6 |
+
+Delivery-inclusive adds MISS on every key item for 0 no-output and
+0 failed run(s) with output but no usable review. These are delivery
+failures; an all-failed rate establishes no review quality. Misconfigured and
+timed-out runs, missing attempts, partials, inconclusive runs and judge outages
+add no items. CLEAN passes have no item denominator.
+
+The verdict and per-item matrix retain graded-only semantics.
+
+## Verdict: SEAT: needs a second reader
+
+Caught 3/4 blocking items. Never the only reviewer on a change. That is not a ranking against the others: a candidate here can still be the most valuable seat on the panel if it catches what the rest of them do not.
+
+- output cap: **not recorded** (no adapter declared one; see cadre_cap in docs/ADDING-AN-AGENT.md)
+- runs not scored, output cut off (partial review on disk): 0
+- runs not scored, provider returned nothing: 0
+- run-to-run spread (blocking hit rate): **50.0pp** (run 1: 2/2, run 2: 1/2); a difference between two seats smaller than this is noise
+- rounds per pass behind the blocking hit rate: **2** (the fewest scored runs any pass had)
+- blocking items hit: **3 / 4**
+- est. tokens per blocking item hit: **300**
+- changed-file coverage (mean over 1 keyed pass(es)): **0%**, thinnest on `p1` at 0%
+- all items hit: 3 / 6
+- deferred on a blocking item: 0
+- unusable runs: 0
+- runs excluded as suspected key leaks: 0
+
+### ⚠ ONE judge graded this
+
+Two graders on this harness split on about **one item in three**, and
+three readers scored the same candidate 2/6, 4/6 and 6/6 ordered by
+nothing but leniency. A single judge's reading is a hypothesis about
+this candidate, not a measurement of it, and nothing above can tell
+you which items it would have read the other way.
+
+Add a second and the items they disagree on stop being scored:
+
+    CADRE_JUDGE='judge,<other-agent>' cadre grade candidate 2
+
+Pick one whose failures you expect to differ from judge's. Two
+graders of one lineage agree where one was already confident.
+
+
+### What the score does not tell you
+
+A hit rate ranks. It does not tell you whether this reviewer fails on the
+SAME items your current panel already fails on. Compare the per-item rows
+above against your incumbents': a lower-scoring candidate that hits an item
+everyone else misses is worth more than a higher-scoring one that agrees
+with them everywhere. See docs/METHOD.md.
+
+_Recommendation only. Nothing was added to any review lineup._
+
+saved: <SANDBOX>/state/report-candidate-2375185012-by-judge-2844475703.md

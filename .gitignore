@@ -7,4 +7,7 @@
 /report-*.md
 /shortlist-*.tsv
 *.grade.json
+# ...except the byte-identity goldens, which are graded artifacts on purpose.
+!/tests/fixtures/byte-identity/**
 /integrations/pi-review/node_modules/
+__pycache__/

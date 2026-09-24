@@ -1,0 +1,8 @@
+diff --git a/app.js b/app.js
+index ff9c35690b1b47db2338b2c677efb7fca6d78b7f..da0e3a4415203d05d9775017bbf543b955d820e7 100644
+--- a/app.js
++++ b/app.js
+@@ -1,2 +1,2 @@
+ let count = 0;
+-function save(x) { count++; return write(x); }
++function save(x) { count++; if (retry) return; return write(x); }

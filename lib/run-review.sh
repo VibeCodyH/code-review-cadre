@@ -13,6 +13,10 @@ LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CADRE_ROOT="${CADRE_ROOT:-$(dirname "$LIB_DIR")}"
 # shellcheck source=lib/common.sh
 . "$LIB_DIR/common.sh"
+# The panel's wall clock starts before anything else can spend time (#10). The
+# `panel` event at the bottom sets it against the parts that have their own
+# timers, and whatever none of them covered is recorded as unattributed.
+PANEL_T0=$(date +%s)
 
 REPO="${1:?usage: run-review.sh <repo> <base-rev> <out-dir> <jobs> <spec ...>}"
 # ★ An EMPTY base rev is the mode switch, and it is positional on purpose: the
@@ -386,14 +390,18 @@ SUB=$(git -C "$TPL" ls-files -s | awk '$1 == "160000"' | head -3)
 # that just failed the credential check.
 PRERUN_FILE=""
 PRERUN_RC=""
+# EMPTY unless a pre-pass ran: no pre-pass took no time, and it was never timed.
+PRERUN_SECS=""
 if [ -n "${CADRE_PRERUN:-}" ]; then
   mkdir -p "$OUT" || die "cannot create $OUT"
   PRERUN_FILE="$OUT/prerun.md"
   echo "  running the pre-pass: $CADRE_PRERUN"
+  _pt0=$(date +%s)
   run_prerun "$TPL" "$WORKDIR" "$CADRE_PRERUN" "$PRERUN_FILE" \
     || die "the --prerun command did not run. Fix it or drop --prerun;
      handing reviewers a failed measurement as if it were a test result
      is worse than handing them none."
+  PRERUN_SECS=$(( $(date +%s) - _pt0 )); unset _pt0
   if [ "$PRERUN_RC" = 0 ]; then echo "  pre-pass: exit 0"
   elif [ "$PRERUN_RC" = 124 ]; then echo "  ⚠ pre-pass TIMED OUT; reviewers are told so"
   else echo "  ⚠ pre-pass exit $PRERUN_RC; reviewers are told so"
@@ -449,7 +457,7 @@ CHANGE_LANG=$(detect_language "$TPL" "$BASE" HEAD)
 # has declared it cannot do this job is skipped loudly, not dispatched. Same
 # skipped-seat path as roster gates: slots.tsv status, report line, out of
 # panel seat counts and synthesis. See seat_declarations in common.sh.
-_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0
+_kept=(); _block=""; _decl=""; _reason=""; window_skipped=0; dead_skipped=0
 for _spec in "${reviewers[@]}"; do
   _block=""
   if _block=$(capability_block "$_spec" reviewer "$PROMPT"); then
@@ -471,10 +479,33 @@ for _spec in "${reviewers[@]}"; do
     echo "  $_spec: SKIPPED, $_reason"
     continue
   fi
+  # ★ A model the provider does not serve (#76), the same skip with its own
+  # gate name. A fresh record skips without asking; otherwise the adapter's
+  # liveness probe is asked, if it has one, and only a `dead` answer is kept.
+  # `unknown` is the operator's side and dispatches: the real call is what says
+  # what is wrong. CADRE_PROBE=0 turns the probe off; records are still honored.
+  _probe=""
+  if _dead=$(dead_cached "$_spec"); then
+    IFS=$'\t' read -r _until _why <<< "$_dead"
+    _until=$(epoch_iso "$_until")
+  elif [ "${CADRE_PROBE:-1}" != 0 ]; then
+    _probe=$(seat_probe "$_spec")
+    case "$_probe" in
+      dead:*)    _why=$(trim "${_probe#dead:}"); _until=$(dead_record "$_spec" "$_why") ;;
+      unknown:*) echo "  $_spec: liveness probe could not tell ($(trim "${_probe#unknown:}")); dispatching" ;;
+    esac
+  fi
+  if [ -n "$_dead" ] || [ "${_probe%%:*}" = dead ]; then
+    _reason="model not served ($_why), benched until $_until"
+    skipped_rows+=("$_spec"$'\t'"dead"$'\t'"$_reason")
+    dead_skipped=$((dead_skipped + 1))
+    echo "  $_spec: SKIPPED, $_reason"
+    continue
+  fi
   _kept+=("$_spec")
 done
 reviewers=("${_kept[@]}")
-unset _kept _spec _block _decl _reason _until
+unset _kept _spec _block _decl _reason _until _dead _why _probe
 
 {
   # ★ The REAL shas, the ones that exist in $REPO. The checkout is a synthetic
@@ -991,6 +1022,8 @@ for row in "${skipped_rows[@]}"; do
       echo "- \`$spec\` — SKIPPED by its roster gate ($gate: $reason)." >> "$REPORT" ;;
     window)
       echo "- \`$spec\` — SKIPPED, $reason (its last refusal stated the reset)." >> "$REPORT" ;;
+    dead)
+      echo "- \`$spec\` — SKIPPED, $reason (its adapter's liveness probe was told the model does not exist)." >> "$REPORT" ;;
     *)
       echo "- \`$spec\` — SKIPPED by capability preflight ($gate: $reason)." >> "$REPORT" ;;
   esac
@@ -1150,6 +1183,11 @@ slot_rows=$(
 )
 printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
 
+# ★ The panel clock stops HERE (#10), before the Receipts table that reports
+# it. Rendering that table and the scratch cleanup run after, and bin/cadre's
+# synthesis after that; none of them is inside wall_secs, and the report says so.
+PANEL_T1=$(date +%s)
+
 {
   echo
   echo "## Receipts"
@@ -1188,6 +1226,55 @@ printf '%s\n' "$slot_rows" > "$OUT/slots.tsv"
     "$total_secs_display" "$total_prompt_kb" "$total_review_kb" "$total_est"
   echo
   echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."
+
+  # ---- the panel's wall clock, and what no timer covered (#10) ---------------
+  # ★ A total beside its parts has to reconcile, or the difference is spend no
+  # row shows. The "panel total" above is a SUM of seat seconds: it reconciles
+  # by construction and so cannot see the time between seats -- checkout copies,
+  # the prompt build, record writes. The wall clock is measured on its own and
+  # the gap is RECORDED as unattributed_secs, not only printed.
+  # ★ A part with no timer adds nothing to the attributed sum: an untimed seat
+  # was not measured, so whatever it took is inside the residual, and
+  # untimed_seats says how many there were.
+  # ★ Signed, never clamped. Seats run one at a time are disjoint slices of the
+  # wall clock, and whole seconds floor monotonically, so their sum cannot pass
+  # it: a negative residual there means a second was counted twice. Under
+  # --jobs N the seat timers overlap by design and a negative residual is that
+  # overlap. `jobs` is on the record so a reader can tell the two apart.
+  # ★ Tokens have no measured total: est. tokens are a sum of per-seat
+  # estimates and the provider's bill is invisible from here, so there is
+  # nothing to reconcile against. unattributed_tokens is null, never 0.
+  panel_wall=$((PANEL_T1 - PANEL_T0))
+  panel_seat_secs=""; [ "$have_secs" -eq 1 ] && panel_seat_secs="$total_secs"
+  panel_timed=0; panel_untimed=0
+  while IFS= read -r slot_row; do
+    slot_row="${slot_row//$'\t'/$'\034'}"
+    IFS=$'\034' read -r _run _spec _fam _st _bytes secs _rest <<< "$slot_row"
+    if [ -n "${secs:-}" ]; then panel_timed=$((panel_timed + 1)); else panel_untimed=$((panel_untimed + 1)); fi
+  done <<< "$slot_rows"
+  panel_unattr=$((panel_wall - ${PRERUN_SECS:-0} - ${panel_seat_secs:-0}))
+  record_event "$RUNLOG" event=panel panel="$(basename "$OUT")" "jobs#=$JOBS" \
+    "wall_secs#=$panel_wall" "prerun_secs#=$PRERUN_SECS" "seat_secs#=$panel_seat_secs" \
+    "timed_seats#=$panel_timed" "untimed_seats#=$panel_untimed" \
+    "unattributed_secs#=$panel_unattr" "est_tokens#=$total_est" "unattributed_tokens#=" \
+    harness_sha="$HARNESS_SHA" "ts#=$PANEL_T1"
+  echo
+  panel_parts="${panel_seat_secs:-0}s in seats"
+  [ -n "$PRERUN_SECS" ] && panel_parts="$panel_parts, ${PRERUN_SECS}s in the pre-pass"
+  if [ "$panel_unattr" -lt 0 ] && [ "$JOBS" -le 1 ]; then
+    echo "> ⚠ **The timers add up to more than the wall clock**: ${panel_wall}s of wall time, ${panel_parts}, so **${panel_unattr#-}s are counted twice**. Seats ran one at a time, so their timers cannot overlap; the secs column above is suspect until this is found."
+    echo "cadre: ⚠ panel timers exceed its wall clock by ${panel_unattr#-}s with --jobs 1; some second is counted twice (runs.jsonl, event panel)" >&2
+  elif [ "$JOBS" -gt 1 ]; then
+    echo "> Wall clock: **${panel_wall}s** for this panel up to this table; ${panel_parts}. Seats ran up to $JOBS at a time, so their seconds overlap and do not lay end to end: **unattributed ${panel_unattr}s**, a net balance: overlap pulls it down, harness time and untimed seats push it up, so a negative figure means overlap outweighed the rest, not how much there was."
+  else
+    echo "> Wall clock: **${panel_wall}s** for this panel up to this table; ${panel_parts}. **Unattributed: ${panel_unattr}s**, harness time no timer covers (checkout copies, the prompt build, record writes)."
+  fi
+  if [ "$panel_untimed" -gt 0 ]; then
+    echo ">"
+    echo "> $panel_untimed seat(s) were never timed; whatever they took is inside the unattributed figure, not in the secs column."
+  fi
+  echo ">"
+  echo "> Not timed: this table, the cleanup after it, and any synthesis that follows. Tokens have no measured panel total to reconcile against, so their residual is recorded as unmeasured."
 } >> "$REPORT"
 
 rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-* "$OUT"/.rolls-* "$OUT"/.rollmeta-*
@@ -1203,9 +1290,11 @@ fi
 [ $((ok_count + degraded_count)) -gt 0 ] || {
   # Intentional roster/capability exclusions can leave no work to do. A
   # requested panel benched by quota still owes the caller a failed run.
-  [ "$window_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
-  if [ "$window_skipped" -gt 0 ]; then
-    echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+  # A dead model is the same: a seat that was asked for and cannot answer.
+  [ "$window_skipped" -eq 0 ] && [ "$dead_skipped" -eq 0 ] && [ ${#reviewers[@]} -eq 0 ] && [ "$skipped_count" -gt 0 ] && exit 0
+  if [ "$window_skipped" -gt 0 ] || [ "$dead_skipped" -gt 0 ]; then
+    [ "$window_skipped" -gt 0 ] && echo "no usable reviews; $window_skipped reviewer(s) skipped because usage windows are closed." >&2
+    [ "$dead_skipped" -gt 0 ] && echo "no usable reviews; $dead_skipped reviewer(s) skipped because the provider does not serve their model." >&2
     exit 1
   fi
   echo "every reviewer failed. Nothing to synthesize." >&2; exit 1; }

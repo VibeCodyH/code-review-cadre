@@ -55,7 +55,9 @@ then run that panel on the code you are about to ship.
   cadre make-pass <label> <repo-dir> <target-sha> <fix-sha>
                                         build the leak-controlled checkout and
                                         DRAFT an answer key for you to correct
-  cadre add-pass <label>                register a corrected draft as a pass
+  cadre add-pass <label>                register a corrected draft as a pass;
+                                        refuses an item that cites no target
+                                        line the fix changes
   cadre run <agent-spec> [runs] [label] run a candidate, grade it, recommend a slot
   cadre grade <agent-spec> [runs] [label] [--selection all-runs|first-run] [--freeze]
                                         re-grade outputs; optionally freeze the table
@@ -330,6 +332,11 @@ cmd_make_pass() {
   [ "$n" -lt 2 ] && echo "  ⚠ only one commit visible (target is a root commit), edit the base field in passes.conf by hand"
   printf '%s|%s|%s|%s|%s\n' "$label" "${target:0:9}" "$dest" "$base" "keys/$label.md" \
     > "$CADRE_HOME/passes.d/$label.meta"
+  # The reference fix, for add-pass's two-sided check (#23). Beside the meta,
+  # never in the checkout: the checkout must not be able to reach the future.
+  printf '%s\t%s\t%s\n' "$(readlink -f "$repo")" \
+    "$(git -C "$repo" rev-parse "$target^{commit}")" "$(git -C "$repo" rev-parse "$fix^{commit}")" \
+    > "$CADRE_HOME/passes.d/$label.fix"
 
   cat <<EOF
 
@@ -339,6 +346,10 @@ draft key: $keyfile
 measures agreement-with-the-generator, not review quality. The fix commit is
 your external evidence; the draft is just a transcription of it, and it will
 get severities wrong, invent items, or miss the point of the repair.
+
+Every K item must cite a TARGET path:line that the fix changes. add-pass
+checks that against $repo and refuses an item that cites none: an item the
+fix never touched has no clean side to prove it against.
 
 Then register it:
 
@@ -362,7 +373,27 @@ cmd_add_pass() {
     die "severity is read out of each item's heading, so an item without one scores as if it does not matter"
   }
   grep -q "^$label|" "$PASSES" 2>/dev/null && die "pass '$label' is already registered"
+  # ★ Two-sided (#23): every item proved on the defective tree AND the clean
+  # one before it can count. See key_two_sided in lib/grade.sh. A CLEAN key
+  # has no items, so there is nothing to prove.
+  local fixrec="$CADRE_HOME/passes.d/$label.fix" frepo ftarget ffix
+  if ! key_is_clean "$keyfile"; then
+    [ -s "$fixrec" ] || die "no reference fix recorded for '$label' at $fixrec.
+     make-pass writes it. For a draft made before it did, write one line by hand:
+       printf '%s\\t%s\\t%s\\n' <repo-dir> <full-target-sha> <full-fix-sha> > $fixrec"
+    IFS=$'\t' read -r frepo ftarget ffix < "$fixrec"
+    probs=$(key_two_sided "$keyfile" "$frepo" "$ftarget" "$ffix")
+    [ -z "$probs" ] || {
+      echo "cadre: refusing to register '$label'. Not every item is proved on both trees:" >&2
+      printf '%s\n' "$probs" | sed 's/^/  /' >&2
+      die "an item must cite a line on the target (${ftarget:0:9}) that the reference fix (${ffix:0:9}) changes. Correct the citation, or drop the item: with no clean side it cannot tell a reviewer that found the defect from one that did not"
+    }
+  fi
   cat "$meta" >> "$PASSES"
+  if ! key_is_clean "$keyfile"; then
+    key_items "$keyfile" > "$CADRE_HOME/passes.d/$label.two-sided"
+    echo "two-sided: $(key_items "$keyfile" | paste -sd' ' -) each cite a target line the reference fix changes"
+  fi
   echo "registered: $(cat "$meta")"
   echo "next: cadre run codex 2"
 }
@@ -471,7 +502,7 @@ cmd_panel() {
   declare -A grade seen rowspec passitems firstv flip
   declare -A filecov_sum filecov_runs
   declare -A metric_rate metric_cost metric_low metric_high metric_total metric_note
-  declare -A metric_spread metric_cap
+  declare -A metric_spread metric_cap metric_rounds
   for r in "${reports[@]}"; do
     spec=$(sed -n '1s/^# Gauntlet: `\(.*\)`$/\1/p' "$r"); [ -n "$spec" ] || continue
     # ★ An INVALID report measured nothing about the candidate. Its surviving
@@ -492,7 +523,7 @@ cmd_panel() {
       # observation cannot supply one unambiguous cost/rate summary.
       metric_rate[$rowid]='-'; metric_cost[$rowid]='-'
       metric_low[$rowid]='-'; metric_high[$rowid]='-'; metric_total[$rowid]='-'
-      metric_spread[$rowid]='-'; metric_cap[$rowid]='-'
+      metric_spread[$rowid]='-'; metric_cap[$rowid]='-'; metric_rounds[$rowid]='-'
       metric_note[$rowid]=' (multiple report files)'
     else
       rows+=("$rowid"); seen[row:$rowid]=1; rowspec[$rowid]=$spec
@@ -500,6 +531,7 @@ cmd_panel() {
       metric_rate[$rowid]="$METRIC_RATE"; metric_cost[$rowid]="$METRIC_COST"
       metric_low[$rowid]="$METRIC_LOW"; metric_high[$rowid]="$METRIC_HIGH"; metric_total[$rowid]="$METRIC_TOTAL"
       metric_spread[$rowid]="$METRIC_SPREAD"; metric_cap[$rowid]="$METRIC_CAP"
+      metric_rounds[$rowid]="$METRIC_ROUNDS"
       metric_note[$rowid]=''
       [ "$METRIC_PARTIAL" -eq 0 ] || metric_note[$rowid]=' (partial denominator)'
     fi
@@ -652,10 +684,13 @@ cmd_panel() {
     echo "${pfx}Report inputs, run counts and judges may differ. These ranges do not rank seats."
     echo "${pfx}Cost is est. tokens per credited blocking hit, using scored keyed runs only."
     echo "${pfx}Delivery failures and CLEAN probes contribute no spend; - is unavailable."
+    echo "${pfx}ROUNDS is the fewest scored runs any pass had; under $ROUND_FLOOR a rate is one round's draw."
     echo "$pfx"
-    printf '%s%-44s  %-15s  %s\n' "$pfx" CANDIDATE EST.TOKENS/HIT 'BLOCKING HIT RATE'
+    # ★ ROUNDS beside the rate (#23): the fewest scored runs any pass of that
+    # report had. A rate read without it is a rate read as a reviewer property.
+    printf '%s%-44s  %-15s  %-6s  %s\n' "$pfx" CANDIDATE EST.TOKENS/HIT ROUNDS 'BLOCKING HIT RATE'
     for s in "${rows[@]}"; do
-      printf '%s%-44s  %-15s  %s%s\n' "$pfx" "$s" "${metric_cost[$s]}" "${metric_rate[$s]}" "${metric_note[$s]}"
+      printf '%s%-44s  %-15s  %-6s  %s%s\n' "$pfx" "$s" "${metric_cost[$s]}" "${metric_rounds[$s]}" "${metric_rate[$s]}" "${metric_note[$s]}"
     done
     echo "$pfx"
     for s in "${rows[@]}"; do
@@ -689,11 +724,15 @@ cmd_panel() {
     # The same refusal the verdict makes when a range straddles a slot band:
     # the key cannot yet tell, so nothing is ranked against it. Listed by name,
     # because a row silently dropped from a comparison reads as a row that lost.
+    # ★ Rows under the round floor are not placed either (#23), and neither is
+    # a row whose count was never recorded: one round is one draw, and naming
+    # it beside the top rate is the single-round verdict the report refuses.
     if [ "$floor" != - ] && [ "$capmix" -eq 0 ]; then
       for s in "${rows[@]}"; do
-        printf '%s\t%s\t%s\t%s\n' "${metric_low[$s]}" "${metric_high[$s]}" "${metric_total[$s]}" "$s"
-      done | awk -F '\t' -v pfx="$pfx" -v floor="$floor" '
+        printf '%s\t%s\t%s\t%s\t%s\n' "${metric_low[$s]}" "${metric_high[$s]}" "${metric_total[$s]}" "$s" "${metric_rounds[$s]}"
+      done | awk -F '\t' -v pfx="$pfx" -v floor="$floor" -v rfloor="$ROUND_FLOOR" '
         $1!="-" && $2!="-" && $3!="-" && $3>0 {
+          if ($5 == "-" || $5 + 0 < rfloor) { f = f (f ? ", " : "") $4; next }
           if ($1 != $2) { u = u (u ? ", " : "") $4; next }
           r[NR]=100*$1/$3; name[NR]=$4; if (!n || r[NR]>top) top=r[NR]; n++
         }
@@ -702,8 +741,10 @@ cmd_panel() {
             for (i = 1; i <= NR; i++) if (i in r && top - r[i] < floor) w = w (w ? ", " : "") name[i]
             printf "%sWithin the noise floor of the top rate (%.1f%%): %s\n", pfx, top, w
           }
+          if (f) print pfx "Not placed, under " rfloor " rounds per pass (or none recorded) behind their rate: " f
           if (u) print pfx "Not placed, their rate is an UNRESOLVED range rather than a rate: " u
-          if (!n && u) print pfx "Every row carries a split, so nothing here is ranked. Tighten the key and re-grade."
+          if (!n && u && !f) print pfx "Every row carries a split, so nothing here is ranked. Tighten the key and re-grade."
+          else if (!n && f) print pfx "Nothing here is ranked: no row has an exact rate over " rfloor " or more rounds per pass. Grade at least " rfloor " runs per pass."
         }'
     fi
     echo "$pfx"
@@ -1618,9 +1659,10 @@ cmd_receipts() {
 #               before swapping.
 #
 # ★ `skipped` is NOT a failure and is excluded from BOTH sides of the rate. A
-# roster gate or a closed usage window (#61) means the seat never ran, and
-# counting that against it is the same absence-read-as-dissent error the
-# synthesis denominators exist to prevent. Skips get their own column instead.
+# roster gate, a closed usage window (#61) or a dead model (#76) means the seat
+# never ran, and counting that against it is the same absence-read-as-dissent
+# error the synthesis denominators exist to prevent. Skips get their own column
+# instead.
 #
 # ★ Under three panels a seat gets NOT ENOUGH DATA, never a clean bill. One bad
 # panel out of two is 50% and means nothing, and a blank health column would be
@@ -1818,8 +1860,9 @@ cmd_seats() {
     echo "No seat has three panels in this window yet, so nothing here is a verdict."
   fi
   if [ "${total_skip:-0}" -gt 0 ]; then
-    echo "$total_skip skipped panel(s) are in SKIP and in no rate: a gated seat or one whose"
-    echo "usage window was closed never ran, and an absence is not a failure."
+    echo "$total_skip skipped panel(s) are in SKIP and in no rate: a gated seat, one whose"
+    echo "usage window was closed, or one whose model is not served never ran, and an"
+    echo "absence is not a failure."
   fi
   if [ -n "$unknown_list" ]; then
     echo "Unrecognised state(s) counted against the seat: $unknown_list. A reader older than"

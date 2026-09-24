@@ -19,6 +19,10 @@ STATES = {"ok": ".md", "degraded": ".md.partial", "failed": ".md.failed",
 FIELDS = ("panel", "seat", "family", "state", "bytes", "secs", "prompt_bytes",
           "v", "prompt_sha", "adapter_sha", "harness_sha", "model")
 NUMBERS = {"bytes", "secs", "prompt_bytes", "v"}
+# The panel's own wall clock and its residual (#10). Only the residual may be
+# negative: that is double counting or --jobs overlap, reported, never clamped.
+PANEL_NUMBERS = {"jobs", "wall_secs", "prerun_secs", "seat_secs", "timed_seats",
+                 "untimed_seats", "unattributed_secs", "est_tokens", "unattributed_tokens", "ts"}
 SHARED = ("manifest.txt", "findings.json", "report.md", "synthesis.md",
           "synthesis.md.failed", "synthesis.md.partial", "synthesis.md.inconclusive")
 NOTICE = ("Raw reviews, run records, the original manifest, and synthesis/report artifacts "
@@ -180,11 +184,34 @@ def seat_slug(seat):
 def parse_events(data, rows):
     events = {seat: {} for seat in rows}
     raw_records = {seat: [] for seat in rows}
+    panel_records = []
+    task = next(iter(rows.values()))[0]["panel"] if rows else None
     for raw in (data or b"").splitlines(keepends=True):
         event = parse_json(raw)
         if (not isinstance(event, dict) or not isinstance(event.get("event"), str)
-                or event["event"] not in {"dispatch", "complete", "roll_dispatch", "roll_complete"}):
+                or event["event"] not in {"dispatch", "complete", "roll_dispatch", "roll_complete", "panel"}):
             raise ValueError("malformed live run event")
+        if event["event"] == "panel":
+            # Belongs to no seat, so it is not split into a cell; it travels as
+            # one shared record. A panel killed mid-flight never writes one.
+            if panel_records:
+                raise ValueError("duplicate panel event")
+            if event.get("panel") != task:
+                raise ValueError("panel event names a different panel")
+            for field in PANEL_NUMBERS:
+                value = event.get(field)
+                if value is not None and (type(value) is not int
+                                          or (value < 0 and field != "unattributed_secs")):
+                    raise ValueError("invalid numeric panel field: " + field)
+            # The residual is defined as wall minus its timed parts, with an
+            # untimed part adding nothing (run-review.sh); a record where that
+            # does not hold was not written by the harness.
+            if event.get("wall_secs") is not None and event.get("unattributed_secs") is not None:
+                if event["wall_secs"] != ((event.get("prerun_secs") or 0) + (event.get("seat_secs") or 0)
+                                          + event["unattributed_secs"]):
+                    raise ValueError("panel seconds do not reconcile")
+            panel_records.append(raw)
+            continue
         seat = event.get("seat")
         if not isinstance(seat, str) or seat not in rows:
             raise ValueError("run record names an unknown seat")
@@ -214,7 +241,7 @@ def parse_events(data, rows):
             raise ValueError("completion is missing a valid state")
         events[seat][kind] = event
         raw_records[seat].append(raw)
-    return events, {seat: b"".join(lines) for seat, lines in raw_records.items()}
+    return events, {seat: b"".join(lines) for seat, lines in raw_records.items()}, b"".join(panel_records)
 
 
 def publish(stage, destination):
@@ -266,7 +293,7 @@ def export(source_path, destination):
     rows = parse_slots(source.read("slots.tsv", required=True))
     if len({seat_slug(seat) for seat in rows}) != len(rows):
         raise ValueError("seat slugs collide; source artifact ownership is ambiguous")
-    events, records = parse_events(source.read("runs.jsonl"), rows)
+    events, records, panel_record = parse_events(source.read("runs.jsonl"), rows)
     shared = {name: source.read(name) for name in SHARED if name in source.entries}
     if "findings.json" in shared:
         findings = parse_json(shared["findings.json"])
@@ -299,6 +326,8 @@ def export(source_path, destination):
 
         for name, data in shared.items():
             write("shared/" + name, data, name)
+        if panel_record:
+            write("shared/panel.jsonl", panel_record, "runs.jsonl")
         for seat, (row, raw_slot) in rows.items():
             cell = "cells/" + digest(json.dumps([task, seat], ensure_ascii=True).encode("ascii"))
             missing = [field for field in ("secs", "bytes", "prompt_bytes") if row[field] is None]

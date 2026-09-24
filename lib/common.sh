@@ -1167,6 +1167,65 @@ window_closed_until() {
   rm -f "$wf"; return 1
 }
 
+# ★ A model the provider does not serve, remembered so the next review skips
+# it (#76). A gateway's catalogue is not its service list: on NVIDIA NIM 5 of 24
+# ids that /v1/models listed answered, and the rest 404'd -- one wasted dispatch
+# per dead seat per review, filed as a reviewer failure when it was a fact about
+# the provider. The answer comes from the ADAPTER's liveness probe (alive_<agent>
+# in agents.d/, asked through `agentcall --alive`), because only the adapter
+# knows what "not found" looks like on its wire. Adapters with no probe answer
+# `unprobed` and dispatch exactly as before.
+#
+# ★ Only `dead:` is cached. A probe that could not reach the host, was refused
+# auth, or got an answer it cannot read says `unknown:`, and that is the
+# operator's side -- an absence of evidence, never a verdict on the model. It
+# dispatches, and the real call reports whatever is actually wrong.
+#
+# ★ The record EXPIRES. A refusal states its own reset; a 404 states nothing, so
+# the bench is a TTL: CADRE_DEAD_TTL seconds, one day by default. A model that
+# comes back is re-probed the first review after that, and deleting the file
+# under $CADRE_HOME/dead/ re-probes it on the next one.
+dead_file() { printf '%s/dead/%s' "$CADRE_HOME" "$(slug "$1")"; }
+
+# seat_probe <spec>: the adapter's own answer, one line. `alive`, `dead: why`,
+# `unknown: why`, or `unprobed: why`. Same scrubbed environment and adapter
+# directory as dispatch, so the probe asks the host the real call would.
+seat_probe() {
+  local a m mm=() scrub=()
+  a=$(spec_agent "$1"); m=$(spec_model "$1")
+  [ -n "$m" ] && mm=(-M "$m")
+  mapfile -t scrub < <(scrubbed_env)
+  "${scrub[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
+    "$CADRE_ROOT/bin/agentcall" --alive "$a" "${mm[@]}" < /dev/null 2>/dev/null
+}
+
+# dead_record <spec> <why>: bench this seat for the TTL. Prints the expiry as
+# UTC ISO. Bookkeeping, like window_record: a failed write dispatches next time.
+dead_record() {
+  local df ttl t; df=$(dead_file "$1")
+  ttl="${CADRE_DEAD_TTL:-86400}"
+  case "$ttl" in ''|*[!0-9]*|0) ttl=86400 ;; esac
+  t=$(( $(date +%s) + ttl ))
+  if mkdir -p "${df%/*}" 2>/dev/null; then
+    { printf '%s\n' "$t"; printf '%s' "$2" | tr -d '\000-\037' | cut -c1-160; echo; } \
+      > "$df.tmp" 2>/dev/null && mv -f "$df.tmp" "$df" 2>/dev/null
+  fi
+  epoch_iso "$t"
+}
+
+# dead_cached <spec>: prints "expiry<TAB>why" and succeeds while the record is
+# fresh. Otherwise forgets it and fails, the same self-clearing read as
+# window_closed_until.
+dead_cached() {
+  local df t; df=$(dead_file "$1")
+  [ -s "$df" ] || return 1
+  t=$(sed -n 1p "$df" | tr -dc 0-9)
+  if [ -n "$t" ] && [ "$(date +%s)" -lt "$t" ]; then
+    printf '%s\t%s\n' "$t" "$(sed -n 2p "$df")"; return 0
+  fi
+  rm -f "$df"; return 1
+}
+
 
 # ★ The same question for a SYNTHESIS, which needs a different answer. A
 # reviewer that trips the keyword scan can be rescued by its adapter's marker; a

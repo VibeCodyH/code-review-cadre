@@ -5,6 +5,17 @@ BEGIN {
     basename = ENVIRON["CADRE_ANCHOR_BASENAME"]
     nblockers = split(ENVIRON["CADRE_ANCHOR_BLOCKERS"], blockers, "\n")
     n = split(ENVIRON["CADRE_ANCHOR_PATCH"], patch, "\n")
+    # Optional: hunks whose lines earn no credit even inside a PATCH hunk. Only
+    # key_two_sided sets it (commits between the target and the fix); unset,
+    # the grade report's scan is unchanged.
+    nx = split(ENVIRON["CADRE_ANCHOR_EXCLUDE"], xpatch, "\n")
+    for (i = 1; i <= nx; i++) {
+        if (xpatch[i] !~ /^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/) continue
+        split(xpatch[i], fields, " ")
+        count = split(substr(fields[2], 2), span, ",")
+        len = count == 1 ? 1 : span[2] + 0
+        if (len > 0) { xstarts[++xhunks] = span[1] + 0; xends[xhunks] = span[1] + len - 1 }
+    }
     for (i = 1; i <= n; i++) {
         if (patch[i] !~ /^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/) continue
         split(patch[i], fields, " ")
@@ -63,6 +74,8 @@ function scan(text, name,    pos,offset,before,tail,anchor,nums,count,first,last
         overlap = 0
         for (k = 1; k <= hunks; k++)
             if (first <= ends[k] && last >= starts[k]) overlap = 1
+        for (k = 1; k <= xhunks; k++)
+            if (first <= xends[k] && last >= xstarts[k]) overlap = 0
         checked++
         if (!overlap) {
             drift++

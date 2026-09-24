@@ -1,0 +1,7 @@
+fixture	finder	finder	ok	142	<n>	1837	2	9d7ba1d93832	56177f40c022	<harness_sha>	
+fixture	trunc	trunc	degraded	138	<n>	1837	2	9d7ba1d93832	6bec25fed8a9	<harness_sha>	
+fixture	dead	dead	failed	55	<n>	1837	2	9d7ba1d93832	2d846146edde	<harness_sha>	
+fixture	waffle	waffle	inconclusive	71	<n>	1837	2	9d7ba1d93832	3026095cff40	<harness_sha>	
+fixture	ghost	ghost	failed	36		0	2			<harness_sha>	
+fixture	twice	twice	ok	402	<n>	3674	2	9d7ba1d93832	fa940b49908c	<harness_sha>	
+fixture	gated	gated	skipped	0		0	2		bc3e34ab0c4f	<harness_sha>	

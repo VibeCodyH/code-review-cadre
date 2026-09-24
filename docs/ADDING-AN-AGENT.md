@@ -20,7 +20,7 @@ needs.
 agentcall --new mycli        # writes $CADRE_HOME/agents.d/mycli.sh
 ```
 
-Edit the stub. It has two required functions, and one optional:
+Edit the stub. It has two required functions, and two optional:
 
 - `notes_mycli()`, one paragraph, printed by `cadre agents`. Write **measured**
   quirks here, not the vendor's description. This file is where the next person
@@ -46,6 +46,23 @@ Edit the stub. It has two required functions, and one optional:
   Model-level quirks that are not CLI-level (today: `cerebras/*` cannot be a
   reviewer) live in `model_cannot` in `lib/common.sh` so every adapter that
   reaches that model inherits them. See `cadre preflight` for the table.
+- `alive_mycli()` (optional). A liveness probe: does the provider serve
+  `$model` at all? Print one line, `alive`, `dead: <why>`, or
+  `unknown: <why>`. `$model` is in scope, and `$TIMEOUT` is
+  `CADRE_PROBE_TIMEOUT` (30s). Cadre asks it before dispatching the seat
+  (`agentcall --alive mycli -M model` asks it by hand), records a `dead`
+  answer under `$CADRE_HOME/dead/` and skips the seat as `skipped` until the
+  record expires.
+
+  **`dead` is only for the provider saying the model does not exist**: a 404
+  that names it, a `model_not_found`. No network, bad auth, a wrong host, a
+  404 from something that is not the API, or an answer you cannot read is
+  `unknown`, and the seat is dispatched as usual. A probe that guesses `dead`
+  benches a working model for a day, and the operator reads it as a fact
+  about the provider. Anything off-contract is read as `unknown`. Keep the
+  probe cheap, a metadata call or a few tokens; `agents.d/ollama.sh` asks
+  `/api/show`, which costs none. No probe means the adapter answers
+  `unprobed` and its seats are dispatched exactly as before.
 
 ### Say which kind of nothing you have
 

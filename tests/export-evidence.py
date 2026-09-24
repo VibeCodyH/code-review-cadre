@@ -281,6 +281,37 @@ class EvidenceExportTest(unittest.TestCase):
         self.assertIn(cell.relative_to(self.out).as_posix() + "/rolls/r2.md", manifest["artifacts"])
         self.assertNotIn("complete_event", json.loads((cell / "receipt.json").read_text())["missing"])
 
+    def test_panel_event_travels_as_one_shared_record(self):
+        # The panel's wall clock and its unattributed residual (#10) belong to no
+        # seat. The export keeps the raw line whole, beside the shared artifacts,
+        # and a negative residual is kept too: it is reported, never clamped.
+        path = self.source / "runs.jsonl"
+        original = path.read_bytes()
+        panel = (b'{"event":"panel","panel":"synthetic-task","jobs":2,"wall_secs":9,"prerun_secs":null,'
+                 b'"seat_secs":35,"timed_seats":4,"untimed_seats":2,"unattributed_secs":-26,'
+                 b'"est_tokens":2048,"unattributed_tokens":null,"harness_sha":"cccccccccccc","ts":109}\n')
+        path.write_bytes(original + panel)
+        manifest = self.export()
+        self.assertEqual((self.out / "shared/panel.jsonl").read_bytes(), panel)
+        self.assertEqual(manifest["source_locations"]["runs.jsonl"].count("shared/panel.jsonl"), 1)
+        for cell in self.cells(manifest).values():
+            self.assertNotIn(b'"event":"panel"', (cell / "runs.jsonl").read_bytes()
+                             if (cell / "runs.jsonl").exists() else b"")
+
+    def test_panel_event_refused_when_inconsistent(self):
+        path = self.source / "runs.jsonl"
+        original = path.read_bytes()
+        good = b'{"event":"panel","panel":"synthetic-task","wall_secs":9,"seat_secs":11,"unattributed_secs":-2}\n'
+        variants = [(original + good + good, "duplicate panel event"),
+                    (original + good.replace(b"synthetic-task", b"other-task"), "different panel"),
+                    (original + good.replace(b'"wall_secs":9', b'"wall_secs":-9'), "wall_secs"),
+                    (original + good.replace(b'"wall_secs":9', b'"wall_secs":"9"'), "wall_secs"),
+                    (original + good.replace(b'"seat_secs":11', b'"seat_secs":12'), "do not reconcile")]
+        for data, message in variants:
+            with self.subTest(message=message):
+                path.write_bytes(data)
+                self.reject(message)
+
     def test_review_byte_count_mismatch(self):
         (self.source / (SLUGS["alpha"] + ".md")).write_text("tampered\n")
         self.reject("byte count disagrees")

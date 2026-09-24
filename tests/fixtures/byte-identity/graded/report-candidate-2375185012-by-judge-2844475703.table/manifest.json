@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "candidate": "candidate",
+  "selection": "all-runs",
+  "requested_runs": 2,
+  "scope": null,
+  "judges": [
+    "judge"
+  ],
+  "status": "open",
+  "passes": [
+    {
+      "label": "p1",
+      "target_sha": "6890fd79191ca7f93ad5faeed6a5c8e0950c7403",
+      "key_sha256": "62d6c02c05642edf216433af41d3c432757692996748e0d656c91c7cf7084651"
+    }
+  ],
+  "excluded": [],
+  "results": "results.json",
+  "results_sha256": "e358c777ee3ed671d64728ebf8aa1612181870ddd07bc807710a83aa5718c4e8",
+  "report": "report.md",
+  "report_sha256": "ccba626a08492afc92bd3fcf74db5c5e76c9ccf4f9ef6e5dabb2d9b31dd5c467"
+}

@@ -1,0 +1,10 @@
+FAMILY                    RUNS SEATS   OK DEGRADED INCONCLUSIVE FAILED SKIPPED     SECS  PROMPT_KB  REVIEW_KB EST. TOKENS  SCHEMA  MODEL
+twice                        1     1    1        0            0      0       0      <n>        3.6        0.4        1019       2  
+finder                       1     1    1        0            0      0       0      <n>        1.8        0.1         494       2  
+trunc                        1     1    0        1            0      0       0      <n>        1.8        0.1         493       2  
+waffle                       1     1    0        0            1      0       0      <n>        1.8        0.1         477       2  
+dead                         1     1    0        0            0      1       0      <n>        1.8        0.1         473       2  
+ghost                        1     1    0        0            0      1       0                 0.0        0.0           9       2  
+gated                        1     1    0        0            0      0       1                 0.0        0.0           0       2  
+
+Harness: every row ran against <harness_sha>.
