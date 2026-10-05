@@ -49,7 +49,7 @@
       "computedHash": "a9efb7611b40679a7553c1d1cb7fa7cbe59e7995f61381959400e97c33570f9e"
     },
     "root:agents.d/pi.sh": {
-      "computedHash": "b5f79c6fd44d22b0c4c7fc0ff30a5fbfd0c6fde0f4b6b4b9abe36b2247aec039"
+      "computedHash": "ddb4c664fd34100644e7e85f46adda67f66e7fa1e1333e7b0ab073212095a173"
     },
     "root:agents.d/pireview.sh": {
       "computedHash": "d323f26cb7bae42e74bb8ed65f4dfcd8b222e19a5d6df598bdbbaea8192ed991"
@@ -79,7 +79,7 @@
       "computedHash": "3b08ee356ae417e48cc1395d1626ef2f0a0c6759a814ff858e6ec2d2133767ef"
     },
     "root:lib/prompts/keygen.md": {
-      "computedHash": "44b6c887b0e59e08da422f660bf1409f247b83110df36a2412e4ba955526fd0a"
+      "computedHash": "9af83992d7bdf5a18af44c87a4dacbfe447f81122a5e99e90d5e76c244ee4428"
     },
     "root:lib/prompts/review-live.md": {
       "computedHash": "8e02c397d2bafada8a6a4cedc363ee76d099db93347ccd904462d50517a476bb"

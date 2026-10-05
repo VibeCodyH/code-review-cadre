@@ -18,6 +18,10 @@ copying a file from an upstream project. Each `computedHash` is the full SHA-256
 of that file's bytes. Missing or malformed locks fail explicitly; an update
 doesn't overwrite a malformed lock.
 
+`tests/input-lock.sh`, included in `test.sh` and CI, checks the shipped lock
+against the shipped files in an isolated environment before testing drift.
+It never regenerates that lock, so an unpinned source change fails the suite.
+
 ## User adapters and custom prompts
 
 Every shell file in `CADRE_AGENTS_D` (default `$CADRE_HOME/agents.d`) is an input,

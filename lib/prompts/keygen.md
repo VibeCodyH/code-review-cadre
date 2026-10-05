@@ -30,8 +30,10 @@ Rules that matter more than completeness:
 1. ONE defect per K-item, numbered K1, K2, ... Severity goes in the heading in
    those exact words: the grader parses the heading, so a key item with no
    severity word is scored as if it does not matter.
-2. Only include a defect the FIX commit actually repairs, or one you verified
-   yourself in the TARGET. Do not invent items to round out the list.
+2. Only include a defect the FIX commit actually repairs. Each item must cite
+   at least one path:line that exists in the TARGET and that the FIX changes;
+   add-pass refuses items without that link. Do not invent items to round out
+   the list.
 3. Say explicitly which items you EXECUTED and which are by inspection.
    Inspection-only items are weaker evidence and must be labelled as such.
 4. Add a "## Scoring rules" section stating, for each item, what a review must
