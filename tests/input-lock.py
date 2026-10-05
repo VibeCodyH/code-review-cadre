@@ -45,6 +45,17 @@ class InputLockTest(unittest.TestCase):
     def update(self):
         self.cadre("lock", "--update")
 
+    def test_shipped_lock_matches_inputs(self):
+        shutil.copyfile(ROOT / "cadre.lock.json", self.lock)
+        original = self.lock.read_bytes()
+        self.cadre("selfcheck")
+        self.assertEqual(original, self.lock.read_bytes())
+        adapter = self.root / "agents.d/pi.sh"
+        adapter.write_bytes(adapter.read_bytes() + b"\n# drift\n")
+        self.assertIn("modified input: root:agents.d/pi.sh",
+                      self.cadre("selfcheck", ok=False).stderr)
+        self.assertEqual(original, self.lock.read_bytes())
+
     def test_roundtrip_and_provenance(self):
         self.update()
         original = self.lock.read_bytes()
