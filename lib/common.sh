@@ -415,7 +415,7 @@ spec_family() {
     *hunyuan*|hy3*)                                echo tencent ;;
     *mimo*)                                        echo xiaomi ;;
     *gemini*|*gemma*)                              echo google ;;
-    *llama*|*muse-spark*)                          echo meta ;;
+    *llama*|*muse-*)                               echo meta ;;
     *mistral*|*magistral*|*ministral*|*codestral*|*pixtral*|*mixtral*) echo mistral ;;
     vibe)                                          echo mistral ;;
     copilot)                                       echo openai ;;
