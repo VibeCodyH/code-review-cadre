@@ -6,9 +6,11 @@ notes_muse() {
 for a help dump instead of trusting the exit code. Prompt goes in a file via
 --prompt-file: -p/--single is argv and hits MAX_ARG_STRLEN on a diff-sized
 prompt, the same ceiling grok's adapter documents.
-An unqualified muse seat runs muse-spark-1.2-contributor, stated explicitly
-so the report never files a run under a model the CLI silently defaulted.
-Contributor tier trains on inputs; do not seat it on a private corpus without
+An unqualified muse seat runs muse-wonder-1.0, stated explicitly so the
+report never files a run under a model the CLI silently defaulted. Every run
+passes --contributor-mode on (Muse Code 1.4.6+), which Meta bills as the
+-contributor tier (verified 2026-10-12: the wire model was
+muse-wonder-1.0-contributor). Contributor tier trains on inputs; do not seat it on a private corpus without
 the repo owner's say-so. 60 RPM. Untrusted workspaces skip AGENTS.md rules
 (warns, continues), which is correct for a review checkout.
 NOTES
@@ -16,7 +18,7 @@ NOTES
 
 run_muse() {
   local out pf m=() ro=()
-  m=(--model "${model:-muse-spark-1.2-contributor}")
+  m=(--model "${model:-muse-wonder-1.0}" --contributor-mode on)
   # Sandbox is ON by default; ro additionally drops write and web tools.
   # Shell reads stay allowed: the review prompt sanctions running targeted
   # tests, same line grok's adapter draws.
