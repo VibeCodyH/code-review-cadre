@@ -25,6 +25,11 @@ REPO="${1:?usage: run-review.sh <repo> <base-rev> <out-dir> <jobs> <spec ...>}"
 # stands", which is the only mode a non-git target can be reviewed in.
 BASE_REV="${2-}"
 MODE=diff; [ -n "$BASE_REV" ] || MODE=target
+# --since (re-review focus). bin/cadre has already refused one that does not sit
+# between the base and HEAD. Unset so no adapter inherits a sha that names
+# nothing in the checkout it is handed.
+SINCE_REV="${CADRE_SINCE-}"; unset CADRE_SINCE
+SINCE=""; REAL_SINCE=""
 OUT="${3:?need an out dir}"
 # ★ NOT `.log-*`, `.status-*`, `.len-*` or `.sha-*`. Those four globs are wiped at the
 # bottom of this file, and a record that a cleanup line can match is a record
@@ -127,16 +132,31 @@ build_diff_checkout() {
        explicitly, e.g. --base HEAD~1."
   fi
 
+  if [ -n "$SINCE_REV" ]; then
+    REAL_SINCE=$(git -C "$REPO" rev-parse --verify -q "${SINCE_REV}^{commit}") \
+      || die "--since does not resolve to a commit: $SINCE_REV"
+    if [ "$(git -C "$REPO" rev-parse "$REAL_SINCE^{tree}")" = "$(git -C "$REPO" rev-parse "$SNAP^{tree}")" ] \
+       && [ "$NEW" -eq 0 ]; then
+      die "nothing changed since --since $(printf '%.9s' "$REAL_SINCE"): the reviewed
+       state has the same tree. Drop --since to review the whole change again."
+    fi
+  fi
+
   # ★ Publish BOTH commits as temp refs before cloning. Resolving a rev in the
   # source proves nothing about the clone: the stash commit is unreferenced, and
   # a base that lives on another branch or a remote-tracking ref does not arrive
   # under the same name. Fetching explicit refs is the only version that always
   # has both objects present.
-  SR="refs/cadre/snap-$$"; BR="refs/cadre/base-$$"
+  SR="refs/cadre/snap-$$"; BR="refs/cadre/base-$$"; IR=""
   git -C "$REPO" update-ref "$SR" "$SNAP" || die "could not write $SR in $REPO"
   TMPREFS+=("$SR")
   git -C "$REPO" update-ref "$BR" "$BASE" || die "could not write $BR in $REPO"
   TMPREFS+=("$BR")
+  if [ -n "$REAL_SINCE" ]; then
+    IR="refs/cadre/since-$$"
+    git -C "$REPO" update-ref "$IR" "$REAL_SINCE" || die "could not write $IR in $REPO"
+    TMPREFS+=("$IR")
+  fi
 
   # ---- build the template checkout --------------------------------------------
 
@@ -167,19 +187,33 @@ build_diff_checkout() {
     || die "could not init the review checkout"
   git -C "$TPL" remote add origin "file://$(readlink -f "$REPO")" \
     || die "could not add the source remote"
-  git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" \
+  git -C "$TPL" fetch -q --depth=1 --no-tags origin "+$SR:$SR" "+$BR:$BR" ${IR:+"+$IR:$IR"} \
     || die "could not fetch the review refs"
   btree=$(git -C "$TPL" rev-parse "$BR^{tree}") || die "cannot resolve the base tree"
   stree=$(git -C "$TPL" rev-parse "$SR^{tree}") || die "cannot resolve the snapshot tree"
   mk() { git -C "$TPL" -c user.name=cadre -c user.email=cadre@localhost \
            -c commit.gpgsign=false commit-tree "$@"; }
   c1=$(mk "$btree" -m "base") || die "could not build the base commit"
-  c2=$(mk "$stree" -p "$c1" -m "change under review") || die "could not build the review commit"
+  # --since adds ONE tree between the two, still with no real history: base ->
+  # the state at the last review -> the change. `BASE...HEAD` is unchanged and
+  # `SINCE..HEAD` is the delta. Without --since the chain is byte-for-byte the
+  # two-commit one.
+  parent="$c1"
+  if [ -n "$IR" ]; then
+    itree=$(git -C "$TPL" rev-parse "$IR^{tree}") || die "cannot resolve the --since tree"
+    SINCE=$(mk "$itree" -p "$c1" -m "state at the last review") \
+      || die "could not build the --since commit"
+    parent="$SINCE"
+  fi
+  c2=$(mk "$stree" -p "$parent" -m "change under review") || die "could not build the review commit"
   # Checked. These refs are the ONLY thing keeping the source commits reachable
   # in the checkout, and a commit is reachable means its message and its parents
   # are readable. A silent failure here quietly undoes the isolation above.
   git -C "$TPL" update-ref -d "$SR" || die "could not drop the snapshot ref from the checkout"
   git -C "$TPL" update-ref -d "$BR" || die "could not drop the base ref from the checkout"
+  if [ -n "$IR" ]; then
+    git -C "$TPL" update-ref -d "$IR" || die "could not drop the --since ref from the checkout"
+  fi
   # The remote is a live file:// path into the user's repo, and every reviewer
   # runs with tool auto-approval. It goes before anything is checked out.
   git -C "$TPL" remote remove origin \
@@ -370,6 +404,20 @@ if [ "$MODE" = target ]; then build_target_checkout; else build_diff_checkout; f
 # credential committed once and deleted long ago is absent from the tree, so it
 # passes here, and is still one `git log -p` away. Two commits, no history.
 secrets_preflight "$TPL"
+# The --since tree is reachable too (`git show <since>:.env`), and the scan above
+# read only HEAD's. A credential committed before the last review and deleted
+# since would pass it. checkout-index into a temp index, not `git archive`: an
+# export-ignore attribute would leave the very file this looks for out of the scan.
+if [ -n "$SINCE" ]; then
+  sdir="$WORKDIR/since-tree"
+  { mkdir "$sdir" \
+    && GIT_INDEX_FILE="$WORKDIR/since.index" git -C "$TPL" read-tree "$SINCE" \
+    && GIT_INDEX_FILE="$WORKDIR/since.index" git -C "$TPL" checkout-index -a --prefix="$sdir/"; } \
+    || die "could not write out the --since tree for the secrets preflight"
+  echo "  secrets preflight on the --since tree $(printf '%.9s' "$REAL_SINCE")"
+  secrets_preflight "$sdir"
+  rm -rf "$sdir" "$WORKDIR/since.index"
+fi
 
 SUB=$(git -C "$TPL" ls-files -s | awk '$1 == "160000"' | head -3)
 [ -n "$SUB" ] && echo "  ⚠ submodules present; their contents are NOT in the checkout"
@@ -432,14 +480,17 @@ PROMPT="$OUT/prompt.txt"
 if [ -n "${CADRE_PROMPT_FILE:-}" ]; then
   # Rendered, not copied. run-pass.sh copies it verbatim, which silently drops
   # {{BASE}} and leaves the placeholder in the brief.
-  render_review_prompt "$CADRE_PROMPT_FILE" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
+  render_review_prompt "$CADRE_PROMPT_FILE" "$BASE" "$TPL" "$PRERUN_FILE" "$SINCE" > "$PROMPT"
+  if [ -n "$SINCE" ] && ! grep -qF '{{SINCE_LINE}}' "$CADRE_PROMPT_FILE"; then
+    echo "cadre: ⚠ --since was given but CADRE_PROMPT_FILE has no {{SINCE_LINE}}, so reviewers get no re-review focus" >&2
+  fi
 else
   # ★ A different brief, not the diff brief with the diff sentence deleted. A
   # reviewer told to review a change reports on volume: pointed at a whole tree
   # with the diff framing left in, it treats every file as new work and inflates
   # accordingly. The target brief says so explicitly.
   BRIEF=review-live.md; [ "$MODE" = diff ] || BRIEF=review-target.md
-  render_review_prompt "$CADRE_ROOT/lib/prompts/$BRIEF" "$BASE" "$TPL" "$PRERUN_FILE" > "$PROMPT"
+  render_review_prompt "$CADRE_ROOT/lib/prompts/$BRIEF" "$BASE" "$TPL" "$PRERUN_FILE" "$SINCE" > "$PROMPT"
 fi
 
 # ★ Frozen HERE, once, before a single seat is dispatched (#37). Recomputing per
@@ -516,6 +567,7 @@ unset _kept _spec _block _decl _reason _until _dead _why _probe
   if [ "$MODE" = diff ]; then
     echo "base:      $REAL_BASE"
     echo "snapshot:  $REAL_SNAP$([ "$DIRTY" = 1 ] && echo '  (working tree)')"
+    if [ -n "$REAL_SINCE" ]; then echo "since:     $REAL_SINCE"; fi
     echo "untracked: $NEW file(s) carried in"
   else
     # ★ No revision exists to record, so the file list IS the provenance. Without
@@ -533,6 +585,7 @@ unset _kept _spec _block _decl _reason _until _dead _why _probe
   # above does not identify. These are content addresses: identical trees
   # produce identical ids, so they verify a re-run even after the commits die.
   echo "base-tree: $btree"
+  if [ -n "$SINCE" ]; then echo "since-tree: $itree"; fi
   echo "reviewed-tree: $(git -C "$TPL" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
   echo "diff-sha256: $DIFF_SHA"
   echo "roster:    ${reviewers[*]}"
@@ -563,7 +616,7 @@ unset _kept _spec _block _decl _reason _until _dead _why _probe
 } > "$OUT/manifest.txt"
 
 if [ "$MODE" = diff ]; then
-  echo "reviewing ${REAL_BASE:0:9}..${REAL_SNAP:0:9} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
+  echo "reviewing ${REAL_BASE:0:9}..${REAL_SNAP:0:9}${REAL_SINCE:+ (focus: since ${REAL_SINCE:0:9})} | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
 else
   echo "reviewing $TARGET_NFILES file(s) as they stand | ${#reviewers[@]} reviewer(s) | jobs=$JOBS"
 fi

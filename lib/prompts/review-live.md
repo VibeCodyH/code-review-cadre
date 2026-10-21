@@ -3,7 +3,7 @@ Review the change on the current checkout against {{BASE}}:
   git log --oneline {{BASE}}..HEAD
   git diff {{BASE}}...HEAD
 
-{{STACK_LINE}}This is a real change headed for production, not an exercise. Report defects in
+{{SINCE_LINE}}{{STACK_LINE}}This is a real change headed for production, not an exercise. Report defects in
 priority order: data loss, security, correctness bugs that reach production,
 then missing test coverage for the changed paths.
 
