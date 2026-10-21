@@ -145,6 +145,24 @@ It runs offline and exits nonzero on a mismatch. See
 Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
 `--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
 
+## Re-reviews: `--since <rev>`
+
+`cadre review --base <base> --since <rev>` says the change was last reviewed at
+`<rev>`. Every seat still gets the whole `base...HEAD` diff, but the brief tells
+it to start with `<rev>..HEAD`, where a fix for an earlier finding tends to break
+something else, and that a defect anywhere in the change still counts at full
+severity. The roster is unchanged.
+
+The checkout stays synthetic: one extra commit carries the `<rev>` tree between
+the base and the change, so `<rev>..HEAD` resolves without any real history. The
+secrets preflight scans that tree too. `<rev>` must lie between the base and
+HEAD, so a rebase or force-push (not an ancestor of HEAD) and a merge from the
+base branch (base not an ancestor of `<rev>`) are refused, as is a `<rev>` with
+the same tree as the reviewed state. Not with `--full`. The manifest records
+`since:` and `since-tree:`. A review without `--since` renders the same prompt,
+checkout, and manifest as before the flag existed; `tests/byte-identity.sh`
+holds that.
+
 ## Skipped seats: closed windows and dead models
 
 Two records under `$CADRE_HOME` skip a seat before dispatch, as `skipped` in

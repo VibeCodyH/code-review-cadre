@@ -74,6 +74,11 @@ then run that panel on the code you are about to ship.
                                         change and collect the reviews
       --base <rev>       diff against this (default: merge-base with the
                          default branch)
+      --since <rev>      re-review: the change was last reviewed at <rev>.
+                         Reviewers still get the whole base...HEAD diff, but
+                         start with <rev>..HEAD, where a fix for an earlier
+                         finding breaks something else. <rev> must sit between
+                         the base and HEAD. Not with --full.
       --full             review <target> as it STANDS, with no diff. The target
                          can be a repo, a subdirectory, a directory that is not
                          a repo at all, or a single file. Opposite of --base.
@@ -1074,12 +1079,13 @@ claim_live() {  # <pid> <host> <started> <this-host> [pstart] -> 0 when alive
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo="" force=0
-  local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0
+  local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0 since=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --full)   full=1; shift ;;
       --all-seats) all_seats=1; shift ;;
       --base)   base="${2:?--base needs a rev}"; shift 2 ;;
+      --since)  since="${2:?--since needs a rev}"; shift 2 ;;
       --roster) roster_arg="${2:?--roster needs specs}"; shift 2 ;;
       --jobs)   jobs="${2:?--jobs needs a number}"; shift 2 ;;
       --synth)  synth="${2:?--synth needs an agent spec}"; shift 2 ;;
@@ -1102,6 +1108,8 @@ cmd_review() {
   if [ "$full" = 1 ]; then
     [ -z "$base" ] || die "--base and --full are opposites: --base asks for a
      diff against a revision, --full asks for the content as it stands. Pick one."
+    [ -z "$since" ] || die "--since needs a diff to narrow, and --full reviews the
+     content as it stands. Pick one."
     [ -e "$want" ] || die "nothing to review at $(readlink -m "$want")"
     repo=$(readlink -m "$want")
   else
@@ -1161,6 +1169,23 @@ cmd_review() {
   if [ "$full" != 1 ]; then
     base=$(git -C "$repo" rev-parse --verify -q "${base}^{commit}") \
       || die "base does not resolve to a commit: $base"
+  fi
+  # ★ <since> must lie on the path from base to HEAD, or <since>..HEAD is not
+  # "what changed since the last review". After a rebase or force-push it is not
+  # an ancestor of HEAD at all; after a merge from the base branch it is, but the
+  # delta then carries everything that merge brought in. Both are refused here
+  # rather than handed to reviewers as a focus area that is mostly not this change.
+  if [ -n "$since" ]; then
+    local since_arg="$since"
+    since=$(git -C "$repo" rev-parse --verify -q "${since}^{commit}") \
+      || die "--since does not resolve to a commit: $since_arg"
+    git -C "$repo" merge-base --is-ancestor "$since" HEAD \
+      || die "--since $since_arg is not an ancestor of HEAD (rebased or force-pushed?).
+     Drop --since to review the whole change."
+    git -C "$repo" merge-base --is-ancestor "$base" "$since" \
+      || die "the base $(printf '%.9s' "$base") is not an ancestor of --since $since_arg,
+     so $since_arg..HEAD would include changes that are not this one (a merge from
+     the base branch?). Drop --since to review the whole change."
   fi
 
   local specs=() skipped=() has_gates=0 entry parts=() spec gate rolls_env="" p
@@ -1402,6 +1427,7 @@ cmd_review() {
   local rrc=0
   CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
     CADRE_ROSTER_LAYER="$ROSTER_LAYER" CADRE_ROSTER_PATH="$ROSTER_PATH" CADRE_ROLLS="$rolls_env" \
+    CADRE_SINCE="$since" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
     rm -f "$out/.claim"

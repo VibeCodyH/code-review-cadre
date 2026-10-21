@@ -506,14 +506,28 @@ detect_test_cmd() {
 }
 
 # Render lib/prompts/review.md for one pass.
-#   render_review_prompt <template> <base> <checkout-dir> [prerun-result-file]
-# The 4th argument is optional and only the live path passes it. run-pass.sh
-# calls this with three, and review.md has no {{TEST_RESULT}} in it, so the
-# benchmark prompt is byte-identical either way.
+#   render_review_prompt <template> <base> <checkout-dir> [prerun-result-file] [since]
+# The 4th and 5th arguments are optional and only the live path passes them.
+# run-pass.sh calls this with three, and review.md has neither {{TEST_RESULT}}
+# nor {{SINCE_LINE}} in it, so the benchmark prompt is byte-identical either way.
+# With no [since], {{SINCE_LINE}} renders to nothing, like an unset CADRE_STACK.
 render_review_prompt() {
-  local tpl="$1" base="$2" dir="$3" resf="${4:-}" stack testcmd testp=""
+  local tpl="$1" base="$2" dir="$3" resf="${4:-}" since="${5:-}" sincep="" stack testcmd testp=""
   stack="${CADRE_STACK:-}"
   [ -n "$stack" ] && stack="$stack"$'\n\n'
+  # "Start with", never "only": the seats are cold, and a brief that steers them
+  # off the older code drops a blocking finding the author never fixed.
+  [ -n "$since" ] && sincep="Re-review: this change was last reviewed at $since.
+Start with what changed since then, because a fix for an earlier finding is
+where a new defect most often lands:
+
+  git diff $since..HEAD
+
+Then review the rest of $base...HEAD as well. A defect anywhere in the change
+counts at full severity, including one an earlier review missed or one the
+author never fixed.
+
+"
   testcmd=$(detect_test_cmd "$dir")
   if [ -n "$testcmd" ]; then
     testp="You may run targeted tests, e.g.
@@ -533,11 +547,12 @@ reasoning rather than a reproduction, say \"by inspection\".
   # would corrupt the result silently, and a corrupted transcript of a test run
   # is worse than no transcript. Whole-line directive, no substitution.
   # With no result file the line is dropped, leaving no placeholder behind.
-  awk -v base="$base" -v stack="$stack" -v testp="$testp" -v resf="$resf" '
+  awk -v base="$base" -v stack="$stack" -v testp="$testp" -v resf="$resf" -v sincep="$sincep" '
     /^\{\{TEST_RESULT\}\}$/ {
       if (resf != "") { while ((getline l < resf) > 0) print l; close(resf) }
       next }
     { gsub(/\{\{BASE\}\}/, base)
+      gsub(/\{\{SINCE_LINE\}\}/, sincep)
       gsub(/\{\{STACK_LINE\}\}/, stack)
       gsub(/\{\{TEST_PARAGRAPH\}\}/, testp)
       print }
