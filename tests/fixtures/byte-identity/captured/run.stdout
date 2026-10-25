@@ -34,6 +34,8 @@ Language: `javascript` (dominant, by changed files; observational)
 
 Two-sided key check: not recorded (registered by hand, or before add-pass checked it), so no item here is proved to discriminate
 
+Reviewed commit: `6890fd79191c` on every run record, matches the pass row.
+
 - run 1 coverage: 0/1 changed files mentioned
   - never mentioned: app.js
 - run 1 anchor positions: — (no supported anchors with resolvable text hunks)

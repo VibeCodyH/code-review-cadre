@@ -719,6 +719,69 @@ two_sided_line() { # <label> <keyfile>
   fi
 }
 
+# The per-pass line that says whether the commit the reviewers saw is the commit
+# the anchor lines below it were checked against (#93).
+#
+#   reviewed_commit_line <runlog> <slug> <runs> <row-commit>
+#
+# ★ The anchor scan reads its commit from the pass REGISTRY ROW. run-pass.sh
+# refused to dispatch unless the checkout matched that row, but a row edited
+# afterwards re-aims every citation check at a tree no reviewer saw and grade
+# said nothing. The run record now names the commit (`target_sha`); this reads it
+# back and compares. REPORTING ONLY: the judge grades from review text and never
+# sees the tree, so nothing here touches a score, a verdict or a HIT/MISS.
+#
+# ★ Four outcomes, and they stay four. A record with no `target_sha` predates the
+# field and is UNVERIFIABLE: not a mismatch (nothing was compared) and not a
+# match (nothing was checked). Several recorded commits are all listed, never
+# collapsed to one. Only THIS candidate's completions count -- runs.jsonl is
+# shared by every candidate on the pass, and another seat's run at another commit
+# says nothing about the reviews being graded here.
+reviewed_commit_line() {
+  local log="$1" sl="$2" nruns="$3" row="$4"
+  local groups c rl label desc="" unrec="" okruns="" nrec=0 nbad=0 hit kind
+  # One line per distinct recorded commit: "<commit> <TAB> <runs that recorded it>".
+  # "-" stands for the completions that carry none.
+  groups=$(record_rows "$log" complete slug run target_sha | awk -F '\t' -v s="$sl" -v n="$nruns" '
+    $1 == s && $2 + 0 >= 1 && $2 + 0 <= n {
+      c = ($3 == "") ? "-" : $3
+      if (!(c in runs)) order[++k] = c
+      if (!((c, $2) in seen)) { seen[c, $2] = 1; runs[c] = runs[c] (runs[c] == "" ? "" : ",") $2 }
+    }
+    END { for (i = 1; i <= k; i++) print order[i] "\t" runs[order[i]] }')
+  while IFS=$'\t' read -r c rl; do
+    [ -n "$c" ] || continue
+    case "$rl" in *,*) label="runs $rl" ;; *) label="run $rl" ;; esac
+    if [ "$c" = - ]; then unrec="$label"; continue; fi
+    nrec=$((nrec + 1))
+    # Prefix, not equality: when the row names a commit the checkout cannot
+    # resolve, the caller hands over the raw spelling, which may be abbreviated.
+    # A full id on both sides makes this plain equality.
+    hit=0
+    [ -z "$row" ] || case "$c" in "$row"*) hit=1 ;; esac
+    if [ "$hit" -eq 1 ]; then
+      okruns="$label"; desc="${desc:+$desc, }\`$c\` ($label, the row's commit)"
+    else
+      nbad=$((nbad + 1)); desc="${desc:+$desc, }\`$c\` ($label)"
+    fi
+  done <<< "$groups"
+  if [ "$nrec" -eq 0 ]; then
+    printf 'Reviewed commit: not recorded (the run record predates the field, or this candidate has none), so the anchor positions below cannot be shown to match the tree the reviewers saw. Pass row: `%s`.\n' "${row:0:12}"
+  elif [ "$nbad" -eq 0 ] && [ "$nrec" -eq 1 ]; then
+    if [ -n "$unrec" ]; then
+      printf 'Reviewed commit: `%s` (%s), matches the pass row. No commit recorded for %s, so that is unverifiable.\n' "${row:0:12}" "$okruns" "$unrec"
+    else
+      printf 'Reviewed commit: `%s` on every run record, matches the pass row.\n' "${row:0:12}"
+    fi
+  else
+    kind=MISMATCH; [ "$nbad" -gt 0 ] || kind=DISAGREES
+    printf 'Reviewed commit: ★ %s. The run record names %s; the pass row now says `%s`.' "$kind" "$desc" "$row"
+    [ "$nrec" -le 1 ] || printf ' The run record disagrees with itself: %s different commits.' "$nrec"
+    [ -z "$unrec" ] || printf ' No commit recorded for %s, so that is unverifiable.' "$unrec"
+    printf '\nAnchor positions below are checked against the pass row'"'"'s commit; for a run recorded at another commit they describe a tree its reviewer never saw.\n'
+  fi
+}
+
 # run_gauntlet <agent-spec> <runs> <rescore 0|1> [pass-label]
 run_gauntlet() {
   local spec="$1" runs="$2" rescore="$3" only="${4:-}"
@@ -1092,6 +1155,10 @@ remove that directory and re-run."
     # Stated per pass (#23): an unproved item scores exactly like a proved one,
     # so the report is the only place the difference can show.
     [ -n "$pass_clean" ] || { two_sided_line "$label" "$keyfile"; echo; } >> "$report"
+    # ★ Directly above the per-run anchor lines it qualifies (#93). The row's
+    # commit resolved when the checkout could resolve it, as it is for the
+    # anchor scan below; the raw spelling otherwise.
+    { reviewed_commit_line "$pass_record" "$sl" "$runs" "${pinned_sha:-$sha}"; echo; } >> "$report"
     for n in $(seq 1 "$runs"); do
       local rf="$CADRE_HOME/$label/$sl-run$n.md"
       if [ "${run_leaks[$n]:-0}" -ge 2 ]; then
