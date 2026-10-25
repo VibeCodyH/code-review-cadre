@@ -45,6 +45,10 @@ Test: "it is degraded, findings kept".
 `inconclusive` state exists because three artifacts on this machine scored
 `ok` while being a summary, a clarification request, and a parroted diff —
 counted as complete reviewers whose silence cleared every file.
+Classification is tuned to miss rather than to accuse, because a false
+accusation costs trust in the report and a miss costs one check. That is why
+`inconclusive` is its own state and why a timeout alone proves nothing about
+the model.
 Tests: "waffle -> .md.inconclusive", "run: filed .md.inconclusive".
 
 **5. Harness state cannot contaminate the reviewed tree.** `CADRE_HOME` or

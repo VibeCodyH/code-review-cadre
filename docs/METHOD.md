@@ -219,6 +219,16 @@ often, will exclude the verbose and cautious reviewers a panel most wants — fo
 reasons that are grading artifacts. The errors are asymmetric too: a false DEFER
 zeroes a candidate, while a false HIT only pollutes one cell.
 
+This is not a quirk of this grader. [From Confident Closing to Silent
+Failure](https://arxiv.org/abs/2606.09863) (Advani, 2026) found "no
+configuration across 5 judges, 5 prompt strategies, and full task
+specifications exceeds AUROC 0.65 on tau2-bench" at spotting an agent's false
+claim of completion, with judges leaning on surface cues "rather than verified
+state changes". It suggests lightweight, domain-calibrated detectors as
+triage signals rather than a judge as the primary monitor. The setting is
+agent trajectories scored against environment state, not review prose, so it
+supports the direction and not the numbers here.
+
 So `CADRE_JUDGE` takes **two** judges, comma separated, and both grade every run:
 
 - They agree — that is the grade.
