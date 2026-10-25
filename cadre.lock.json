@@ -81,6 +81,9 @@
     "root:lib/prompts/keygen.md": {
       "computedHash": "9af83992d7bdf5a18af44c87a4dacbfe447f81122a5e99e90d5e76c244ee4428"
     },
+    "root:lib/prompts/rebut.md": {
+      "computedHash": "23bde151a7faa6fb773e3a5e806faa8604bb5e9f222743d06f40c200463bc415"
+    },
     "root:lib/prompts/review-live.md": {
       "computedHash": "523f4988c78916e2b3a1e76752a9db6e61788ab67024ea489777fc7e6822daee"
     },

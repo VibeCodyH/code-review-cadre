@@ -21,10 +21,11 @@ FIELDS = ("panel", "seat", "family", "state", "bytes", "secs", "prompt_bytes",
 NUMBERS = {"bytes", "secs", "prompt_bytes", "v"}
 # The panel's own wall clock and its residual (#10). Only the residual may be
 # negative: that is double counting or --jobs overlap, reported, never clamped.
-PANEL_NUMBERS = {"jobs", "wall_secs", "prerun_secs", "seat_secs", "timed_seats",
+PANEL_NUMBERS = {"jobs", "wall_secs", "prerun_secs", "seat_secs", "rebut_secs", "timed_seats",
                  "untimed_seats", "unattributed_secs", "est_tokens", "unattributed_tokens", "ts"}
 SHARED = ("manifest.txt", "findings.json", "report.md", "synthesis.md",
-          "synthesis.md.failed", "synthesis.md.partial", "synthesis.md.inconclusive")
+          "synthesis.md.failed", "synthesis.md.partial", "synthesis.md.inconclusive",
+          "rebuttal.json", "rebuttal-prompt.txt")
 NOTICE = ("Raw reviews, run records, the original manifest, and synthesis/report artifacts "
           "are preserved without redaction. They may contain private text or original paths. "
           "Only the named evidence artifacts are copied; configuration and authentication "
@@ -189,7 +190,8 @@ def parse_events(data, rows):
     for raw in (data or b"").splitlines(keepends=True):
         event = parse_json(raw)
         if (not isinstance(event, dict) or not isinstance(event.get("event"), str)
-                or event["event"] not in {"dispatch", "complete", "roll_dispatch", "roll_complete", "panel"}):
+                or event["event"] not in {"dispatch", "complete", "roll_dispatch", "roll_complete",
+                                          "rebut_dispatch", "rebut_complete", "panel"}):
             raise ValueError("malformed live run event")
         if event["event"] == "panel":
             # Belongs to no seat, so it is not split into a cell; it travels as
@@ -208,7 +210,7 @@ def parse_events(data, rows):
             # does not hold was not written by the harness.
             if event.get("wall_secs") is not None and event.get("unattributed_secs") is not None:
                 if event["wall_secs"] != ((event.get("prerun_secs") or 0) + (event.get("seat_secs") or 0)
-                                          + event["unattributed_secs"]):
+                                          + (event.get("rebut_secs") or 0) + event["unattributed_secs"]):
                     raise ValueError("panel seconds do not reconcile")
             panel_records.append(raw)
             continue
@@ -217,10 +219,11 @@ def parse_events(data, rows):
             raise ValueError("run record names an unknown seat")
         kind = event["event"]
         row = rows[seat][0]
-        if kind.startswith("roll_"):
-            # One roll of a repeated seat. It is part of the seat's record and
-            # travels with it, but it is not the seat's dispatch or completion:
-            # those are the union's, recorded once, and slots.tsv describes them.
+        if kind.startswith(("roll_", "rebut_")):
+            # One roll of a repeated seat, or the seat's answer in a rebuttal
+            # round (#4). Part of the seat's record and travels with it, but not
+            # the seat's dispatch or completion: those are recorded once, and
+            # slots.tsv describes them.
             if event.get("panel") != row["panel"]:
                 raise ValueError("run record panel or slug does not match its slot")
             raw_records[seat].append(raw)
@@ -358,6 +361,11 @@ def export(source_path, destination):
             for name in roll_names:
                 roll = name[len(slug) + 1:]
                 write(cell + "/rolls/" + roll, source.read(name), name)
+            # The seat's rebuttal answers (#4), which rebuttal.json's votes cite.
+            for suffix in (".md", ".md.partial", ".md.failed", ".md.inconclusive"):
+                data = source.read(slug + ".rebut" + suffix)
+                if data is not None:
+                    write(cell + "/rebuttal" + suffix, data, slug + ".rebut" + suffix)
             expected = STATES[row["state"]]
             if expected and "review" + expected not in artifacts:
                 missing.append("review" + expected)

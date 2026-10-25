@@ -143,7 +143,7 @@ It runs offline and exits nonzero on a mismatch. See
 [contract snapshots](CONTRACT-SNAPSHOT.md) for capture conditions and limits.
 
 Other review flags are `--base <rev>`, `--full`, `--roster a,b,c`, `--jobs N`,
-`--synth <spec>`, `--label <name>`, and `--prerun <cmd>`.
+`--synth <spec>`, `--label <name>`, `--prerun <cmd>`, and `--rebut` (below).
 
 ## Re-reviews: `--since <rev>`
 
@@ -162,6 +162,44 @@ the same tree as the reviewed state. Not with `--full`. The manifest records
 `since:` and `since-tree:`. A review without `--since` renders the same prompt,
 checkout, and manifest as before the flag existed; `tests/byte-identity.sh`
 holds that.
+
+## Rebuttal round: `--rebut`
+
+`cadre review --rebut` adds a second round. After the reviews, every seat that
+returned one (ok or degraded) gets one more call in a fresh copy of the same
+checkout. It is shown every finding the panel raised, interleaved across reviews
+and with the authors' names removed, and answers `HOLDS`, `REFUTED` or
+`CANNOT TELL` for each. The findings are the severity lines `claims[]` holds,
+each with the prose under it; a labelled verdict line is left out.
+
+cadre counts the answers. No model weighs them, and there is no tie-break:
+
+| mark | when |
+|---|---|
+| `contested` | another seat refuted it, or its author refuted it while another seat still holds it |
+| `retracted` | its author refuted it and no other seat holds it |
+| `survived` | at least one other seat holds it and nobody refuted it |
+| `untested` | no other seat gave an answer that counts |
+
+An inconclusive or failed rebuttal casts no votes. A degraded one's answers
+count and the findings it never reached get no vote from it. An id answered both
+ways is no vote. A seat that takes no prompt has its findings put to the others
+but is not asked itself.
+
+The marks go to `rebuttal.json`, to a `## Rebuttal round` section above the
+individual reviews in `report.md`, and to a `rebuttal` key in `findings.json`
+beside `claims[]`, which stays verbatim. Each mark names its claim by reviewer
+and source line. If a synthesis runs, it is handed the marks as counts and told
+to keep a contested finding contested. Each seat's answers are in
+`<seat>.rebut.md`, and the brief they got is in `rebuttal-prompt.txt`.
+
+It costs one call per answering seat. Those calls are `rebut_dispatch` /
+`rebut_complete` events in `runs.jsonl`, never `complete`, so `slots.tsv`,
+`cadre receipts` and `cadre seats` still see one completion per seat. The report
+states the round's spend on its own line under Receipts, and its seconds come
+off the panel's unattributed time as `rebut_secs`. With fewer than two usable
+reviews, or no findings, the round is skipped and `rebuttal.json` says why.
+Without `--rebut`, nothing above is written.
 
 ## Skipped seats: closed windows and dead models
 
