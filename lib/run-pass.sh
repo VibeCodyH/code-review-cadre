@@ -76,6 +76,14 @@ esac
 
 have=$(git -C "$CHECKOUT" rev-parse --short HEAD 2>/dev/null) || die "not a git checkout: $CHECKOUT"
 case "$sha" in "$have"*) ;; *) die "$CHECKOUT is at $have, not $sha" ;; esac
+# ★ The commit the seats are about to review, in full (#93). The registry row is
+# the only other place it is written down, and `cadre grade` reads the row back,
+# so a row edited after this run would re-aim every citation check at a tree no
+# reviewer saw, with nothing to compare it to. Full id, not $sha: the check above
+# lets $sha be an abbreviation, and the record should not depend on how the row
+# happened to spell it. Frozen once per pass, like HARNESS_SHA below.
+TARGET_SHA=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null) && [ -n "$TARGET_SHA" ] \
+  || die "cannot resolve HEAD of $CHECKOUT"
 
 secrets_preflight "$CHECKOUT"
 
@@ -173,7 +181,7 @@ for r in "${reviewers[@]}"; do
     record_event "$RUNLOG" event=dispatch pass="$label" \
       seat="$r" family="$(spec_family "$r")" slug="$(slug "$r")" "run#=$n" \
       lock_sha="$lock_sha" lock_adapter_sha="$lock_adapter_sha" lock_prompt_sha="$lock_prompt_sha" \
-      "prompt_bytes#=$prompt_bytes" language="$CHANGE_LANG" "ts#=$start"
+      target_sha="$TARGET_SHA" "prompt_bytes#=$prompt_bytes" language="$CHANGE_LANG" "ts#=$start"
     # ★ .failed and .inconclusive, never .partial. Deleting .partial here threw
     # away real findings the moment a retry produced nothing -- the previous
     # attempt's partial review was the only copy, and this feature exists
@@ -297,6 +305,7 @@ for r in "${reviewers[@]}"; do
       adapter_sha="$run_adapter_sha" harness_sha="$HARNESS_SHA" \
       lock_sha="$lock_sha" lock_adapter_sha="$lock_adapter_sha" \
       prompt_source_sha="$prompt_source_sha" lock_prompt_sha="$lock_prompt_sha" \
+      target_sha="$TARGET_SHA" \
       model="$(sed -n 's/^model=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       adapter_note="$(sed -n 's/^note=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
       "adapter_attempts#=$(sed -n 's/^attempts=//p' "$f.part.meta" 2>/dev/null | tail -1)" \
