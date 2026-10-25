@@ -97,6 +97,12 @@ then run that panel on the code you are about to ship.
                          review; never displaces a live run
       --prerun <cmd>     run <cmd> once on a throwaway copy of the checkout and
                          give every reviewer the transcript. Off unless you ask.
+      --rebut            after the reviews, every seat that returned one is shown
+                         the panel's findings without their authors and answers
+                         HOLDS / REFUTED / CANNOT TELL for each. cadre counts the
+                         answers: survived, retracted, contested or untested,
+                         with no tie-break. One extra call per seat. Off unless
+                         you ask.
   cadre passes                          list registered passes
   cadre agents                          list adapters
   cadre preflight [--roster a,b,c]      show each roster seat's capability
@@ -1079,7 +1085,7 @@ claim_live() {  # <pid> <host> <started> <this-host> [pstart] -> 0 when alive
 cmd_review() {
   init_home; need git; need jq
   local base="" roster_arg="" jobs=1 synth="${CADRE_SYNTH:-}" label="" repo="" force=0
-  local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0 since=""
+  local prerun="${CADRE_PRERUN:-}" full=0 all_seats=0 since="" rebut=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --full)   full=1; shift ;;
@@ -1092,6 +1098,7 @@ cmd_review() {
       --label)  label="${2:?--label needs a name}"; shift 2 ;;
       --prerun) prerun="${2:?--prerun needs a command}"; shift 2 ;;
       --force)  force=1; shift ;;
+      --rebut)  rebut=1; shift ;;
       -*) die "review: unknown option '$1'" ;;
       *)  repo="$1"; shift ;;
     esac
@@ -1427,7 +1434,7 @@ cmd_review() {
   local rrc=0
   CADRE_PRERUN="$prerun" CADRE_SKIPPED="$skipped_env" CADRE_GATE_NOTICE="$gate_notice" \
     CADRE_ROSTER_LAYER="$ROSTER_LAYER" CADRE_ROSTER_PATH="$ROSTER_PATH" CADRE_ROLLS="$rolls_env" \
-    CADRE_SINCE="$since" \
+    CADRE_SINCE="$since" CADRE_REBUT="$rebut" \
     "$CADRE_ROOT/lib/run-review.sh" "$repo" "$base" "$out" "$jobs" "${specs[@]}" || rrc=$?
   if [ "$rrc" -ne 0 ]; then
     rm -f "$out/.claim"

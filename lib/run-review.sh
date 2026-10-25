@@ -13,6 +13,10 @@ LIB_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CADRE_ROOT="${CADRE_ROOT:-$(dirname "$LIB_DIR")}"
 # shellcheck source=lib/common.sh
 . "$LIB_DIR/common.sh"
+# The rebuttal round (#4) puts the panel's findings back to it, and they have to
+# be the SAME findings claims[] holds: one extractor, not a second copy of it.
+# shellcheck source=lib/engine/synthesize.sh
+. "$LIB_DIR/engine/synthesize.sh"
 # The panel's wall clock starts before anything else can spend time (#10). The
 # `panel` event at the bottom sets it against the parts that have their own
 # timers, and whatever none of them covered is recorded as unattributed.
@@ -680,14 +684,21 @@ record_complete() {  # <slug> <spec> <state> [rc] [secs] [event] [roll]
     language="$CHANGE_LANG" "ts#=$(date +%s)"
 }
 
-run_one() {  # <spec> <checkout-idx> [roll]
-  local spec="$1" idx="$2" roll="${3:-}"
+run_one() {  # <spec> <checkout-idx> [roll] [kind]
+  local spec="$1" idx="$2" roll="${3:-}" kind="${4:-review}"
   local sl; sl=$(slug "$spec")
   # A roll (#47) is one of several runs of the same seat. Its artifacts and
   # scratch files carry `.r<k>` so the seat's own names stay free for the union,
   # and its record events are roll_dispatch / roll_complete for the same reason.
-  local who="$spec" evd=dispatch evc=complete
+  local who="$spec" evd=dispatch evc=complete pf="$PROMPT" psha="$PROMPT_SHA"
   [ -n "$roll" ] && { sl="$sl.r$roll"; who="$spec roll $roll"; evd=roll_dispatch; evc=roll_complete; }
+  # ★ A rebuttal (#4) is the same seat answering a different brief, so it gets
+  # the same treatment as a roll: its own suffix, so `<slug>.md` stays the
+  # seat's review, and its own event names, so every reader that joins on
+  # `complete` -- slots.tsv, receipts, seats, the evidence export -- still sees
+  # one completion per seat. Same retries, same refusal chain, same checkout.
+  [ "$kind" = rebut ] && { sl="$sl.rebut"; who="$spec rebuttal"; evd=rebut_dispatch; evc=rebut_complete
+                           pf="$REBUT_PROMPT"; psha="$REBUT_PROMPT_SHA"; }
   local rollnv=(); [ -n "$roll" ] && rollnv=("roll#=$roll")
   local f="$OUT/$sl.md" log="$OUT/.log-$sl" st="$OUT/.status-$sl" len="$OUT/.len-$sl"
   local shaf="$OUT/.sha-$sl"
@@ -742,14 +753,14 @@ run_one() {  # <spec> <checkout-idx> [roll]
   # Promptless adapters use their own contract; zero is the exact number of
   # shared-brief bytes they send to their provider.
   if ! is_promptless "$agent"; then
-    wc -c < "$PROMPT" | tr -d ' ' > "$len"
+    wc -c < "$pf" | tr -d ' ' > "$len"
     # ★ EMPTY for a promptless adapter, never the hash of a prompt it did not
     # get. `prompt_bytes` records a measured 0 there because zero shared-brief
     # bytes really were sent; the identity of a prompt that was never dispatched
     # is not zero, it is unknown, and a sha of the empty string would compare
     # equal across every promptless seat as if they shared an input.
     local asha; asha=$(sed -n 2p "$shaf" 2>/dev/null)
-    printf '%s\n%s\n' "$PROMPT_SHA" "$asha" > "$shaf"
+    printf '%s\n%s\n' "$psha" "$asha" > "$shaf"
   fi
   while :; do
     # ★ A TEMP path, never "$f.part.meta". The meta file is handed to the
@@ -771,7 +782,7 @@ run_one() {  # <spec> <checkout-idx> [roll]
     "${SCRUB[@]}" CADRE_AGENTS_D="${CADRE_AGENTS_D:-$CADRE_HOME/agents.d}" \
       CADRE_PASS_BASE="$BASE" CADRE_RUN_META="$meta" \
       "$CADRE_ROOT/bin/agentcall" "$agent" -d "$dir" -m ro "${m[@]}" \
-      < "$PROMPT" > "$f.part" 2>&1
+      < "$pf" > "$f.part" 2>&1
     rc=$?
     [ -s "$meta" ] && mv "$meta" "$f.part.meta"
     rm -rf "$metad"
@@ -826,6 +837,15 @@ run_one() {  # <spec> <checkout-idx> [roll]
   # test downstream is `[ -s "$sl.md" ]`, so naming it anything else is what
   # keeps a truncated review out of the agreement math by construction.
   local state; state=$(classify_run "$f.part" "$rc")
+  # ★ A rebuttal is not a review, so "is this a review" is the wrong test for
+  # it: the brief asks for answer lines and a fixed closing line, not findings.
+  # The adapter's verdicts above (failed, degraded) still stand. Between ok and
+  # inconclusive the question is whether it answered anything at all: text with
+  # no parsable answer line casts no votes, so it is inconclusive, however
+  # fluent -- the same reason a review with no findings and no verdict is.
+  if [ "$kind" = rebut ] && { [ "$state" = ok ] || [ "$state" = inconclusive ]; }; then
+    if [ -n "$(rebut_votes "$f.part" "$REBUT_N")" ]; then state=ok; else state=inconclusive; fi
+  fi
   case "$state" in
     ok)
       mv "$f.part" "$f"
@@ -1015,6 +1035,283 @@ done
   done
 }
 
+# ---- rebuttal round (#4) ------------------------------------------------------
+#
+# Opt-in (--rebut). After the reviews, every seat that returned one is shown every
+# finding the panel raised, without the name of who raised it, and answers HOLDS,
+# REFUTED or CANNOT TELL for each, against the same checkout. A rebuttal is
+# uncorrelated signal on finding QUALITY that adding another seat cannot buy.
+#
+# ★ THE MARKS ARE COUNTED HERE, BY CADRE, NEVER BY A MODEL. A synthesizer that
+# weighed the rebuttals would be a foreperson, and a foreperson laundering a split
+# into a verdict is the false-green mechanism this harness exists to catch. So the
+# rule is mechanical, and it has no tie-break and no majority:
+#   retracted  the seat that raised it now refutes it, and no other seat holds it
+#   contested  another seat refutes it -- or the author retracts while another
+#              seat still holds it. One refutation against any number of holds is
+#              still contested: a split stays a split.
+#   survived   at least one OTHER seat holds it, and nobody refutes it
+#   untested   no other seat gave an answer that counts. Neither confirmed nor
+#              cleared; the author holding its own finding is not a second look.
+#
+# ★ Silence is not agreement here either. A rebuttal that came back inconclusive
+# or failed casts no votes; a seat that left a finding out has no vote on it. A
+# degraded rebuttal's answers count and the findings it never reached do not --
+# the partial-review rule from synthesis, applied to the second round.
+#
+# ★ claims[] is NOT touched. It is the verbatim graded layer; the marks are a
+# downstream model's opinion and live beside it, in rebuttal.json, keyed back to
+# each claim by reviewer and source line.
+REBUT_RAN=0 REBUT_NOTE="" REBUT_SECS="" REBUT_EST=0 REBUT_CALLS=0 REBUT_N=0
+REBUT_PROMPT="" REBUT_PROMPT_SHA=""
+rb_seats=()
+
+# Answer lines in one rebuttal: ID <TAB> VOTE <TAB> REASON, one row per finding.
+# Tolerant of the markup models add (`**F2:** REFUTED`, `- F2 - refuted:`), strict
+# about the word: anything that is not one of the three answers is no answer. An
+# id answered twice with DIFFERENT words is CONFLICT, which counts as no vote --
+# picking one would be cadre deciding what the seat meant.
+rebut_votes() {  # <file> <n-findings>
+  [ -s "$1" ] || return 0
+  # The dashes arrive as -v strings, not byte escapes in the regex: awks
+  # disagree about octal escapes against a multibyte locale.
+  awk -v n="$2" -v em="—" -v en="–" '
+    { line = $0
+      gsub(/\t/, " ", line); gsub(em, "-", line); gsub(en, "-", line)
+      l = tolower(line)
+      if (!match(l, /^[ >*_`#-]*f[0-9]+/)) next
+      id = substr(l, 1, RLENGTH); gsub(/[^0-9]/, "", id); id += 0
+      if (id < 1 || id > n) next
+      l = substr(l, RLENGTH + 1); line = substr(line, RLENGTH + 1)
+      if (!match(l, /^[*_` ]*[:.)-]+[ ]*[*_`]*[ ]*/)) next
+      l = substr(l, RLENGTH + 1); line = substr(line, RLENGTH + 1)
+      if (l ~ /^holds/) { v = "HOLDS"; k = 5 }
+      else if (l ~ /^refuted/) { v = "REFUTED"; k = 7 }
+      else if (l ~ /^cannot tell/) { v = "CANNOT TELL"; k = 11 }
+      else next
+      r = substr(line, k + 1); sub(/^[*_` ]*[-:]*[ ]*/, "", r)
+      if (length(r) > 300) r = substr(r, 1, 300) "..."
+      if (!(id in vote)) { vote[id] = v; why[id] = r; order[++m] = id }
+      else if (vote[id] != v) vote[id] = "CONFLICT" }
+    END { for (i = 1; i <= m; i++) print order[i] "\t" vote[order[i]] "\t" why[order[i]] }
+  ' "$1"
+}
+
+# The prose a finding sits in: its severity line and what follows, up to the next
+# severity line, a verdict line, or eight lines, whichever comes first. The
+# severity line alone often lacks the file:line the finding is about, and a
+# rebutter handed a bare "blocking: off-by-one" cannot check anything.
+rebut_block() {  # <review-file> <line> <boundaries: engine_severity_lines output>
+  local f="$1" ln="$2" nxt end
+  nxt=$(awk -F '\t' -v l="$ln" '$1 + 0 > l + 0 { print $1; exit }' "$3")
+  end=$((ln + 7))
+  [ -n "$nxt" ] && [ $((nxt - 1)) -lt "$end" ] && end=$((nxt - 1))
+  sed -n "${ln},${end}p" "$f" | awk '
+    NR > 1 && tolower($0) ~ /^[-*_#> `]*(overall +)?verdict/ { exit }
+    { a[++n] = $0 }
+    END { while (n > 0 && a[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print a[i] }'
+}
+
+json_list() { [ $# -gt 0 ] || { echo '[]'; return 0; }; printf '%s\n' "$@" | jq -R . | jq -sc .; }
+
+if [ "${CADRE_REBUT:-0}" = 1 ]; then
+  rb_authors=(); declare -A rb_file=()
+  for spec in "${reviewers[@]}"; do
+    sl=$(slug "$spec")
+    case "$(cat "$OUT/.status-$sl" 2>/dev/null)" in
+      ok)       rb_file[$spec]="$sl.md" ;;
+      degraded) rb_file[$spec]="$sl.md.partial" ;;
+      *)        continue ;;
+    esac
+    rb_authors+=("$spec")
+  done
+  # Every usable review's findings go to the panel; only seats that read the
+  # brief can answer. A promptless adapter's findings are still put to the
+  # others -- it raised them -- but it cannot be asked about anyone's.
+  : > "$OUT/.rb-findings"
+  for spec in ${rb_authors[@]+"${rb_authors[@]}"}; do
+    sl=$(slug "$spec")
+    engine_severity_lines "$OUT/${rb_file[$spec]}" > "$OUT/.rb-lines-$sl"
+    # A labelled verdict (`**Verdict:** blocking`) matches the severity pattern
+    # and so sits in claims[], but it is the review's bottom line, not a finding
+    # anyone could refute against the code. It stays a boundary for the blocks.
+    awk -F '\t' 'tolower($3) !~ /^[-*_#> `]*(overall +)?verdict/' "$OUT/.rb-lines-$sl" > "$OUT/.rb-claims-$sl"
+  done
+  # ★ Interleaved, one finding from each review in turn. Listed review by review,
+  # F1-F4 from one seat and F5-F9 from the next tells every rebutter who wrote
+  # what, and the names were taken off so the finding is attacked, not its author.
+  k=1; more=1
+  while [ "$more" = 1 ]; do
+    more=0
+    for spec in ${rb_authors[@]+"${rb_authors[@]}"}; do
+      row=$(sed -n "${k}p" "$OUT/.rb-claims-$(slug "$spec")")
+      [ -n "$row" ] || continue
+      more=1; REBUT_N=$((REBUT_N + 1))
+      row="${row//$'\t'/$'\034'}"
+      IFS=$'\034' read -r rb_ln rb_sev rb_text <<< "$row"
+      rb_text="${rb_text//$'\034'/ }"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$REBUT_N" "$spec" "${rb_file[$spec]}" "$rb_ln" "$rb_sev" "$rb_text" >> "$OUT/.rb-findings"
+    done
+    k=$((k + 1))
+  done
+  rb_not_asked=()
+  for spec in ${rb_authors[@]+"${rb_authors[@]}"}; do
+    if is_promptless "$(spec_agent "$spec")"; then rb_not_asked+=("$spec (takes no prompt)"); continue; fi
+    rb_seats+=("$spec")
+  done
+
+  if [ "${#rb_authors[@]}" -lt 2 ]; then
+    REBUT_NOTE="skipped: ${#rb_authors[@]} usable review(s), and a rebuttal needs at least two"
+  elif [ "$REBUT_N" -eq 0 ]; then
+    REBUT_NOTE="skipped: no review raised a finding, so there was nothing to rebut"
+  elif [ "${#rb_seats[@]}" -eq 0 ]; then
+    REBUT_NOTE="skipped: no usable seat takes a prompt, so none could be asked"
+  fi
+
+  if [ -z "$REBUT_NOTE" ]; then
+    REBUT_PROMPT="$OUT/rebuttal-prompt.txt"
+    if [ "$MODE" = diff ]; then
+      rb_scope="The change under review is \`git diff $BASE...HEAD\` in this checkout, and the findings are about that change."
+    else
+      rb_scope="The code under review is this checkout as it stands."
+    fi
+    render_review_prompt "$CADRE_ROOT/lib/prompts/rebut.md" "$BASE" "$TPL" "" "" \
+      | awk -v scope="$rb_scope" '/^\{\{SCOPE_LINE\}\}$/ { print scope; next } { print }' > "$REBUT_PROMPT"
+    {
+      echo
+      echo "===== FINDINGS ($REBUT_N) ====="
+      while IFS=$'\t' read -r rb_id rb_spec rb_f rb_ln _rest; do
+        echo
+        echo "F$rb_id"
+        rebut_block "$OUT/$rb_f" "$rb_ln" "$OUT/.rb-lines-$(slug "$rb_spec")" | sed 's/^/    /'
+      done < "$OUT/.rb-findings"
+    } >> "$REBUT_PROMPT"
+    REBUT_PROMPT_SHA=$(content_sha "$REBUT_PROMPT")
+
+    # The same capability preflight the review brief passed, asked again of this
+    # brief: it is a different prompt, and it can be the longer of the two.
+    rb_asked=()
+    for spec in "${rb_seats[@]}"; do
+      if _block=$(capability_block "$spec" reviewer "$REBUT_PROMPT"); then
+        IFS=$'\t' read -r _decl _reason <<< "$_block"
+        rb_not_asked+=("$spec (capability preflight, $_decl: $_reason)")
+        echo "  $spec: rebuttal SKIPPED by capability preflight ($_decl: $_reason)"
+        continue
+      fi
+      rb_asked+=("$spec")
+    done
+    rb_seats=(${rb_asked[@]+"${rb_asked[@]}"})
+  fi
+
+  if [ -z "$REBUT_NOTE" ] && [ "${#rb_seats[@]}" -eq 0 ]; then
+    REBUT_NOTE="skipped: every seat that could answer was refused by its capability preflight"
+  fi
+
+  if [ -z "$REBUT_NOTE" ]; then
+    REBUT_RAN=1
+    echo "rebuttal round: $REBUT_N finding(s) from ${#rb_authors[@]} review(s), put to ${#rb_seats[@]} seat(s)"
+    i=0; running=0
+    for spec in "${rb_seats[@]}"; do
+      i=$((i + 1))
+      echo "  $spec: rebuttal started"
+      if [ "$JOBS" -le 1 ]; then
+        run_one "$spec" "b$i" "" rebut; cat "$OUT/.log-$(slug "$spec").rebut"
+      else
+        while [ "$running" -ge "$JOBS" ]; do wait -n 2>/dev/null; running=$((running - 1)); done
+        run_one "$spec" "b$i" "" rebut & running=$((running + 1))
+      fi
+    done
+    [ "$JOBS" -gt 1 ] && {
+      wait
+      for spec in "${rb_seats[@]}"; do cat "$OUT/.log-$(slug "$spec").rebut" 2>/dev/null; done
+    }
+
+    declare -A rbv=() rbw=()
+    rb_states=()
+    for spec in "${rb_seats[@]}"; do
+      sl="$(slug "$spec").rebut"
+      st=$(cat "$OUT/.status-$sl" 2>/dev/null); st="${st:-failed}"
+      art=""
+      case "$st" in ok) art="$OUT/$sl.md" ;; degraded) art="$OUT/$sl.md.partial" ;; esac
+      n_ans=0
+      if [ -n "$art" ]; then
+        while IFS= read -r vrow; do
+          vrow="${vrow//$'\t'/$'\034'}"
+          IFS=$'\034' read -r v_id v_vote v_why <<< "$vrow"
+          rbv[$spec|$v_id]="$v_vote"; rbw[$spec|$v_id]="$v_why"
+          [ "$v_vote" = CONFLICT ] || n_ans=$((n_ans + 1))
+        done < <(rebut_votes "$art" "$REBUT_N")
+      fi
+      rb_states+=("$(jq -cn --arg r "$spec" --arg st "$st" --argjson a "$n_ans" \
+        '{reviewer: $r, state: $st, answered: $a}')")
+    done
+
+    # Spend, read back out of the record the way slots.tsv is: never parsed
+    # from a log line.
+    while IFS=$'\t' read -r _s r_secs r_pb r_b; do
+      REBUT_CALLS=$((REBUT_CALLS + 1))
+      case "$r_secs" in ''|null) ;; *) REBUT_SECS=$(( ${REBUT_SECS:-0} + r_secs )) ;; esac
+      REBUT_EST=$(( REBUT_EST + (${r_pb:-0} + ${r_b:-0}) / 4 ))
+    done < <(record_rows "$RUNLOG" rebut_complete seat secs prompt_bytes bytes)
+
+    rb_marks=()
+    : > "$OUT/.rb-report"
+    while IFS= read -r frow; do
+      frow="${frow//$'\t'/$'\034'}"
+      IFS=$'\034' read -r rb_id rb_author rb_f rb_ln rb_sev rb_text <<< "$frow"
+      held=(); refuted=(); unsure=(); novote=(); conflict=(); avote=""; votes=()
+      for spec in "${rb_seats[@]}"; do
+        v="${rbv[$spec|$rb_id]:-}"
+        case "$v" in HOLDS|REFUTED|"CANNOT TELL")
+          votes+=("$(jq -cn --arg r "$spec" --arg v "$v" --arg w "${rbw[$spec|$rb_id]:-}" \
+            '{reviewer: $r, vote: $v, reason: $w}')") ;;
+        esac
+        if [ "$spec" = "$rb_author" ]; then
+          case "$v" in HOLDS|REFUTED|"CANNOT TELL") avote="$v" ;; esac
+          continue
+        fi
+        case "$v" in
+          HOLDS)         held+=("$spec") ;;
+          REFUTED)       refuted+=("$spec") ;;
+          "CANNOT TELL") unsure+=("$spec") ;;
+          CONFLICT)      conflict+=("$spec"); novote+=("$spec") ;;
+          *)             novote+=("$spec") ;;
+        esac
+      done
+      if [ "$avote" = REFUTED ]; then
+        if [ "${#held[@]}" -gt 0 ]; then mark=contested; else mark=retracted; fi
+      elif [ "${#refuted[@]}" -gt 0 ]; then mark=contested
+      elif [ "${#held[@]}" -gt 0 ];    then mark=survived
+      else mark=untested
+      fi
+      rb_marks+=("$(jq -cn --argjson id "$rb_id" --arg r "$rb_author" --arg f "$rb_f" \
+          --argjson ln "$rb_ln" --arg sev "$rb_sev" --arg tx "$rb_text" --arg m "$mark" \
+          --arg av "$avote" \
+          --argjson h "$(json_list ${held[@]+"${held[@]}"})" \
+          --argjson rf "$(json_list ${refuted[@]+"${refuted[@]}"})" \
+          --argjson u "$(json_list ${unsure[@]+"${unsure[@]}"})" \
+          --argjson nv "$(json_list ${novote[@]+"${novote[@]}"})" \
+          --argjson c "$(json_list ${conflict[@]+"${conflict[@]}"})" \
+          --argjson vs "$(printf '%s\n' ${votes[@]+"${votes[@]}"} | jq -sc .)" \
+          '{id: $id, reviewer: $r, source: {file: $f, line: $ln},
+            severity_stated: (if $sev == "" then null else $sev end),
+            source_text: $tx, mark: $m,
+            author_vote: (if $av == "" then null else $av end),
+            held_by: $h, refuted_by: $rf, cannot_tell: $u, no_vote: $nv,
+            conflicting: $c, votes: $vs}')")
+    done < "$OUT/.rb-findings"
+    jq -n --argjson n "$REBUT_N" \
+          --argjson rs "$(printf '%s\n' "${rb_states[@]}" | jq -sc .)" \
+          --argjson ms "$(printf '%s\n' "${rb_marks[@]}" | jq -sc .)" \
+          --argjson na "$(json_list ${rb_not_asked[@]+"${rb_not_asked[@]}"})" \
+      '{ran: true, findings: $n, rebutters: $rs, not_asked: $na, marks: $ms}' > "$OUT/rebuttal.json" \
+      || echo "cadre: ⚠ could not write $OUT/rebuttal.json; the marks are in report.md only" >&2
+  else
+    echo "rebuttal round $REBUT_NOTE"
+    jq -n --arg why "$REBUT_NOTE" '{ran: false, skipped: $why}' > "$OUT/rebuttal.json"
+  fi
+fi
+
 # ---- report ------------------------------------------------------------------
 
 REPORT="$OUT/report.md"
@@ -1142,6 +1439,46 @@ printf '%s\n' "${reviewers[@]}" | grep -q '^coderabbit' && {
   echo "> contract, so its findings are not answering the same question as the" >> "$REPORT"
   echo "> rest of this panel. Weigh agreement with it accordingly." >> "$REPORT"
 }
+
+# ★ The rebuttal marks sit ABOVE the individual reviews, where the reader is
+# deciding what to act on. Rendered from rebuttal.json, so the report and the
+# record cannot disagree about a mark.
+if [ "${CADRE_REBUT:-0}" = 1 ] && [ -s "$OUT/rebuttal.json" ]; then
+  { echo; echo "## Rebuttal round"; echo
+    jq -r '
+      def names: if length == 0 then "-" else map("`" + . + "`") | join(", ") end;
+      def state_line:
+        if .state == "ok" then "`\(.reviewer)` ok, answered \(.answered)"
+        elif .state == "degraded" then "`\(.reviewer)` **DEGRADED**, answered \(.answered); findings it did not reach have no vote"
+        elif .state == "inconclusive" then "`\(.reviewer)` **INCONCLUSIVE**, no answer lines; casts no votes"
+        else "`\(.reviewer)` **FAILED**; casts no votes" end;
+      def entry(reasons):
+        "- **F\(.id)** raised by `\(.reviewer)`: \(.source_text)",
+        "  author: \(.author_vote // "-") · held: \(.held_by | names) · refuted: \(.refuted_by | names) · cannot tell: \(.cannot_tell | names) · no answer: \(.no_vote | names)"
+          + (if (.conflicting | length) > 0 then " · answered twice, differently: \(.conflicting | names)" else "" end),
+        (if reasons then (.votes[] | "  - `\(.reviewer)` \(.vote): \(.reason)") else empty end);
+      def group(m; title; reasons):
+        [.marks[] | select(.mark == m)] as $xs
+        | if ($xs | length) == 0 then empty
+          else "", "### \(title) (\($xs | length))", "", ($xs[] | entry(reasons)) end;
+      if .ran then
+        "Every seat that returned a review was shown all \(.findings) finding(s) without their authors and asked to mark each HOLDS, REFUTED or CANNOT TELL against the code. cadre counted the answers; no model weighed them. A finding another seat refuted is **contested** however many held it, and nothing breaks the tie. **Untested** means no other seat gave an answer that counts: neither confirmed nor cleared.",
+        "",
+        ([.marks[] | .mark] as $m
+         | "**\([$m[] | select(. == "contested")] | length) contested, \([$m[] | select(. == "retracted")] | length) retracted, \([$m[] | select(. == "untested")] | length) untested, \([$m[] | select(. == "survived")] | length) survived.**"),
+        "",
+        "Rebutters: " + ([.rebutters[] | state_line] | join("; ")) + ".",
+        (if (.not_asked | length) > 0 then "Not asked: " + (.not_asked | join("; ")) + "." else empty end),
+        "Each seat'"'"'s answers are in `<seat>.rebut.md`, and the brief they answered is `rebuttal-prompt.txt`.",
+        group("contested"; "Contested"; true),
+        group("retracted"; "Retracted by their author"; true),
+        group("untested"; "Untested"; false),
+        group("survived"; "Survived"; false)
+      else
+        "Requested, but \(.skipped)."
+      end' "$OUT/rebuttal.json"
+  } >> "$REPORT"
+fi
 
 for spec in "${reviewers[@]}"; do
   sl=$(slug "$spec")
@@ -1279,6 +1616,13 @@ PANEL_T1=$(date +%s)
     "$total_secs_display" "$total_prompt_kb" "$total_review_kb" "$total_est"
   echo
   echo "> Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill."
+  # ★ Its own line, not rows in the table above. Those rows ARE slots.tsv, one
+  # per seat by construction, and a second row per seat would break every
+  # positional reader of it. The spend still has to be visible somewhere.
+  if [ "$REBUT_RAN" = 1 ]; then
+    echo
+    echo "> Rebuttal round: $REBUT_CALLS call(s), ${REBUT_SECS:--}s, ~$REBUT_EST est. tokens. Not in the rows or the panel total above, and not in slots.tsv; each call is a \`rebut_complete\` event in runs.jsonl."
+  fi
 
   # ---- the panel's wall clock, and what no timer covered (#10) ---------------
   # ★ A total beside its parts has to reconcile, or the difference is spend no
@@ -1305,15 +1649,21 @@ PANEL_T1=$(date +%s)
     IFS=$'\034' read -r _run _spec _fam _st _bytes secs _rest <<< "$slot_row"
     if [ -n "${secs:-}" ]; then panel_timed=$((panel_timed + 1)); else panel_untimed=$((panel_untimed + 1)); fi
   done <<< "$slot_rows"
-  panel_unattr=$((panel_wall - ${PRERUN_SECS:-0} - ${panel_seat_secs:-0}))
+  # The rebuttal round is a timed part like the pre-pass, so it comes off the
+  # residual and is named in the record -- but only when it ran, so a panel
+  # without it writes exactly the event it always did.
+  panel_unattr=$((panel_wall - ${PRERUN_SECS:-0} - ${panel_seat_secs:-0} - ${REBUT_SECS:-0}))
+  rebutnv=(); [ "$REBUT_RAN" = 1 ] && rebutnv=("rebut_secs#=$REBUT_SECS")
   record_event "$RUNLOG" event=panel panel="$(basename "$OUT")" "jobs#=$JOBS" \
     "wall_secs#=$panel_wall" "prerun_secs#=$PRERUN_SECS" "seat_secs#=$panel_seat_secs" \
+    ${rebutnv[@]+"${rebutnv[@]}"} \
     "timed_seats#=$panel_timed" "untimed_seats#=$panel_untimed" \
     "unattributed_secs#=$panel_unattr" "est_tokens#=$total_est" "unattributed_tokens#=" \
     harness_sha="$HARNESS_SHA" "ts#=$PANEL_T1"
   echo
   panel_parts="${panel_seat_secs:-0}s in seats"
   [ -n "$PRERUN_SECS" ] && panel_parts="$panel_parts, ${PRERUN_SECS}s in the pre-pass"
+  [ -n "$REBUT_SECS" ] && panel_parts="$panel_parts, ${REBUT_SECS}s in the rebuttal round"
   if [ "$panel_unattr" -lt 0 ] && [ "$JOBS" -le 1 ]; then
     echo "> ⚠ **The timers add up to more than the wall clock**: ${panel_wall}s of wall time, ${panel_parts}, so **${panel_unattr#-}s are counted twice**. Seats ran one at a time, so their timers cannot overlap; the secs column above is suspect until this is found."
     echo "cadre: ⚠ panel timers exceed its wall clock by ${panel_unattr#-}s with --jobs 1; some second is counted twice (runs.jsonl, event panel)" >&2
@@ -1330,7 +1680,7 @@ PANEL_T1=$(date +%s)
   echo "> Not timed: this table, the cleanup after it, and any synthesis that follows. Tokens have no measured panel total to reconcile against, so their residual is recorded as unmeasured."
 } >> "$REPORT"
 
-rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-* "$OUT"/.rolls-* "$OUT"/.rollmeta-*
+rm -f "$OUT"/.log-* "$OUT"/.status-* "$OUT"/.len-* "$OUT"/.sha-* "$OUT"/.rolls-* "$OUT"/.rollmeta-* "$OUT"/.rb-*
 echo
 skipped_count=${#skipped_rows[@]}
 if [ "$skipped_count" -gt 0 ]; then

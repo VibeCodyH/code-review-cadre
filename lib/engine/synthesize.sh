@@ -201,6 +201,38 @@ and declined to flag it, which is exactly backwards.
 "
   fi
 
+  # ★ The rebuttal round (#4), handed over as COUNTED FACTS. cadre already did
+  # the arithmetic in run-review.sh; the synthesizer is told the result and told
+  # it may not redo it. Left out entirely, the merge would present a retracted
+  # finding as live and a contested one as agreed -- and synthesis.md is the
+  # artifact that gets posted. Asked to weigh the rebuttals itself, it would be
+  # the foreperson the round is built to do without.
+  local rb_block=""
+  if [ -s "$out/rebuttal.json" ] && [ "$(jq -r '.ran' "$out/rebuttal.json" 2>/dev/null)" = true ]; then
+    rb_block=$(jq -r '
+      def names: if length == 0 then "nobody" else join(", ") end;
+      .marks[] | "  \(.reviewer): \(.source_text)\n    -> \(.mark | ascii_upcase) (held: \(.held_by | names); refuted: \(.refuted_by | names))"
+    ' "$out/rebuttal.json" 2>/dev/null)
+  fi
+  if [ -n "$rb_block" ]; then
+    body="$body===== REBUTTAL ROUND (COUNTED BY CADRE, NOT A MODEL) =====
+After the reviews above, every reviewer was shown each finding without its
+author and asked whether it holds against the code. cadre counted the answers:
+$rb_block
+
+Carry each mark onto the finding it belongs to. These are counts, not votes for
+you to weigh:
+  - CONTESTED stays contested. List it under Disagreements, say who held it and
+    who refuted it, and do not decide between them or call it agreed.
+  - RETRACTED was withdrawn by the reviewer that raised it and held by no one
+    else. Report it as retracted, never as a live finding.
+  - UNTESTED means no other reviewer weighed in. It is neither confirmed nor
+    cleared; keep its [x/n] tag as the reviews give it.
+  - SURVIVED means another reviewer checked it and nobody refuted it.
+
+"
+  fi
+
   local pf="$out/.synth-prompt" raw attempt=1 w
   { cat "$CADRE_ROOT/lib/prompts/synthesize.md"; echo; printf '%s' "$body"; } > "$pf"
   local pcount=""
@@ -555,6 +587,16 @@ engine_write_findings() {
   # really happened: see the note on engine_severity_lines. `jq -s .` over no
   # input is already `[]` with status 0, so the empty case needs no help; the
   # nonzero case must reach the operator instead of being papered over.
+  # ★ The rebuttal overlay (#4) rides beside claims[], never inside it: the marks
+  # are a downstream model's opinion of a claim, and claims[] is the verbatim
+  # layer a reviewer is graded from. Each mark names its claim by reviewer and
+  # source line. The key is absent unless --rebut was asked for, so a panel
+  # without it projects exactly what it always did.
+  local rebuttal='null'
+  if [ -s "$out/rebuttal.json" ]; then
+    rebuttal=$(jq -c . "$out/rebuttal.json" 2>/dev/null) \
+      || { echo "cadre: ⚠ $out/rebuttal.json does not parse; findings.json carries no rebuttal." >&2; rebuttal='null'; }
+  fi
   local claims findings panel
   claims=$(engine_claims     "$out" "${specs[@]}" | jq -s .)
   findings=$(engine_findings "$out"               | jq -s .)
@@ -568,7 +610,7 @@ engine_write_findings() {
   jq -n --arg base "$base" --arg rev "$rev" --arg synth "$synth" \
         --arg sstatus "$sstatus" \
         --argjson claims "$claims" --argjson findings "$findings" \
-        --argjson panel "$panel" \
+        --argjson panel "$panel" --argjson rebuttal "$rebuttal" \
     '{schema: "cadre/findings@1",
       target: {base_tree:     (if $base == "" then null else $base end),
                reviewed_tree: (if $rev  == "" then null else $rev  end)},
@@ -578,7 +620,8 @@ engine_write_findings() {
                           else $synth end)},
       verify: {ran: false},
       claims: $claims,
-      findings: $findings}' > "$out/findings.json" \
+      findings: $findings}
+     + (if $rebuttal == null then {} else {rebuttal: $rebuttal} end)' > "$out/findings.json" \
     || { echo "cadre: ⚠ could not write $out/findings.json" >&2; return 0; }
   echo "saved: $out/findings.json"
 }
