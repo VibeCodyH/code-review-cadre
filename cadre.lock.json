@@ -85,7 +85,7 @@
       "computedHash": "23bde151a7faa6fb773e3a5e806faa8604bb5e9f222743d06f40c200463bc415"
     },
     "root:lib/prompts/review-live.md": {
-      "computedHash": "523f4988c78916e2b3a1e76752a9db6e61788ab67024ea489777fc7e6822daee"
+      "computedHash": "a42130d67a15d05f03dd44db5ab970d075e57dec1f86b1824ed1f41885625c74"
     },
     "root:lib/prompts/review-plan.md": {
       "computedHash": "5c69a826f69af4b95f3499e3e99aa58cc6cbdbf04349dacbdf6cc3ecc2a56007"
@@ -100,7 +100,7 @@
       "computedHash": "3f847112a940d7f20b1391838b4d5a979a83936578240c58f7505784e2126b1b"
     },
     "root:lib/prompts/synthesize.md": {
-      "computedHash": "90a6734775d8a1055b82d0b51470d428ffbf3e47f5c0a763ee528db9be22f1e9"
+      "computedHash": "2b47930d272786012fb989911867d61260ec7b4361bb3f129bab96fad481777c"
     }
   },
   "schema": "cadre/input-lock@1"
