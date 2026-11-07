@@ -100,7 +100,7 @@
       "computedHash": "3f847112a940d7f20b1391838b4d5a979a83936578240c58f7505784e2126b1b"
     },
     "root:lib/prompts/synthesize.md": {
-      "computedHash": "2b47930d272786012fb989911867d61260ec7b4361bb3f129bab96fad481777c"
+      "computedHash": "16d76a777741845f89f89e7c8d321d80103a21087858678c10ef23a35b1f28e3"
     }
   },
   "schema": "cadre/input-lock@1"
