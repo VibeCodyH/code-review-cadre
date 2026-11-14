@@ -1512,6 +1512,24 @@ printf '#### **1. `should-fix` — filter drops IDs\n#### **2. `nit` — header 
 check "bold-wrapped headings count"    "[ \$(review_findings '$CRB') -ge 2 ]"
 printf '**Overall:** no critical problems\n*not a nit* but worth noting\n' > "$CRB"
 check "and dressed-up prose stays zero" "[ \$(review_findings '$CRB') -eq 0 ]"
+# ★ Severity at the END of the title. These five lines are verbatim from the two
+# gemini-4-hydrogen reviews binned "returned text but no review" on 2026-11-12:
+# 6KB and 13KB, ten such titles between them, zero findings counted.
+printf '%s\n' '1. **Chained `.pipe()` calls fail (`should-fix`)**' \
+  '2. **`.pipe({signal})` kills the destination process instead of only unpiping (`should-fix`)**' \
+  '### Missing test coverage for changed paths (`should-fix`)' \
+  '### 1. Data Loss / Silent State Corruption (`blocking`)' \
+  '### 3. Security (`should-fix`)' > "$CRB"
+check "trailing-severity titles count" "[ \$(review_findings '$CRB') -eq 5 ]"
+# The backticks and the title are both required: a parenthesised word at the end
+# of a sentence, a bullet or an unticked title is description, not a severity.
+printf '%s\n' '### Summary (no major issues)' '2. **The retry is synchronous (blocking)**' \
+  'The call here is synchronous (`blocking`).' '- handler does a sync read (`blocking`)' > "$CRB"
+check "and trailing prose stays zero"  "[ \$(review_findings '$CRB') -eq 0 ]"
+# The extractor reads the severity the author gave, not a severity WORD that
+# happens to open the title. Both alternatives match this line.
+printf '%s\n' '### 3. Critical path skips the lock (`nit`)' > "$CRB"
+check "a title's own severity wins"    "[ \"\$(. '$ROOT/lib/engine/synthesize.sh'; engine_severity_lines '$CRB' | cut -f2)\" = nit ]"
 rm -f "$CRB"
 # findings=N is coderabbit's bottom line: it takes no prompt, so it never gets
 # asked for the prose verdict every other reviewer ends with.
