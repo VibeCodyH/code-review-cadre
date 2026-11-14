@@ -792,7 +792,7 @@ SEVERITY_RE='^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,1
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
 # reviewer answered the question it was asked. Two legal forms, both already in
 # cadre's own artifacts:
-#   prose        review-live.md:29 asks every reviewer to end with a one-line
+#   prose        review-live.md:41 asks every reviewer to end with a one-line
 #                overall verdict: blocking, should-fix, or ship it.
 #   declaration  coderabbit takes no prompt and opens with `findings=N`.
 #

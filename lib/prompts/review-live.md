@@ -26,6 +26,15 @@ make a finding sound worth reporting.
 For each defect give file and line, what breaks, and what triggers it: the
 concrete input where one exists, otherwise the specific state, configuration,
 or ordering. A coverage gap has no trigger, so name the untested path instead.
+
+If the same mistake appears in more than one place, report it once as a class
+and name every file and line where it occurs, so one fix covers all of them.
+
+If a defect was already in {{BASE}} and this change did not introduce it, make
+it reachable, or make it worse, put `(pre-existing)` right after its severity,
+e.g. `should-fix (pre-existing)`. Keep its real severity, but base your verdict
+on the change's own defects only.
+
 Do not restate what the diff does. Do not pad with nits. If you
 find nothing worth flagging, say so plainly.
 

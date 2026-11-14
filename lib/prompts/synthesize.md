@@ -60,7 +60,13 @@ Rules:
 - Never introduce a finding no reviewer raised. If you think they all missed
   something, you are wrong about your job; leave it out.
 - Do not drop a finding because it sounds minor or because you disagree.
-- Preserve file and line references exactly as given.
+- Preserve file and line references exactly as given. When a reviewer reports a
+  defect as a class with several locations, keep every location.
+- Keep a `(pre-existing)` marker on any finding a reviewer gave one: that
+  reviewer says the change did not introduce it. If the reviewers who raised it
+  do not all agree, name who said which on the finding itself, e.g.
+  `(pre-existing per codex; claude blames the change)`, so the marker never
+  reads as agreed. That is a disagreement too; list it under 4 as well.
 - `===== SEATS THAT SHARE A MODEL LINEAGE =====` lists seats that run the same
   model family. Agreement inside one group is one perspective. Tags still
   count seats, but a finding raised only by seats of one group gets
