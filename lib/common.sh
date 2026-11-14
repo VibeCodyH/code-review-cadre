@@ -754,6 +754,23 @@ review_findings() {
   # number, or one short label, and the severity has to arrive immediately after
   # it. Probed against `**Overall:** no critical problems` and `*not a nit* but
   # worth noting` -- both stay zero, as does the whole corpus.
+  #
+  # ★ ...and the severity at the END of a title, which is the second alternative
+  # in SEVERITY_RE. Measured 2026-11-12: gemini-4-hydrogen heads a finding as
+  #
+  #   ### 1. Data Loss / Silent State Corruption (`blocking`)
+  #   1. **Chained `.pipe()` calls fail (`should-fix`)**
+  #
+  # so nothing sits at the head of the line for the anchor to find. Two reviews
+  # in a 24-run sweep, 6KB and 13KB with ten such titles between them, counted
+  # zero and were binned "returned text but no review"; graded by hand, one of
+  # them hit both key items of its pass. This form is anchored at BOTH ends
+  # instead: the line must open as a heading or a numbered bold title, and close
+  # on a parenthesised, backticked severity. The backticks are required, because
+  # `2. **The retry is synchronous (blocking)**` describes I/O, not a severity.
+  # The extractor takes the LAST severity word of the match, so a title that also
+  # opens with one -- `### 3. Critical path skips the lock (` + backtick + `nit` --
+  # reads as the severity its author gave it. tests/review-smoke.sh pins both.
   grep -cEi "$SEVERITY_RE" "$1"
 }
 
@@ -770,7 +787,7 @@ review_findings() {
 # severity is. Every documented near-miss above is a change to the PREFIX; the
 # vocabulary itself has been stable, which is exactly why it is safe to share.
 SEVERITY_WORDS='blocking|should[ -]fix|must[ -]fix|nit|critical|major'
-SEVERITY_RE='^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*('"$SEVERITY_WORDS"')\**'
+SEVERITY_RE='^ *(#{1,6} *)?[*_`]*([0-9]+[.)]|[-*+])? *(\*\*[A-Za-z][A-Za-z ]{0,18}:?\*\*:? *)?[*_[(`]*('"$SEVERITY_WORDS"')\**|^ *(#{1,6} +|[0-9]+[.)] +\*\*).*\(`('"$SEVERITY_WORDS"')`\)\** *$'
 
 # Did this review state a BOTTOM LINE? Not "is it any good" -- only whether the
 # reviewer answered the question it was asked. Two legal forms, both already in
