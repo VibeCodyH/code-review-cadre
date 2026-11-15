@@ -13,7 +13,7 @@
     roster-layer: explicit
     roster-path: ''
     language:  javascript
-    prompt:    1135120976
+    prompt:    70924368
     harness:   <harness>
     cadre:     <cadre>
 
@@ -96,14 +96,14 @@ Verdict: ship it
 
 | seat | model | status | secs | prompt KB | review KB | est. tokens |
 |---|---|---|---|---|---|---|
-| `finder` |  | ok | <n> | 1.8 | 0.1 | 494 |
-| `trunc` |  | degraded | <n> | 1.8 | 0.1 | 493 |
-| `dead` |  | failed | <n> | 1.8 | 0.1 | 473 |
-| `waffle` |  | inconclusive | <n> | 1.8 | 0.1 | 477 |
+| `finder` |  | ok | <n> | 2.2 | 0.1 | 610 |
+| `trunc` |  | degraded | <n> | 2.2 | 0.1 | 609 |
+| `dead` |  | failed | <n> | 2.2 | 0.1 | 588 |
+| `waffle` |  | inconclusive | <n> | 2.2 | 0.1 | 592 |
 | `ghost` |  | failed |  | 0.0 | 0.0 | 9 |
-| `twice` |  | ok | <n> | 3.6 | 0.4 | 1019 |
+| `twice` |  | ok | <n> | 4.5 | 0.4 | 1250 |
 | `gated` |  | skipped |  | 0.0 | 0.0 | 0 |
-| **panel total** | | | <n> | 10.8 | 0.8 | 2965 |
+| **panel total** | | | <n> | 13.5 | 0.8 | 3658 |
 
 > Estimated as bytes/4 of what the harness sent and received. Hidden reasoning tokens are invisible from outside the CLI and are NOT in this number: a seat that thinks long and answers short costs more than its row shows. This is a relative-spend signal, not a bill.
 

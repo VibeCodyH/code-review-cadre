@@ -11,6 +11,6 @@ rolls:     twice=2
 roster-layer: explicit
 roster-path: ''
 language:  javascript
-prompt:    1135120976
+prompt:    70924368
 harness:   <harness>
 cadre:     <cadre>
